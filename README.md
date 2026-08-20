@@ -10,7 +10,10 @@
 
 ## Скачать и установить (Windows)
 
-Готовые сборки — во вкладке **[Releases](https://github.com/snepi/ime-music/releases)**.
+Готовые сборки — во вкладке **[Releases](https://github.com/snepi/ime-music/releases)**.  
+Список изменений по версиям: **[CHANGELOG.md](./CHANGELOG.md)**.
+
+В приложении: **Настройки → Инструменты → Обновления** — проверить версию и скачать установщик с GitHub.
 
 ### Способ 1 — установщик (рекомендуется)
 

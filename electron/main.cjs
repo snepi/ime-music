@@ -16,6 +16,7 @@ const metaEnrichService = require('./metaEnrichService.cjs');
 const libraryRepairService = require('./libraryRepairService.cjs');
 const artistService = require('./artistService.cjs');
 const wavesService = require('./wavesService.cjs');
+const updateService = require('./updateService.cjs');
 const scrobbleService = require('./scrobbleService.cjs');
 const { createSyncServer } = require('./syncServer.cjs');
 const QRCode = require('qrcode');
@@ -726,6 +727,49 @@ wrapIpc('meta:resyncStart', async () => {
     }
   })();
   return { started: true };
+});
+
+wrapIpc('update:getVersion', () => ({
+  ok: true,
+  version: updateService.getAppVersion(),
+  repo: `https://github.com/${updateService.OWNER}/${updateService.REPO}`,
+}));
+
+wrapIpc('update:check', async () => updateService.checkForUpdates(updateService.getAppVersion()));
+
+wrapIpc('update:downloadInstall', async (_e, payload = {}) => {
+  const sendProgress = (progress) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update:progress', progress);
+    }
+  };
+  let downloadUrl = payload?.downloadUrl || null;
+  let fileName = payload?.fileName || null;
+  if (!downloadUrl) {
+    const check = await updateService.checkForUpdates(updateService.getAppVersion());
+    if (!check.ok || !check.updateAvailable || !check.downloadUrl) {
+      return { ok: false, error: check.error || 'no_update' };
+    }
+    downloadUrl = check.downloadUrl;
+    fileName = check.downloadName;
+  }
+  return updateService.downloadAndInstall({
+    downloadUrl,
+    fileName,
+    onProgress: sendProgress,
+  });
+});
+
+wrapIpc('update:openReleasePage', async (_e, url) => {
+  const target =
+    url ||
+    `https://github.com/${updateService.OWNER}/${updateService.REPO}/releases/latest`;
+  try {
+    await shell.openExternal(target);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
 });
 
 wrapIpc('meta:enrichStart', async () => {

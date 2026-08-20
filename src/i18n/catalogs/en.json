@@ -889,5 +889,20 @@
   "waves.diversity.normal": "Normal",
   "waves.diversity.high": "More artists",
   "waves.skipKnown": "Skip tracks already in library",
-  "waves.settingsHint": "Change filters and press IMe Waves again to refresh the pool. These are ~30s demos; full tracks via wishlist or import."
+  "waves.settingsHint": "Change filters and press IMe Waves again to refresh the pool. These are ~30s demos; full tracks via wishlist or import.",
+  "tools.updates": "Updates",
+  "tools.updatesHint": "Check GitHub Releases for a newer build. The installer will download and launch.",
+  "tools.currentVersion": "Current version: {version}",
+  "tools.latestVersion": "on GitHub: {version}",
+  "tools.updateCheck": "Check for updates",
+  "tools.updateChecking": "Checking…",
+  "tools.updateAvailable": "Version {version} is available",
+  "tools.updateLatest": "You are up to date",
+  "tools.updateInstall": "Download & install {version}",
+  "tools.updateOpenPage": "Releases page",
+  "tools.updateDownloading": "Downloading update…",
+  "tools.updateProgress": "Downloaded {percent}%",
+  "tools.updateLaunching": "Launching installer…",
+  "tools.updateFailed": "Could not check or download the update",
+  "tools.updateNoFile": "Setup file not found in the release"
 }

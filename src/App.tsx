@@ -17,7 +17,8 @@ import { WallpaperLayer } from './components/WallpaperLayer';
 import { getEffectiveAppearance } from './utils/applyAppearance';
 import { MiniPlayerApp } from './components/MiniPlayerApp';
 import { PhoneSyncModal } from './components/PhoneSyncModal';
-import { I18nProvider } from './i18n';
+import { I18nProvider, useI18n } from './i18n';
+import { useToast } from './components/ui/Toast';
 
 function isMiniRoute() {
   return typeof window !== 'undefined' && window.location.hash === '#mini';
@@ -25,6 +26,8 @@ function isMiniRoute() {
 
 function AppContent() {
   const { refreshLibrary, state, dispatch } = usePlayer();
+  const { showToast } = useToast();
+  const { t } = useI18n();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
   const [importVisible, setImportVisible] = useState(false);
@@ -61,6 +64,19 @@ function AppContent() {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, [state.settings.appearance]);
+
+  // Quiet update check a few seconds after start
+  useEffect(() => {
+    if (!ready || !window.imeMusic?.checkForUpdates) return undefined;
+    const timer = window.setTimeout(() => {
+      void window.imeMusic.checkForUpdates().then((res) => {
+        if (res?.ok && res.updateAvailable && res.latestVersion) {
+          showToast(t('tools.updateAvailable', { version: res.latestVersion }), 'info');
+        }
+      });
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [ready, showToast, t]);
 
   // Dynamic color auto-update when track cover changes
   useEffect(() => {

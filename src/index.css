@@ -2986,6 +2986,21 @@ select:focus-visible {
   gap: 8px;
 }
 
+.tools-update-notes {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  max-height: 160px;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .settings-section:last-child {
   margin-bottom: 0;
 }

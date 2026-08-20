@@ -69,6 +69,15 @@ const api = {
   rebuildAutoPlaylists: () => ipcRenderer.invoke('playlists:rebuildAuto'),
   startMetaSync: () => ipcRenderer.invoke('meta:resyncStart'),
   startMetaEnrich: () => ipcRenderer.invoke('meta:enrichStart'),
+  getAppVersion: () => ipcRenderer.invoke('update:getVersion'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadAndInstallUpdate: (payload) => ipcRenderer.invoke('update:downloadInstall', payload || {}),
+  openReleasePage: (url) => ipcRenderer.invoke('update:openReleasePage', url),
+  onUpdateProgress: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('update:progress', listener);
+    return () => ipcRenderer.removeListener('update:progress', listener);
+  },
   findLibraryDuplicates: () => ipcRenderer.invoke('library:findDuplicates'),
   repairLibraryDuplicates: () => ipcRenderer.invoke('library:repairDuplicates'),
   onMetaSyncProgress: (callback) => {

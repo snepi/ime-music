@@ -889,5 +889,20 @@
   "waves.diversity.normal": "Normale",
   "waves.diversity.high": "Plus d’artistes",
   "waves.skipKnown": "Ignorer les titres déjà en bibliothèque",
-  "waves.settingsHint": "Changez les filtres puis relancez IMe Waves. Ce sont des démos ~30 s ; le titre complet passe par la wishlist ou l’import."
+  "waves.settingsHint": "Changez les filtres puis relancez IMe Waves. Ce sont des démos ~30 s ; le titre complet passe par la wishlist ou l’import.",
+  "tools.updates": "Mises à jour",
+  "tools.updatesHint": "Vérifie GitHub Releases. L’installateur se télécharge et se lance.",
+  "tools.currentVersion": "Version actuelle : {version}",
+  "tools.latestVersion": "sur GitHub : {version}",
+  "tools.updateCheck": "Vérifier les mises à jour",
+  "tools.updateChecking": "Vérification…",
+  "tools.updateAvailable": "Version {version} disponible",
+  "tools.updateLatest": "Vous êtes à jour",
+  "tools.updateInstall": "Télécharger et installer {version}",
+  "tools.updateOpenPage": "Page des releases",
+  "tools.updateDownloading": "Téléchargement…",
+  "tools.updateProgress": "Téléchargé {percent}%",
+  "tools.updateLaunching": "Lancement de l’installateur…",
+  "tools.updateFailed": "Échec de la vérification/téléchargement",
+  "tools.updateNoFile": "Pas d’installateur dans la release"
 }

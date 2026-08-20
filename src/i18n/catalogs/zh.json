@@ -889,5 +889,20 @@
   "waves.diversity.normal": "普通",
   "waves.diversity.high": "更多艺人",
   "waves.skipKnown": "跳过库中已有曲目",
-  "waves.settingsHint": "更改筛选后再次点击 IMe Waves 刷新曲池。为约30秒试听；完整曲目请加入想听或导入。"
+  "waves.settingsHint": "更改筛选后再次点击 IMe Waves 刷新曲池。为约30秒试听；完整曲目请加入想听或导入。",
+  "tools.updates": "更新",
+  "tools.updatesHint": "从 GitHub Releases 检查新版本。安装包会自动下载并启动。",
+  "tools.currentVersion": "当前版本：{version}",
+  "tools.latestVersion": "GitHub：{version}",
+  "tools.updateCheck": "检查更新",
+  "tools.updateChecking": "检查中…",
+  "tools.updateAvailable": "可用版本 {version}",
+  "tools.updateLatest": "已是最新版本",
+  "tools.updateInstall": "下载并安装 {version}",
+  "tools.updateOpenPage": "发布页面",
+  "tools.updateDownloading": "正在下载更新…",
+  "tools.updateProgress": "已下载 {percent}%",
+  "tools.updateLaunching": "正在启动安装程序…",
+  "tools.updateFailed": "无法检查或下载更新",
+  "tools.updateNoFile": "发布中未找到安装包"
 }

@@ -3,7 +3,13 @@ import { Button } from '../ui/Button';
 import { Toggle } from '../ui/Toggle';
 import { usePlayer } from '../../store/playerStore';
 import { useToast } from '../ui/Toast';
-import type { LibraryRepairProgress, MetaSyncProgress, ScrobbleSettings } from '../../types';
+import type {
+  LibraryRepairProgress,
+  MetaSyncProgress,
+  ScrobbleSettings,
+  UpdateCheckResult,
+  UpdateProgress,
+} from '../../types';
 import { useI18n } from '../../i18n';
 
 const DEFAULT_SCROBBLE: ScrobbleSettings = {
@@ -32,6 +38,10 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
   const [repairBusy, setRepairBusy] = useState(false);
   const [repairProgress, setRepairProgress] = useState<LibraryRepairProgress | null>(null);
   const [dupPreview, setDupPreview] = useState<number | null>(null);
+  const [appVersion, setAppVersion] = useState('…');
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
 
   useEffect(() => {
     setFfmpegPath(state.settings.ffmpegPath);
@@ -44,6 +54,23 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
     state.settings.ytdlpProxy,
     state.settings.scrobble,
   ]);
+
+  useEffect(() => {
+    void window.imeMusic.getAppVersion?.().then((res) => {
+      if (res?.version) setAppVersion(res.version);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!window.imeMusic?.onUpdateProgress) return undefined;
+    return window.imeMusic.onUpdateProgress((p) => {
+      setUpdateProgress(p);
+      if (p.done && p.phase === 'error') {
+        setUpdateBusy(false);
+        showToast(p.error || t('tools.updateFailed'), 'error');
+      }
+    });
+  }, [showToast, t]);
 
   useEffect(() => {
     if (!window.imeMusic?.onMetaSyncProgress) return undefined;
@@ -136,8 +163,85 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
     showToast(t('tools.autosUpdated', { count: res.playlists?.length || 0 }), 'success');
   };
 
+  const checkUpdates = async () => {
+    setUpdateBusy(true);
+    setUpdateProgress(null);
+    try {
+      const res = await window.imeMusic.checkForUpdates?.();
+      setUpdateInfo(res || null);
+      if (!res?.ok) {
+        showToast(res?.error || t('tools.updateFailed'), 'error');
+      } else if (res.updateAvailable) {
+        showToast(t('tools.updateAvailable', { version: res.latestVersion || '' }), 'info');
+      } else {
+        showToast(t('tools.updateLatest'), 'success');
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('tools.updateFailed'), 'error');
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!updateInfo?.downloadUrl) {
+      showToast(t('tools.updateNoFile'), 'info');
+      return;
+    }
+    setUpdateBusy(true);
+    setUpdateProgress(null);
+    showToast(t('tools.updateDownloading'), 'info');
+    const res = await window.imeMusic.downloadAndInstallUpdate?.({
+      downloadUrl: updateInfo.downloadUrl,
+      fileName: updateInfo.downloadName || undefined,
+    });
+    if (!res?.ok) {
+      setUpdateBusy(false);
+      showToast(res?.error || t('tools.updateFailed'), 'error');
+    }
+  };
+
   return (
     <div className="settings-panel">
+      <div className="settings-section">
+        <h3 style={{ marginBottom: 8 }}>{t('tools.updates')}</h3>
+        <p className="field-hint" style={{ marginBottom: 8 }}>
+          {t('tools.updatesHint')}
+        </p>
+        <p className="field-hint" style={{ marginBottom: 12 }}>
+          {t('tools.currentVersion', { version: appVersion })}
+          {updateInfo?.latestVersion
+            ? ` · ${t('tools.latestVersion', { version: updateInfo.latestVersion })}`
+            : ''}
+        </p>
+        <div className="settings-inline-actions">
+          <Button variant="secondary" disabled={updateBusy} onClick={() => void checkUpdates()}>
+            {updateBusy && !updateProgress ? t('tools.updateChecking') : t('tools.updateCheck')}
+          </Button>
+          {updateInfo?.updateAvailable && updateInfo.downloadUrl ? (
+            <Button variant="primary" disabled={updateBusy} onClick={() => void installUpdate()}>
+              {t('tools.updateInstall', { version: updateInfo.latestVersion || '' })}
+            </Button>
+          ) : null}
+          <Button
+            variant="ghost"
+            onClick={() => void window.imeMusic.openReleasePage?.(updateInfo?.releaseUrl || undefined)}
+          >
+            {t('tools.updateOpenPage')}
+          </Button>
+        </div>
+        {updateProgress && !updateProgress.done ? (
+          <p className="field-hint" style={{ marginTop: 8 }}>
+            {updateProgress.phase === 'launch'
+              ? t('tools.updateLaunching')
+              : t('tools.updateProgress', { percent: updateProgress.percent })}
+          </p>
+        ) : null}
+        {updateInfo?.updateAvailable && updateInfo.releaseNotes ? (
+          <pre className="tools-update-notes">{updateInfo.releaseNotes.slice(0, 1200)}</pre>
+        ) : null}
+      </div>
+
       <div className="settings-section">
         <h3 style={{ marginBottom: 8 }}>{t('tools.phone')}</h3>
         <p className="field-hint" style={{ marginBottom: 12 }}>

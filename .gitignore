@@ -5,6 +5,7 @@ dist
 dist-electron
 dist-ssr
 release
+release-v101
 out
 .screenshot-profile
 mobile/dist

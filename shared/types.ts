@@ -318,6 +318,30 @@ export interface MetaSyncProgress {
   done: boolean;
 }
 
+export interface UpdateCheckResult {
+  ok: boolean;
+  updateAvailable?: boolean;
+  currentVersion?: string;
+  latestVersion?: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  releaseUrl?: string;
+  downloadUrl?: string | null;
+  downloadName?: string | null;
+  downloadSize?: number | null;
+  message?: string;
+  error?: string;
+}
+
+export interface UpdateProgress {
+  phase: 'download' | 'launch' | 'done' | 'error';
+  received: number;
+  total: number;
+  percent: number;
+  done: boolean;
+  error?: string;
+}
+
 export interface LibraryRepairProgress {
   totalGroups: number;
   processed: number;
@@ -589,6 +613,14 @@ export interface ImeMusicAPI {
   rebuildAutoPlaylists: () => Promise<{ ok: boolean; playlists: Playlist[] }>;
   startMetaSync: () => Promise<{ started: boolean }>;
   startMetaEnrich: () => Promise<{ started: boolean }>;
+  getAppVersion: () => Promise<{ ok: boolean; version: string; repo: string }>;
+  checkForUpdates: () => Promise<UpdateCheckResult>;
+  downloadAndInstallUpdate: (payload?: {
+    downloadUrl?: string;
+    fileName?: string;
+  }) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  openReleasePage: (url?: string) => Promise<{ ok: boolean; error?: string }>;
+  onUpdateProgress: (callback: (progress: UpdateProgress) => void) => () => void;
   findLibraryDuplicates: () => Promise<LibraryDuplicatesResult>;
   repairLibraryDuplicates: () => Promise<{ started: boolean }>;
   onMetaSyncProgress: (callback: (progress: MetaSyncProgress) => void) => () => void;

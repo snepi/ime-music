@@ -889,5 +889,20 @@
   "waves.diversity.normal": "Обычное",
   "waves.diversity.high": "Больше артистов",
   "waves.skipKnown": "Пропускать треки, уже есть в библиотеке",
-  "waves.settingsHint": "Меняйте фильтры и снова нажмите IMe Waves — пул обновится. Это демо ~30 сек; полный трек — через «Хочу послушать» или импорт."
+  "waves.settingsHint": "Меняйте фильтры и снова нажмите IMe Waves — пул обновится. Это демо ~30 сек; полный трек — через «Хочу послушать» или импорт.",
+  "tools.updates": "Обновления",
+  "tools.updatesHint": "Проверка новой версии на GitHub Releases. Установщик скачается и запустится сам.",
+  "tools.currentVersion": "Текущая версия: {version}",
+  "tools.latestVersion": "на GitHub: {version}",
+  "tools.updateCheck": "Проверить обновления",
+  "tools.updateChecking": "Проверка…",
+  "tools.updateAvailable": "Доступна версия {version}",
+  "tools.updateLatest": "У вас последняя версия",
+  "tools.updateInstall": "Скачать и установить {version}",
+  "tools.updateOpenPage": "Страница релизов",
+  "tools.updateDownloading": "Скачивание обновления…",
+  "tools.updateProgress": "Скачано {percent}%",
+  "tools.updateLaunching": "Запуск установщика…",
+  "tools.updateFailed": "Не удалось проверить или скачать обновление",
+  "tools.updateNoFile": "Файл установщика в релизе не найден"
 }

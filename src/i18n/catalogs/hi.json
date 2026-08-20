@@ -889,5 +889,20 @@
   "waves.diversity.normal": "सामान्य",
   "waves.diversity.high": "ज़्यादा कलाकार",
   "waves.skipKnown": "लाइब्रेरी में मौजूद ट्रैक छोड़ें",
-  "waves.settingsHint": "फ़िल्टर बदलें और IMe Waves फिर दबाएँ। ये ~30से डेमो हैं; पूरा ट्रैक विशलिस्ट/इम्पोर्ट से।"
+  "waves.settingsHint": "फ़िल्टर बदलें और IMe Waves फिर दबाएँ। ये ~30से डेमो हैं; पूरा ट्रैक विशलिस्ट/इम्पोर्ट से।",
+  "tools.updates": "अपडेट",
+  "tools.updatesHint": "GitHub Releases से नया वर्शन जाँचें। इंस्टॉलर खुद डाउनलोड होकर चलेगा।",
+  "tools.currentVersion": "वर्तमान संस्करण: {version}",
+  "tools.latestVersion": "GitHub पर: {version}",
+  "tools.updateCheck": "अपडेट जाँचें",
+  "tools.updateChecking": "जाँच…",
+  "tools.updateAvailable": "संस्करण {version} उपलब्ध",
+  "tools.updateLatest": "आप नवीनतम पर हैं",
+  "tools.updateInstall": "डाउनलोड व इंस्टॉल {version}",
+  "tools.updateOpenPage": "रिलीज़ पेज",
+  "tools.updateDownloading": "अपडेट डाउनलोड…",
+  "tools.updateProgress": "डाउनलोड {percent}%",
+  "tools.updateLaunching": "इंस्टॉलर शुरू…",
+  "tools.updateFailed": "अपडेट जाँच/डाउनलोड असफल",
+  "tools.updateNoFile": "रिलीज़ में सेटअप नहीं मिला"
 }

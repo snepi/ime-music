@@ -889,5 +889,20 @@
   "waves.diversity.normal": "Звичайне",
   "waves.diversity.high": "Більше артистів",
   "waves.skipKnown": "Пропускати треки, що вже є в бібліотеці",
-  "waves.settingsHint": "Змініть фільтри й знову натисніть IMe Waves — пул оновиться. Це демо ~30 сек; повний трек — через «Хочу» або імпорт."
+  "waves.settingsHint": "Змініть фільтри й знову натисніть IMe Waves — пул оновиться. Це демо ~30 сек; повний трек — через «Хочу» або імпорт.",
+  "tools.updates": "Оновлення",
+  "tools.updatesHint": "Перевірка нової версії на GitHub Releases. Інсталятор завантажиться й запуститься сам.",
+  "tools.currentVersion": "Поточна версія: {version}",
+  "tools.latestVersion": "на GitHub: {version}",
+  "tools.updateCheck": "Перевірити оновлення",
+  "tools.updateChecking": "Перевірка…",
+  "tools.updateAvailable": "Доступна версія {version}",
+  "tools.updateLatest": "У вас остання версія",
+  "tools.updateInstall": "Завантажити й встановити {version}",
+  "tools.updateOpenPage": "Сторінка релізів",
+  "tools.updateDownloading": "Завантаження оновлення…",
+  "tools.updateProgress": "Завантажено {percent}%",
+  "tools.updateLaunching": "Запуск інсталятора…",
+  "tools.updateFailed": "Не вдалося перевірити або завантажити оновлення",
+  "tools.updateNoFile": "Файл інсталятора в релізі не знайдено"
 }

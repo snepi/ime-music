@@ -4,9 +4,13 @@
   "description": "Local music player with recommendations, IMe Waves and phone sync",
   "author": "IMe Music",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "electron/main.cjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/snepi/ime-music.git"
+  },
   "scripts": {
     "dev": "concurrently -k -n vite,electron -c cyan,magenta \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 node scripts/electron-dev.mjs .\"",
     "dev:empty": "concurrently -k -n vite,electron -c cyan,magenta \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 IME_USER_DATA=.screenshot-profile node scripts/electron-dev.mjs . --user-data-dir=.screenshot-profile\"",
@@ -66,7 +70,14 @@
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "snepi",
+        "repo": "ime-music"
+      }
+    ]
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

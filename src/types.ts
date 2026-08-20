@@ -21,6 +21,8 @@ export type {
   MetaSyncProgress,
   LibraryRepairProgress,
   LibraryDuplicatesResult,
+  UpdateCheckResult,
+  UpdateProgress,
   RecommendationItem,
   RecommendationsResult,
   WavesSettings,
