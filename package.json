@@ -4,7 +4,7 @@
   "description": "Local music player with recommendations, IMe Waves and phone sync",
   "author": "IMe Music",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "main": "electron/main.cjs",
   "repository": {

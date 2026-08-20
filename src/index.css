@@ -973,11 +973,17 @@ select:focus-visible {
   color: var(--text-muted);
 }
 
+.home-listen .home-waves {
+  padding: 0;
+  margin-bottom: var(--space-md);
+}
+
 .home-mix-panel {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-bottom: var(--space-md);
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .home-mix-daily {

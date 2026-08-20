@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { usePlayer, formatTime } from '../store/playerStore';
+import { usePlayer } from '../store/playerStore';
 import { getCoverSrc } from '../utils/media';
 import { Icon } from './ui/Icon';
 import { Button } from './ui/Button';
@@ -207,14 +207,8 @@ export function HomeView() {
             {t('home.importFolder')}
           </Button>
         </div>
-        <section className="home-zone">
-          <div className="home-zone-head">
-            <h2 className="home-zone-title">{t('home.discoverZone')}</h2>
-            <p className="home-zone-hint">{t('home.discoverZoneHint')}</p>
-          </div>
-          <HomeWavesCard />
-          <HomeDiscoverySearch compact />
-        </section>
+        <HomeDiscoverySearch />
+        <HomeWavesCard />
       </div>
     );
   }
@@ -223,10 +217,6 @@ export function HomeView() {
     return <Spinner label={t('home.building')} />;
   }
 
-  const continueSong = feed.continueSong;
-  const continueCover = continueSong ? getCoverSrc(continueSong) : null;
-  const continueActive = Boolean(continueSong && currentSongId === continueSong.id);
-  const continuePlaying = continueActive && isPlaying;
   const favorites = discovery.favoriteArtists.slice(0, 10);
 
   return (
@@ -243,78 +233,62 @@ export function HomeView() {
         </div>
       </div>
 
-      {continueSong ? (
-        <section className="home-continue" aria-label={t('home.continue')}>
-          <div
-            className={`home-continue-card${continueActive ? ' is-active' : ''}${continuePlaying ? ' is-playing' : ''}`}
-          >
-            <button
-              type="button"
-              className="home-continue-main"
-              onClick={() => playOrToggle(continueSong.id)}
-              aria-label={
-                continuePlaying
-                  ? `${t('player.pause')}: ${continueSong.title}`
-                  : `${t('home.continue')}: ${continueSong.title}`
-              }
+      <HomeDiscoverySearch />
+
+      {demos.length > 0 ? (
+        <section className="home-section">
+          <div className="home-section-head">
+            <h2 className="home-section-title">{t('home.demos')}</h2>
+            <Button
+              variant="ghost"
+              onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'recommendations' } })}
             >
-              <div className="home-continue-cover">
-                {continueCover ? <img src={continueCover} alt="" /> : <Icon name="disc" size={32} />}
-              </div>
-              <div className="home-continue-text">
-                <div className="home-continue-label">
-                  {continuePlaying
-                    ? t('home.playingNow')
-                    : continueActive
-                      ? t('home.onPause')
-                      : t('home.continue')}
-                </div>
-                <div className="home-continue-title">{continueSong.title}</div>
-                <div className="home-continue-meta">
-                  <ArtistLink artist={continueSong.artist} />
-                  {!continueActive && feed.continueTime > 5 ? (
-                    <span> · с {formatTime(feed.continueTime)}</span>
-                  ) : null}
-                  {continueActive ? <span> · {formatTime(state.currentTime)}</span> : null}
-                </div>
-              </div>
-            </button>
-            <button
-              type="button"
-              className="home-continue-play"
-              onClick={() => playOrToggle(continueSong.id)}
-              aria-label={continuePlaying ? t('player.pause') : t('player.play')}
-              title={continuePlaying ? t('player.pause') : t('player.play')}
-            >
-              <Icon name={continuePlaying ? 'pause' : 'play'} size={22} />
-            </button>
+              {t('home.all')}
+            </Button>
           </div>
+          <p className="home-section-hint">{t('home.demosHint')}</p>
+          <ul className="home-rail">
+            {demos.map((item) => {
+              const active = state.previewItem?.id === item.id;
+              const playing = active && state.previewPlaying;
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className={`home-card home-card-demo${active ? ' is-active' : ''}${playing ? ' is-playing' : ''}`}
+                    onClick={() => {
+                      if (state.isPlaying) pause();
+                      void togglePreview(item);
+                    }}
+                    aria-label={
+                      playing
+                        ? `${t('player.pause')}: ${item.title}`
+                        : `${t('rec.demo')}: ${item.title}`
+                    }
+                  >
+                    <div className="home-card-cover">
+                      {item.coverUrl ? <img src={item.coverUrl} alt="" /> : <Icon name="disc" size={22} />}
+                      <span className="home-card-play" aria-hidden>
+                        <Icon name={playing ? 'pause' : 'play'} size={14} />
+                      </span>
+                    </div>
+                    <div className="home-card-title">{item.title}</div>
+                    <div className="home-card-artist">
+                      <ArtistLink artist={item.artist} deezerId={item.deezerId} />
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </section>
       ) : null}
 
-      <SongRail
-        title={t('home.recent')}
-        songs={feed.recent}
-        currentSongId={currentSongId}
-        isPlaying={isPlaying}
-        onToggle={playOrToggle}
-        empty={t('home.recentEmpty')}
-      />
-      <SongRail
-        title={t('home.similar')}
-        songs={feed.similarToday}
-        currentSongId={currentSongId}
-        isPlaying={isPlaying}
-        onToggle={playOrToggle}
-        empty={t('home.similarEmpty')}
-        hideWhenEmpty
-      />
+      <section className="home-section home-listen">
+        <h2 className="home-section-title">{t('home.listenZone')}</h2>
+        <p className="home-section-hint">{t('home.listenZoneHint')}</p>
 
-      <section className="home-zone home-zone-listen">
-        <div className="home-zone-head">
-          <h2 className="home-zone-title">{t('home.listenZone')}</h2>
-          <p className="home-zone-hint">{t('home.listenZoneHint')}</p>
-        </div>
+        <HomeWavesCard />
 
         <div className="home-mix-panel">
           <button
@@ -350,9 +324,25 @@ export function HomeView() {
             </ul>
           ) : null}
         </div>
-
-        <HomeWavesCard />
       </section>
+
+      <SongRail
+        title={t('home.recent')}
+        songs={feed.recent}
+        currentSongId={currentSongId}
+        isPlaying={isPlaying}
+        onToggle={playOrToggle}
+        empty={t('home.recentEmpty')}
+      />
+      <SongRail
+        title={t('home.similar')}
+        songs={feed.similarToday}
+        currentSongId={currentSongId}
+        isPlaying={isPlaying}
+        onToggle={playOrToggle}
+        empty={t('home.similarEmpty')}
+        hideWhenEmpty
+      />
 
       {favorites.length > 0 ? (
         <section className="home-section">
@@ -379,68 +369,6 @@ export function HomeView() {
           </ul>
         </section>
       ) : null}
-
-      <section className="home-zone home-zone-discover">
-        <div className="home-zone-head">
-          <h2 className="home-zone-title">{t('home.discoverZone')}</h2>
-          <p className="home-zone-hint">{t('home.discoverZoneHint')}</p>
-        </div>
-
-        <HomeDiscoverySearch compact />
-
-        {demos.length > 0 ? (
-          <div className="home-section home-section-nested">
-            <div className="home-section-head">
-              <h3 className="home-section-title">{t('home.demos')}</h3>
-              <Button
-                variant="ghost"
-                onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'recommendations' } })}
-              >
-                {t('home.all')}
-              </Button>
-            </div>
-            <p className="home-section-hint">{t('home.demosHint')}</p>
-            <ul className="home-rail">
-              {demos.map((item) => {
-                const active = state.previewItem?.id === item.id;
-                const playing = active && state.previewPlaying;
-                return (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      className={`home-card home-card-demo${active ? ' is-active' : ''}${playing ? ' is-playing' : ''}`}
-                      onClick={() => {
-                        if (state.isPlaying) pause();
-                        void togglePreview(item);
-                      }}
-                      aria-label={
-                        playing
-                          ? `${t('player.pause')}: ${item.title}`
-                          : `${t('rec.demo')}: ${item.title}`
-                      }
-                    >
-                      <div className="home-card-cover">
-                        {item.coverUrl ? (
-                          <img src={item.coverUrl} alt="" />
-                        ) : (
-                          <Icon name="disc" size={22} />
-                        )}
-                        <span className="home-card-play" aria-hidden>
-                          <Icon name={playing ? 'pause' : 'play'} size={14} />
-                        </span>
-                      </div>
-                      <div className="home-card-title">{item.title}</div>
-                      <div className="home-card-artist">
-                        <ArtistLink artist={item.artist} deezerId={item.deezerId} />
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ) : null}
-      </section>
     </div>
   );
 }
