@@ -28,7 +28,7 @@
 Нужны [Node.js 20+](https://nodejs.org/) и npm.
 
 ```bash
-git clone https://github.com/<OWNER>/ime-music.git
+git clone https://github.com/snepi/ime-music.git
 cd ime-music
 npm install
 npm run rebuild:native
