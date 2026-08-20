@@ -6,6 +6,7 @@ dist-electron
 dist-ssr
 release
 out
+.screenshot-profile
 mobile/dist
 mobile/android
 mobile/ios

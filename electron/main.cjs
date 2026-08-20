@@ -20,7 +20,37 @@ const scrobbleService = require('./scrobbleService.cjs');
 const { createSyncServer } = require('./syncServer.cjs');
 const QRCode = require('qrcode');
 
-// Keep userData at "%APPDATA%/IMe Music" (existing library.json location)
+// Optional empty/screenshot profile — does not touch your real library
+// Set via IME_USER_DATA or --user-data-dir=...
+(function applyOptionalUserData() {
+  const fromEnv = process.env.IME_USER_DATA && String(process.env.IME_USER_DATA).trim();
+  if (fromEnv) {
+    try {
+      const fs = require('fs');
+      fs.mkdirSync(fromEnv, { recursive: true });
+      app.setPath('userData', path.resolve(fromEnv));
+    } catch (err) {
+      console.error('IME_USER_DATA failed', err);
+    }
+    return;
+  }
+  const arg = process.argv.find((a) => a.startsWith('--user-data-dir='));
+  if (arg) {
+    const dir = arg.slice('--user-data-dir='.length).trim();
+    if (dir) {
+      try {
+        const fs = require('fs');
+        const resolved = path.resolve(dir);
+        fs.mkdirSync(resolved, { recursive: true });
+        app.setPath('userData', resolved);
+      } catch (err) {
+        console.error('--user-data-dir failed', err);
+      }
+    }
+  }
+})();
+
+// Keep default userData at "%APPDATA%/IMe Music" (existing library) when unset
 app.setName('IMe Music');
 
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'aac', 'aiff', 'aif', 'wma', 'webm'];
