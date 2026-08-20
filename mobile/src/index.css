@@ -1,0 +1,88 @@
+﻿
+/* Themed custom select */
+.ui-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+}
+
+.ui-select-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-select-chevron {
+  flex: none;
+  opacity: 0.65;
+  transition: transform 0.15s ease;
+}
+
+.ui-select.open .ui-select-chevron {
+  transform: rotate(180deg);
+}
+
+.ui-select-menu {
+  position: fixed;
+  z-index: 11000;
+  overflow: auto;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: var(--bg-elevated, var(--bg-sidebar, #1a1d22));
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+}
+
+.ui-select-option {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary, #f2f4f7);
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ui-select-option:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+}
+
+.ui-select-option.active {
+  background: color-mix(in srgb, var(--accent, #8b7cf6) 28%, transparent);
+  color: var(--text-primary, #fff);
+}
+
+.ui-select-option:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chart-country-bar {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: color-mix(in srgb, var(--bg-sidebar, #15181d) 88%, transparent);
+  max-width: 360px;
+}
+
+.chart-country-bar .ui-select {
+  width: 100%;
+  min-width: 0;
+}
