@@ -5,6 +5,7 @@
 
 const { logError } = require('./libraryStore.cjs');
 const { resolveChartCountry } = require('./chartCountries.cjs');
+const { normalizeKey: trackKey } = require('./trackMatch.cjs');
 
 const DEEZER = 'https://api.deezer.com';
 const DISPLAY_TARGET = 80;
@@ -67,13 +68,6 @@ function artistKey(name) {
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function trackKey(artist, title) {
-  return `${artistKey(artist)}::${String(title || '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim()}`;
 }
 
 function hasCyrillic(text) {

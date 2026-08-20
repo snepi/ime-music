@@ -13,6 +13,7 @@ import { ArtistLink } from './ArtistLink';
 import type { SleepTimerMode } from '../types';
 import { useI18n } from '../i18n';
 import { getDiscovery, toWishlistItem } from '../utils/discovery';
+import { LyricsPanel } from './LyricsPanel';
 
 const PlayerProgress = memo(function PlayerProgress({
   currentTime,
@@ -101,6 +102,7 @@ export function PlayerBar() {
   }, [state.previewError, showToast, dispatch, t]);
 
   const [queueOpen, setQueueOpen] = useState(false);
+  const [lyricsOpen, setLyricsOpen] = useState(false);
   const [sleepOpen, setSleepOpen] = useState(false);
   const [sleepMenuPos, setSleepMenuPos] = useState<{ left: number; bottom: number } | null>(null);
   const sleepBtnRef = useRef<HTMLButtonElement>(null);
@@ -608,6 +610,16 @@ export function PlayerBar() {
           ) : null}
           <button
             type="button"
+            className={`player-btn ${lyricsOpen ? 'active' : ''}`}
+            onClick={() => setLyricsOpen((v) => !v)}
+            aria-label={t('lyrics.title')}
+            title={t('lyrics.title')}
+            disabled={Boolean(preview) || !currentSong}
+          >
+            <Icon name="music" size={18} />
+          </button>
+          <button
+            type="button"
             className="player-btn"
             onClick={() => {
               void window.imeMusic.toggleMiniPlayer?.().then((r) => {
@@ -625,6 +637,7 @@ export function PlayerBar() {
       {appearance.layout.showQueue ? (
         <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
       ) : null}
+      <LyricsPanel open={lyricsOpen} onClose={() => setLyricsOpen(false)} />
     </div>
   );
 }

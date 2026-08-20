@@ -60,6 +60,9 @@ const AUTO_PLAYLIST_KEYS: Record<string, MessageKey> = {
   'auto:frequent': 'auto.frequent',
   'auto:neglected': 'auto.neglected',
   'auto:liked-90s': 'auto.liked90s',
+  'auto:liked': 'auto.liked',
+  'auto:fresh': 'auto.fresh',
+  'auto:top-rated': 'auto.topRated',
 };
 
 export function playlistDisplayName(
@@ -67,5 +70,9 @@ export function playlistDisplayName(
   t: (key: MessageKey) => string,
 ): string {
   const key = AUTO_PLAYLIST_KEYS[playlist.id];
-  return key ? t(key) : playlist.name;
+  if (key) return t(key);
+  if (String(playlist.id).startsWith('auto:genre:')) {
+    return playlist.name;
+  }
+  return playlist.name;
 }

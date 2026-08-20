@@ -119,6 +119,8 @@ export interface AppSettings {
   scrobble?: ScrobbleSettings;
   /** Serialized last ViewType for restoreLastPage */
   lastView?: ViewType | null;
+  /** First-run onboarding completed */
+  onboardingDone?: boolean;
 }
 
 export type RecommendationsFilterMode = 'all' | 'liked' | 'current' | 'wishlist' | 'chart';
@@ -647,6 +649,62 @@ export interface ImeMusicAPI {
   getLibraryGenres: () => Promise<{ ok: boolean; genres: LibraryGenreItem[] }>;
   exportLibraryBackup: () => Promise<LibraryBackupExportResult>;
   importLibraryBackup: () => Promise<LibraryBackupImportResult>;
+  findMissingTracks: () => Promise<{
+    ok: boolean;
+    total: number;
+    missingCount: number;
+    tracks: Array<{
+      id: string;
+      title: string;
+      artist: string;
+      album: string;
+      filePath: string;
+    }>;
+    error?: string;
+  }>;
+  relocateMissingByFolder: () => Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    relocated: number;
+    stillMissing: number;
+    error?: string;
+  }>;
+  importPlaylistFile: () => Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    matched: number;
+    unmatched: number;
+    wishlistAdded?: number;
+    playlist?: Playlist | null;
+    error?: string;
+  }>;
+  importPlaylistUrl: (url: string) => Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    matched: number;
+    unmatched: number;
+    wishlistAdded?: number;
+    playlist?: Playlist | null;
+    service?: string;
+    name?: string;
+    total?: number;
+    error?: string;
+  }>;
+  getLyrics: (trackId: string) => Promise<{
+    ok: boolean;
+    lines: Array<{ time: number; text: string }>;
+    synced: boolean;
+    source?: string | null;
+    empty?: boolean;
+    text?: string;
+    error?: string;
+  }>;
+  saveLyrics: (trackId: string, text: string) => Promise<{
+    ok: boolean;
+    sidecarWritten?: boolean;
+    error?: string;
+  }>;
+  pickLyricsFile: () => Promise<string | null>;
   rebuildAutoPlaylists: () => Promise<{ ok: boolean; playlists: Playlist[] }>;
   startMetaSync: () => Promise<{ started: boolean }>;
   startMetaEnrich: () => Promise<{ started: boolean }>;

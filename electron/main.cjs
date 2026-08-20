@@ -19,6 +19,10 @@ const wavesService = require('./wavesService.cjs');
 const libraryBackupService = require('./libraryBackupService.cjs');
 const updateService = require('./updateService.cjs');
 const scrobbleService = require('./scrobbleService.cjs');
+const missingFilesService = require('./missingFilesService.cjs');
+const playlistImportService = require('./playlistImportService.cjs');
+const playlistUrlService = require('./playlistUrlService.cjs');
+const lyricsService = require('./lyricsService.cjs');
 const { createSyncServer } = require('./syncServer.cjs');
 const QRCode = require('qrcode');
 
@@ -924,6 +928,83 @@ wrapIpc('song:relocate', async (_e, trackId) => {
   });
   if (result.canceled || !result.filePaths[0]) return null;
   return db.updateTrack(trackId, { filePath: result.filePaths[0], dateModified: Date.now() });
+});
+
+wrapIpc('library:findMissing', () => {
+  if (!dbReady) return { ok: false, total: 0, missingCount: 0, tracks: [], error: dbErrorMessage };
+  return missingFilesService.findMissingTracks(db);
+});
+
+wrapIpc('library:relocateMissingFolder', async () => {
+  if (!dbReady) return { ok: false, error: dbErrorMessage || 'DB not ready', relocated: 0, stillMissing: 0 };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Папка, куда перенесена музыка',
+    properties: ['openDirectory'],
+  });
+  if (result.canceled || !result.filePaths[0]) {
+    return { ok: false, cancelled: true, relocated: 0, stillMissing: 0 };
+  }
+  return missingFilesService.relocateMissingByFolder(db, result.filePaths[0]);
+});
+
+wrapIpc('library:importPlaylistFile', async () => {
+  if (!dbReady) return { ok: false, error: dbErrorMessage || 'DB not ready', matched: 0, unmatched: 0 };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Импорт плейлиста (Spotify CSV / Apple Music / M3U / текст)',
+    properties: ['openFile'],
+    filters: [
+      { name: 'Playlists', extensions: ['csv', 'txt', 'm3u', 'm3u8', 'tsv'] },
+      { name: 'All', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePaths[0]) {
+    return { ok: false, cancelled: true, matched: 0, unmatched: 0 };
+  }
+  return playlistImportService.importPlaylistFromFile(db, result.filePaths[0], {
+    createPlaylist: true,
+    addWishlist: true,
+  });
+});
+
+wrapIpc('library:importPlaylistUrl', async (_e, url) => {
+  if (!dbReady) return { ok: false, error: dbErrorMessage || 'DB not ready', matched: 0, unmatched: 0 };
+  return playlistUrlService.importPlaylistFromUrl(db, url, {
+    createPlaylist: true,
+    addWishlist: true,
+  });
+});
+
+wrapIpc('lyrics:get', async (_e, trackId) => {
+  if (!dbReady) return { ok: false, lines: [], synced: false, text: '', error: dbErrorMessage };
+  const track = db.getTrackById(trackId);
+  if (!track) return { ok: false, lines: [], synced: false, text: '', error: 'track not found' };
+  return lyricsService.getLyricsForTrack(track);
+});
+
+wrapIpc('lyrics:save', async (_e, trackId, text) => {
+  if (!dbReady) return { ok: false, error: dbErrorMessage || 'DB not ready' };
+  const track = db.getTrackById(trackId);
+  if (!track) return { ok: false, error: 'track not found' };
+  return lyricsService.saveLyricsForTrack(track, text);
+});
+
+wrapIpc('dialog:pickLyricsFile', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Файл с текстом песни',
+    properties: ['openFile'],
+    filters: [
+      { name: 'Lyrics', extensions: ['lrc', 'txt', 'text'] },
+      { name: 'All', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  try {
+    const fs = require('fs');
+    return fs.readFileSync(result.filePaths[0], 'utf8');
+  } catch (err) {
+    logError('lyrics', 'pick lyrics file failed', err);
+    return null;
+  }
 });
 
 wrapIpc('metadata:get', (_e, trackId) => metadataService.getTrackDetails(trackId));

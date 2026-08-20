@@ -10,6 +10,7 @@ import { getEffectiveAppearance } from '../utils/applyAppearance';
 import { ArtistLink } from './ArtistLink';
 import { useI18n } from '../i18n';
 import { playlistDisplayName } from '../i18n/messages';
+import { isSmartPlaylistId } from '../utils/smartPlaylists';
 
 export function Sidebar() {
   const { state, dispatch, toggleLike } = usePlayer();
@@ -140,7 +141,9 @@ export function Sidebar() {
 
             {playlistsOpen && (
               <div className="playlists-list">
-                {state.playlists.map((pl) => (
+                {state.playlists
+                  .filter((pl) => !isSmartPlaylistId(pl.id))
+                  .map((pl) => (
                   <button
                     key={pl.id}
                     type="button"

@@ -43,6 +43,10 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [missingBusy, setMissingBusy] = useState(false);
+  const [missingCount, setMissingCount] = useState<number | null>(null);
+  const [playlistImportBusy, setPlaylistImportBusy] = useState(false);
+  const [playlistUrl, setPlaylistUrl] = useState('');
 
   useEffect(() => {
     setFfmpegPath(state.settings.ffmpegPath);
@@ -215,6 +219,115 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
     }
   };
 
+  const findMissing = async () => {
+    setMissingBusy(true);
+    try {
+      const res = await window.imeMusic.findMissingTracks?.();
+      if (!res?.ok) {
+        showToast(res?.error || t('common.error'), 'error');
+        return;
+      }
+      setMissingCount(res.missingCount);
+      showToast(
+        res.missingCount === 0
+          ? t('tools.missingNone')
+          : t('tools.missingFound', { count: res.missingCount }),
+        res.missingCount ? 'info' : 'success',
+      );
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('common.error'), 'error');
+    } finally {
+      setMissingBusy(false);
+    }
+  };
+
+  const relocateMissingFolder = async () => {
+    setMissingBusy(true);
+    try {
+      const res = await window.imeMusic.relocateMissingByFolder?.();
+      if (res?.cancelled) {
+        showToast(t('tools.backupCancelled'), 'info');
+        return;
+      }
+      if (!res?.ok) {
+        showToast(res?.error || t('common.error'), 'error');
+        return;
+      }
+      await refreshLibrary();
+      setMissingCount(res.stillMissing);
+      showToast(
+        t('tools.missingRelocated', {
+          relocated: res.relocated,
+          still: res.stillMissing,
+        }),
+        res.stillMissing ? 'info' : 'success',
+      );
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('common.error'), 'error');
+    } finally {
+      setMissingBusy(false);
+    }
+  };
+
+  const importPlaylistFile = async () => {
+    setPlaylistImportBusy(true);
+    try {
+      const res = await window.imeMusic.importPlaylistFile?.();
+      if (res?.cancelled) {
+        showToast(t('tools.backupCancelled'), 'info');
+        return;
+      }
+      if (!res?.ok) {
+        showToast(res?.error || t('tools.playlistImportFailed'), 'error');
+        return;
+      }
+      await refreshLibrary();
+      showToast(
+        t('tools.playlistImportOk', {
+          matched: res.matched,
+          unmatched: res.unmatched,
+          wishlist: res.wishlistAdded || 0,
+        }),
+        'success',
+      );
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('tools.playlistImportFailed'), 'error');
+    } finally {
+      setPlaylistImportBusy(false);
+    }
+  };
+
+  const importPlaylistUrl = async () => {
+    const url = playlistUrl.trim();
+    if (!url) {
+      showToast(t('tools.playlistUrlRequired'), 'info');
+      return;
+    }
+    setPlaylistImportBusy(true);
+    try {
+      const res = await window.imeMusic.importPlaylistUrl?.(url);
+      if (!res?.ok) {
+        showToast(res?.error || t('tools.playlistImportFailed'), 'error');
+        return;
+      }
+      await refreshLibrary();
+      showToast(
+        t('tools.playlistUrlOk', {
+          name: res.name || '',
+          matched: res.matched,
+          unmatched: res.unmatched,
+          wishlist: res.wishlistAdded || 0,
+        }),
+        'success',
+      );
+      setPlaylistUrl('');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('tools.playlistImportFailed'), 'error');
+    } finally {
+      setPlaylistImportBusy(false);
+    }
+  };
+
   const checkUpdates = async () => {
     setUpdateBusy(true);
     setUpdateProgress(null);
@@ -318,6 +431,44 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
       </div>
 
       <div className="settings-section">
+        <h3 style={{ marginBottom: 8 }}>{t('tools.playlistImport')}</h3>
+        <p className="field-hint" style={{ marginBottom: 12 }}>
+          {t('tools.playlistImportHint')}
+        </p>
+        <label className="field-label" htmlFor="playlist-url">
+          {t('tools.playlistUrlLabel')}
+        </label>
+        <input
+          id="playlist-url"
+          className="field-input"
+          type="url"
+          value={playlistUrl}
+          onChange={(e) => setPlaylistUrl(e.target.value)}
+          placeholder={t('tools.playlistUrlPh')}
+          disabled={playlistImportBusy}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void importPlaylistUrl();
+          }}
+        />
+        <div className="settings-inline-actions" style={{ marginTop: 10 }}>
+          <Button
+            variant="primary"
+            disabled={playlistImportBusy}
+            onClick={() => void importPlaylistUrl()}
+          >
+            {playlistImportBusy ? t('common.loading') : t('tools.playlistUrlBtn')}
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={playlistImportBusy}
+            onClick={() => void importPlaylistFile()}
+          >
+            {t('tools.playlistImportBtn')}
+          </Button>
+        </div>
+      </div>
+
+      <div className="settings-section">
         <h3 style={{ marginBottom: 8 }}>{t('tools.phone')}</h3>
         <p className="field-hint" style={{ marginBottom: 12 }}>
           {t('tools.phoneHint')}
@@ -377,6 +528,28 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
                   removed: repairProgress.removed,
                 })}`
               : ''}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ marginBottom: 8 }}>{t('tools.missing')}</h3>
+        <p className="field-hint" style={{ marginBottom: 12 }}>
+          {t('tools.missingHint')}
+        </p>
+        <div className="settings-inline-actions">
+          <Button variant="secondary" disabled={missingBusy} onClick={() => void findMissing()}>
+            {t('tools.missingFind')}
+          </Button>
+          <Button variant="primary" disabled={missingBusy} onClick={() => void relocateMissingFolder()}>
+            {t('tools.missingRelocate')}
+          </Button>
+        </div>
+        {missingCount != null ? (
+          <p className="field-hint" style={{ marginTop: 8 }}>
+            {missingCount === 0
+              ? t('tools.missingNone')
+              : t('tools.missingFound', { count: missingCount })}
           </p>
         ) : null}
       </div>

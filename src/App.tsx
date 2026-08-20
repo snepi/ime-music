@@ -17,6 +17,7 @@ import { WallpaperLayer } from './components/WallpaperLayer';
 import { getEffectiveAppearance } from './utils/applyAppearance';
 import { MiniPlayerApp } from './components/MiniPlayerApp';
 import { PhoneSyncModal } from './components/PhoneSyncModal';
+import { OnboardingModal } from './components/OnboardingModal';
 import { I18nProvider, useI18n } from './i18n';
 import { useToast } from './components/ui/Toast';
 
@@ -37,7 +38,34 @@ function AppContent() {
   const importSessionRef = useRef<string | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [editMetaOpen, setEditMetaOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const ready = typeof window !== 'undefined' && !!window.imeMusic;
+
+  useEffect(() => {
+    if (state.loading) return;
+    if (state.settings.onboardingDone) {
+      setOnboardingOpen(false);
+      return;
+    }
+    // Уже есть библиотека (после обновления) — не показывать онбординг
+    if (state.songs.length > 0) {
+      void window.imeMusic.updateSettings({ onboardingDone: true }).then((settings) => {
+        dispatch({ type: 'UPDATE_SETTINGS', settings });
+      });
+      return;
+    }
+    setOnboardingOpen(true);
+  }, [state.loading, state.settings.onboardingDone, state.songs.length, dispatch]);
+
+  const finishOnboarding = async () => {
+    setOnboardingOpen(false);
+    try {
+      const settings = await window.imeMusic.updateSettings({ onboardingDone: true });
+      dispatch({ type: 'UPDATE_SETTINGS', settings });
+    } catch {
+      /* ignore */
+    }
+  };
 
   useHotkeys({
     onSettings: () => setSettingsOpen(true),
@@ -198,6 +226,7 @@ function AppContent() {
         }}
       />
       <PhoneSyncModal open={phoneSyncOpen} onClose={() => setPhoneSyncOpen(false)} />
+      <OnboardingModal open={onboardingOpen} onDone={() => void finishOnboarding()} />
       <EditMetadataModal
         open={editMetaOpen}
         songId={state.currentSongId}

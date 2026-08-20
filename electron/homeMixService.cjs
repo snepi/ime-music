@@ -234,8 +234,8 @@ module.exports = {
   buildHomeFeed,
   buildLibraryMix,
   listLibraryGenres,
+  matchesGenre,
   pickNextRadioTrack,
   startOfLocalDay,
   GENRE_KEYWORDS,
-  matchesGenre,
 };

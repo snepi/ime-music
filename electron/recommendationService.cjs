@@ -1,6 +1,7 @@
 const { logError } = require('./libraryStore.cjs');
 const { resolveChartCountry, DEFAULT_CHART_COUNTRY } = require('./chartCountries.cjs');
 const { searchArtistTracks } = require('./itunesProvider.cjs');
+const { normalizeKey } = require('./trackMatch.cjs');
 
 const DEEZER = 'https://api.deezer.com';
 /** Visible recommendations rotate at least every 8 hours */
@@ -33,59 +34,6 @@ const KEEP_RATIO = 0.3;
 let cache = null;
 /** Separate cache so opening «Чарт» does not wipe taste-based recommendations */
 let chartCache = null;
-
-function normalizeKey(artist, title) {
-  const translitRu = (s) =>
-    String(s || '')
-      .replace(/ё/g, 'е')
-      .replace(/а/g, 'a')
-      .replace(/б/g, 'b')
-      .replace(/в/g, 'v')
-      .replace(/г/g, 'g')
-      .replace(/д/g, 'd')
-      .replace(/е/g, 'e')
-      .replace(/ж/g, 'zh')
-      .replace(/з/g, 'z')
-      .replace(/и/g, 'i')
-      .replace(/й/g, 'y')
-      .replace(/к/g, 'k')
-      .replace(/л/g, 'l')
-      .replace(/м/g, 'm')
-      .replace(/н/g, 'n')
-      .replace(/о/g, 'o')
-      .replace(/п/g, 'p')
-      .replace(/р/g, 'r')
-      .replace(/с/g, 's')
-      .replace(/т/g, 't')
-      .replace(/у/g, 'u')
-      .replace(/ф/g, 'f')
-      .replace(/х/g, 'h')
-      .replace(/ц/g, 'ts')
-      .replace(/ч/g, 'ch')
-      .replace(/ш/g, 'sh')
-      .replace(/щ/g, 'sch')
-      .replace(/ъ/g, '')
-      .replace(/ы/g, 'y')
-      .replace(/ь/g, '')
-      .replace(/э/g, 'e')
-      .replace(/ю/g, 'yu')
-      .replace(/я/g, 'ya');
-
-  const normalize = (s) =>
-    translitRu(String(s || ''))
-      .toLowerCase()
-      // drop feat/ft/with blocks in parentheses
-      .replace(/\([^)]*(feat|ft|with)[^)]*\)/gi, ' ')
-      // drop common version markers
-      .replace(/\b(remix|live|radio edit|radio|extended|acoustic|instrumental|remaster|edit|version)\b/gi, ' ')
-      // strip "feat/ft/with ..." from title end
-      .replace(/\b(feat|ft|with)\b.*$/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/[^\p{L}\p{N}\s]/gu, '');
-
-  return `${normalize(artist)}::${normalize(title)}`;
-}
 
 function artistKey(name) {
   return String(name || '')
@@ -870,5 +818,6 @@ module.exports = {
   clearRecommendationsCache,
   pickSeedArtists,
   pickWishlistSeedArtists,
+  normalizeKey,
   ROTATION_MS,
 };

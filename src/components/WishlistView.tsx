@@ -8,9 +8,10 @@ import { ArtistLink } from './ArtistLink';
 import { getDiscovery, platformSearchUrls } from '../utils/discovery';
 import { filterSongsByQuery } from '../utils/smartSearch';
 import { useI18n } from '../i18n';
+import { buildOwnedTrackMap, trackMatchKey } from '../utils/trackMatch';
 
 export function WishlistView() {
-  const { state, dispatch, togglePreview } = usePlayer();
+  const { state, dispatch, togglePreview, playSong } = usePlayer();
   const { showToast } = useToast();
   const { t } = useI18n();
   const [search, setSearch] = useState('');
@@ -18,6 +19,7 @@ export function WishlistView() {
   const [downloadingAll, setDownloadingAll] = useState(false);
   const discovery = getDiscovery(state.settings);
   const items = discovery.wishlist;
+  const ownedMap = useMemo(() => buildOwnedTrackMap(state.songs), [state.songs]);
 
   const filteredItems = useMemo(() => {
     if (!search.trim()) return items;
@@ -165,26 +167,46 @@ export function WishlistView() {
           {filteredItems.map((item) => {
             const active = state.previewItem?.id === item.id;
             const playing = active && state.previewPlaying;
+            const local = ownedMap.get(trackMatchKey(item.artist, item.title));
+            const localPlaying = Boolean(local && state.currentSongId === local.id && state.isPlaying);
             const links = platformSearchUrls(`${item.title} ${item.artist}`);
             return (
-              <li key={item.id} className={`wishlist-row${active ? ' is-active' : ''}`}>
+              <li
+                key={item.id}
+                className={`wishlist-row${active || localPlaying ? ' is-active' : ''}${local ? ' has-local' : ''}`}
+              >
                 <button
                   type="button"
                   className="wishlist-play"
-                  onClick={() => void togglePreview(item)}
-                  aria-label={playing ? t('player.pause') : t('rec.listenDemo')}
+                  onClick={() => {
+                    if (local) {
+                      playSong(local.id);
+                      return;
+                    }
+                    void togglePreview(item);
+                  }}
+                  aria-label={
+                    local
+                      ? t('rec.playLocal')
+                      : playing
+                        ? t('player.pause')
+                        : t('rec.listenDemo')
+                  }
                 >
                   {item.coverUrl ? (
-                    <img src={item.coverUrl} alt="" />
+                    <img src={item.coverUrl} alt="" loading="lazy" decoding="async" />
                   ) : (
                     <Icon name="disc" size={22} />
                   )}
                   <span className="wishlist-play-icon">
-                    <Icon name={playing ? 'pause' : 'play'} size={16} />
+                    <Icon name={playing || localPlaying ? 'pause' : 'play'} size={16} />
                   </span>
                 </button>
                 <div className="wishlist-meta">
-                  <div className="wishlist-title">{item.title}</div>
+                  <div className="wishlist-title">
+                    {item.title}
+                    {local ? <span className="owned-badge">{t('rec.inLibraryShort')}</span> : null}
+                  </div>
                   <ArtistLink artist={item.artist} className="wishlist-artist" />
                   <div className="wishlist-links">
                     {links.map((link) => (
@@ -204,16 +226,27 @@ export function WishlistView() {
                   </div>
                 </div>
                 <div className="wishlist-actions">
-                  <Button
-                    variant="secondary"
-                    className="wishlist-download-btn"
-                    onClick={() => void downloadOne(item)}
-                    disabled={downloadingAll || downloadingId === item.id}
-                    title={t('wish.download')}
-                  >
-                    <Icon name="import" size={16} />
-                    {downloadingId === item.id ? t('sync.starting') : t('wish.download')}
-                  </Button>
+                  {local ? (
+                    <Button
+                      variant="secondary"
+                      onClick={() => playSong(local.id)}
+                      title={t('rec.playLocal')}
+                    >
+                      <Icon name="play" size={16} />
+                      {t('rec.playLocal')}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      className="wishlist-download-btn"
+                      onClick={() => void downloadOne(item)}
+                      disabled={downloadingAll || downloadingId === item.id}
+                      title={t('wish.download')}
+                    >
+                      <Icon name="import" size={16} />
+                      {downloadingId === item.id ? t('sync.starting') : t('wish.download')}
+                    </Button>
+                  )}
                   <Button variant="ghost" onClick={() => void remove(item.id)} title={t('wish.remove')}>
                     <Icon name="delete" size={16} />
                   </Button>

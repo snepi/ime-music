@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePlayer } from '../store/playerStore';
 import { getCoverSrc } from '../utils/media';
 import { Icon } from './ui/Icon';
@@ -6,6 +6,7 @@ import { Button } from './ui/Button';
 import { Spinner } from './ui/Spinner';
 import { HomeDiscoverySearch } from './HomeDiscoverySearch';
 import { HomeWavesCard } from './HomeWavesCard';
+import { HomeSmartPlaylists } from './HomeSmartPlaylists';
 import { ArtistLink } from './ArtistLink';
 import { useOpenArtist } from '../hooks/useOpenArtist';
 import { getDiscovery } from '../utils/discovery';
@@ -13,6 +14,7 @@ import { useToast } from './ui/Toast';
 import type { HomeFeed, LibraryGenreItem, RecommendationItem, Song } from '../types';
 import { useI18n } from '../i18n';
 import type { MessageKey } from '../i18n/messages';
+import { buildOwnedTrackMap, trackMatchKey } from '../utils/trackMatch';
 
 const KNOWN_GENRE_KEYS = new Set([
   'rock',
@@ -112,6 +114,7 @@ export function HomeView() {
   const [mixBusy, setMixBusy] = useState(false);
   const openArtist = useOpenArtist();
   const discovery = getDiscovery(state.settings);
+  const ownedMap = useMemo(() => buildOwnedTrackMap(state.songs), [state.songs]);
 
   const previewActive = Boolean(state.previewItem);
   const isPlaying = previewActive ? state.previewPlaying : state.isPlaying;
@@ -251,26 +254,34 @@ export function HomeView() {
             {demos.map((item) => {
               const active = state.previewItem?.id === item.id;
               const playing = active && state.previewPlaying;
+              const local = ownedMap.get(trackMatchKey(item.artist, item.title));
               return (
                 <li key={item.id}>
                   <button
                     type="button"
-                    className={`home-card home-card-demo${active ? ' is-active' : ''}${playing ? ' is-playing' : ''}`}
+                    className={`home-card home-card-demo${active ? ' is-active' : ''}${playing ? ' is-playing' : ''}${local ? ' has-local' : ''}`}
                     onClick={() => {
+                      if (local) {
+                        playOrToggle(local.id);
+                        return;
+                      }
                       if (state.isPlaying) pause();
                       void togglePreview(item);
                     }}
                     aria-label={
-                      playing
-                        ? `${t('player.pause')}: ${item.title}`
-                        : `${t('rec.demo')}: ${item.title}`
+                      local
+                        ? `${t('rec.playLocal')}: ${item.title}`
+                        : playing
+                          ? `${t('player.pause')}: ${item.title}`
+                          : `${t('rec.demo')}: ${item.title}`
                     }
                   >
                     <div className="home-card-cover">
-                      {item.coverUrl ? <img src={item.coverUrl} alt="" /> : <Icon name="disc" size={22} />}
+                      {item.coverUrl ? <img src={item.coverUrl} alt="" loading="lazy" decoding="async" /> : <Icon name="disc" size={22} />}
                       <span className="home-card-play" aria-hidden>
-                        <Icon name={playing ? 'pause' : 'play'} size={14} />
+                        <Icon name={playing || (local && currentSongId === local.id && isPlaying) ? 'pause' : 'play'} size={14} />
                       </span>
+                      {local ? <span className="home-card-owned">{t('rec.inLibraryShort')}</span> : null}
                     </div>
                     <div className="home-card-title">{item.title}</div>
                     <div className="home-card-artist">
@@ -343,6 +354,8 @@ export function HomeView() {
         empty={t('home.similarEmpty')}
         hideWhenEmpty
       />
+
+      <HomeSmartPlaylists />
 
       {favorites.length > 0 ? (
         <section className="home-section">

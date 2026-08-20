@@ -94,6 +94,8 @@ export function EditMetadataModal({ songId, open, onClose, onSaved }: Props) {
   const [removeCover, setRemoveCover] = useState(false);
   const [libraryOnly, setLibraryOnly] = useState(false);
   const [discardConfirm, setDiscardConfirm] = useState(false);
+  const [lyrics, setLyrics] = useState('');
+  const [initialLyrics, setInitialLyrics] = useState('');
 
   useEffect(() => {
     if (!open || !songId) return;
@@ -104,10 +106,12 @@ export function EditMetadataModal({ songId, open, onClose, onSaved }: Props) {
     setRemoveCover(false);
     setLibraryOnly(false);
     setDiscardConfirm(false);
+    setLyrics('');
+    setInitialLyrics('');
 
     void window.imeMusic
       .getTrackDetails(songId)
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled) return;
         setDetails(data);
         const nextForm = songToForm(data.song);
@@ -115,6 +119,18 @@ export function EditMetadataModal({ songId, open, onClose, onSaved }: Props) {
         setInitialForm(nextForm);
         setCoverPreview(getCoverSrc(data.song));
         setLibraryOnly(!data.writeToFileSupported);
+        try {
+          const lyr = await window.imeMusic.getLyrics?.(songId);
+          if (cancelled) return;
+          const text = lyr?.text || (lyr?.lines || []).map((l) => l.text).join('\n') || '';
+          setLyrics(text);
+          setInitialLyrics(text);
+        } catch {
+          if (!cancelled) {
+            setLyrics('');
+            setInitialLyrics('');
+          }
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -136,8 +152,9 @@ export function EditMetadataModal({ songId, open, onClose, onSaved }: Props) {
   const dirty = useMemo(() => {
     if (!form || !initialForm) return false;
     if (coverSourcePath || removeCover) return true;
+    if (lyrics !== initialLyrics) return true;
     return (Object.keys(form) as (keyof FormState)[]).some((k) => form[k] !== initialForm[k]);
-  }, [form, initialForm, coverSourcePath, removeCover]);
+  }, [form, initialForm, coverSourcePath, removeCover, lyrics, initialLyrics]);
 
   const updateField = (key: keyof FormState, value: string) => {
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -183,6 +200,9 @@ export function EditMetadataModal({ songId, open, onClose, onSaved }: Props) {
         libraryOnly,
       };
       const result = await window.imeMusic.saveTrackMetadata(songId, payload);
+      if (lyrics !== initialLyrics && window.imeMusic.saveLyrics) {
+        await window.imeMusic.saveLyrics(songId, lyrics);
+      }
       onSaved(result.song);
       if (removeCover) showToast(t('meta.coverRemoved'), 'success');
       else if (coverSourcePath) showToast(t('meta.coverSaved'), 'success');
@@ -372,6 +392,43 @@ export function EditMetadataModal({ songId, open, onClose, onSaved }: Props) {
                   rows={3}
                   value={form.comment}
                   onChange={(e) => updateField('comment', e.target.value)}
+                />
+              </div>
+              <div className="meta-field meta-field-wide">
+                <div className="meta-lyrics-head">
+                  <label className="meta-label" htmlFor="meta-lyrics">
+                    {t('meta.lyrics')}
+                  </label>
+                  <div className="meta-lyrics-actions">
+                    <Button
+                      variant="ghost"
+                      disabled={saving}
+                      onClick={() => {
+                        void window.imeMusic.pickLyricsFile?.().then((text) => {
+                          if (text != null) setLyrics(text);
+                        });
+                      }}
+                    >
+                      <Icon name="folder" size={14} />
+                      {t('meta.lyricsFromFile')}
+                    </Button>
+                    {lyrics ? (
+                      <Button variant="ghost" disabled={saving} onClick={() => setLyrics('')}>
+                        {t('meta.lyricsClear')}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                <p className="field-hint" style={{ marginBottom: 8 }}>
+                  {t('meta.lyricsHint')}
+                </p>
+                <textarea
+                  id="meta-lyrics"
+                  className="field-input field-textarea meta-lyrics-area"
+                  rows={8}
+                  value={lyrics}
+                  onChange={(e) => setLyrics(e.target.value)}
+                  placeholder={t('meta.lyricsPh')}
                 />
               </div>
             </section>

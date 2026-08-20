@@ -27,7 +27,7 @@ import { useI18n } from '../i18n';
 import { formatTrackCount, playlistDisplayName } from '../i18n/messages';
 
 const SONG_ROW_HEIGHT = 52;
-const VIRTUALIZE_THRESHOLD = 80;
+const VIRTUALIZE_THRESHOLD = 40;
 
 function useViewMeta(view: ViewType, playlistName?: string) {
   const { t } = useI18n();

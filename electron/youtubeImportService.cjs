@@ -228,31 +228,102 @@ function isSensitiveSearchTerm(text) {
 function normalizeForMatch(text) {
   return String(text || '')
     .toLowerCase()
+    .replace(/ё/g, 'е')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function scoreSearchResult(resultTitle, { title, artist }) {
+function matchTokens(text) {
+  return normalizeForMatch(text)
+    .split(' ')
+    .filter((t) => t.length >= 2)
+    .filter((t) => !['the', 'a', 'an', 'feat', 'ft', 'vs', 'and', 'и'].includes(t));
+}
+
+function tokenCoverage(haystack, needleTokens) {
+  if (!needleTokens.length) return 1;
+  const hit = needleTokens.filter((tok) => haystack.includes(tok)).length;
+  return hit / needleTokens.length;
+}
+
+/**
+ * Rank a YouTube search hit for the requested track.
+ * Higher is better; below ~35 is treated as unreliable.
+ */
+function scoreSearchResult(result, { title, artist }) {
+  const resultTitle = typeof result === 'string' ? result : result?.title || '';
+  const channel = normalizeForMatch(
+    (typeof result === 'object' && (result.channel || result.uploader)) || '',
+  );
   const rt = normalizeForMatch(resultTitle);
   const t = normalizeForMatch(title);
   const a = normalizeForMatch(artist);
-  if (!t || !rt.includes(t)) return 0;
+  const titleTokens = matchTokens(title);
+  const artistTokens = matchTokens(artist);
 
-  let score = 40;
-  if (a && rt.includes(a)) {
-    score += 50;
-  } else if (a) {
-    const compact = a.replace(/\s+/g, '');
-    const rtCompact = rt.replace(/\s+/g, '');
-    const stem = compact.slice(0, Math.min(8, compact.length));
-    if (stem.length >= 5 && rtCompact.includes(stem)) {
-      score += 35;
-    } else if (!isSensitiveSearchTerm(artist)) {
-      score = Math.min(score, 42);
+  if (!t && !a) return -999;
+  if (!rt) return -999;
+
+  const titleCov = tokenCoverage(rt, titleTokens);
+  // Title barely present → almost certainly wrong track
+  if (titleTokens.length >= 2 && titleCov < 0.55) return -120;
+  if (titleTokens.length === 1 && titleCov < 1) return -80;
+
+  let score = 15 + titleCov * 45;
+  if (t && rt.includes(t)) score += 28;
+
+  // Artist must show up in title or channel when we know it
+  if (a) {
+    const artistInTitle = rt.includes(a) || tokenCoverage(rt, artistTokens) >= 0.6;
+    const artistInChannel = channel.includes(a) || tokenCoverage(channel, artistTokens) >= 0.6;
+    if (artistInTitle || artistInChannel) {
+      score += artistInTitle && artistInChannel ? 50 : 38;
+    } else if (artistTokens.length) {
+      const soft = tokenCoverage(`${rt} ${channel}`, artistTokens);
+      if (soft >= 0.4) score += 12;
+      else score -= 55; // different artist → strong penalty
     }
   }
-  if (/\bofficial\b|\baudio\b|\blive\b|\bpunk\b/i.test(resultTitle)) score += 5;
+
+  // Prefer official / topic / audio uploads
+  if (/\btopic\b|vevo|official\s+artist/i.test(channel)) score += 22;
+  if (/\bofficial\s+audio\b/i.test(resultTitle)) score += 28;
+  if (/\bofficial\s+(music\s+)?video\b/i.test(resultTitle)) score += 12;
+  if (/\b(audio|lyrics?)\b/i.test(resultTitle)) score += 8;
+
+  const wantRemix = /\bremix\b/i.test(title);
+  const wantLive = /\blive\b/i.test(title);
+  const wantCover = /\bcover\b/i.test(title);
+  const wantKaraoke = /\bkaraoke\b/i.test(title);
+
+  const penalties = [
+    [/\bkaraoke\b/i, 55, wantKaraoke],
+    [/\bnightcore\b/i, 50, false],
+    [/\b(slowed|reverb|sped\s*up|speed\s*up|speedup)\b/i, 45, false],
+    [/\b(8d\s*audio|bass\s*boosted|earrape)\b/i, 40, false],
+    [/\breaction\b/i, 55, false],
+    [/\b(fan\s*made|fanmade|ai\s*cover)\b/i, 40, false],
+    [/\bcover\b/i, 38, wantCover],
+    [/\bremix\b/i, 30, wantRemix],
+    [/\blive\s*(at|from|in|performance|session|concert)\b/i, 25, wantLive],
+    [/\b(1\s*hour|10\s*hours|full\s*album|\bmix\b|mashup|medley)\b/i, 45, false],
+    [/\b(tutorial|lesson|how\s*to|guitar\s*tab)\b/i, 50, false],
+  ];
+  for (const [re, pen, allowed] of penalties) {
+    if (!allowed && re.test(resultTitle)) score -= pen;
+  }
+
+  const dur = Number(typeof result === 'object' ? result.duration : 0) || 0;
+  if (dur > 0) {
+    if (dur >= 80 && dur <= 540) score += 16;
+    else if (dur < 40) score -= 35;
+    else if (dur > 900) score -= 45;
+    else if (dur > 600) score -= 20;
+  }
+
   return score;
 }
 
@@ -491,7 +562,7 @@ function searchYouTubeVideosAsync(ytDlpBin, query, { signal, proxy, limit = 8 } 
     '--extractor-args',
     'youtube:player_client=android,web',
     '--print',
-    '%(id)s|%(title)s',
+    '%(id)s||%(title)s||%(duration)s||%(channel)s||%(uploader)s',
     '--socket-timeout',
     '30',
     '--retries',
@@ -555,12 +626,20 @@ function searchYouTubeVideosAsync(ytDlpBin, query, { signal, proxy, limit = 8 } 
       for (const line of stdout.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        const sep = trimmed.indexOf('|');
-        if (sep === -1) continue;
-        const id = trimmed.slice(0, sep).trim();
-        const title = trimmed.slice(sep + 1).trim();
+        const parts = trimmed.split('||');
+        const id = (parts[0] || '').trim();
+        const title = (parts[1] || '').trim();
+        const duration = Number(parts[2]) || 0;
+        const channel = (parts[3] || parts[4] || '').trim();
+        const uploader = (parts[4] || '').trim();
         if (id && /^[\w-]{6,}$/.test(id)) {
-          results.push({ id, title: title || id });
+          results.push({
+            id,
+            title: title || id,
+            duration,
+            channel: channel || uploader,
+            uploader,
+          });
         }
       }
 
@@ -603,71 +682,119 @@ async function searchFirstVideoIdWithRetry(ytDlpBin, query, options, attempts = 
   throw lastError || Object.assign(new Error('Не удалось найти видео на YouTube'), { code: 'YTDLP_NO_SEARCH' });
 }
 
-async function searchSensitiveArtistVideo(ytDlpBin, title, _artist, options) {
+async function searchSensitiveArtistVideo(ytDlpBin, title, artist, options) {
   const t = String(title || '').trim();
   if (!t) return null;
 
   const fallbackQueries = [`${t} official audio`, `${t} punk`, `${t} official`, t];
+  let best = null;
   for (const query of fallbackQueries) {
     try {
-      const ids = await searchVideoIdsAsync(ytDlpBin, query, { ...options, limit: 10 });
-      if (ids.length >= 3) return ids[2];
-      if (ids.length > 0) return ids[0];
+      const results = await searchYouTubeVideosAsync(ytDlpBin, query, { ...options, limit: 10 });
+      for (const row of results) {
+        const score = scoreSearchResult(row, { title, artist });
+        if (!best || score > best.score) best = { id: row.id, score, title: row.title };
+      }
+      if (best && best.score >= 70) return best.id;
     } catch {
       /* try next query */
     }
   }
 
-  return null;
+  return best && best.score >= 30 ? best.id : null;
 }
 
 async function resolveSearchVideoAsync(ytDlpBin, title, artist, { signal, proxy } = {}) {
-  const queries = buildSearchQueries(title, artist);
+  const baseQueries = buildSearchQueries(title, artist);
+  const extra = [];
+  const t = String(title || '').trim();
+  const a = String(artist || '').trim();
+  if (a && t) {
+    extra.push(`${a} - ${t} official audio`, `${a} ${t} official audio`, `"${a}" "${t}"`);
+  } else if (t) {
+    extra.push(`${t} official audio`);
+  }
+  const queries = [...new Set([...extra, ...baseQueries].filter(Boolean))];
   const hasProxy = Boolean(String(proxy || '').trim());
   const sensitive = isSensitiveSearchTerm(artist);
   let lastError = null;
+  let best = null;
 
-  if (!sensitive) {
-    for (const query of queries) {
-      if (signal?.aborted) {
-        throw Object.assign(new Error('Поиск отменён'), { code: 'YTDLP_ABORTED' });
-      }
-      try {
-        const videoId = await searchFirstVideoIdWithRetry(ytDlpBin, query, { signal, proxy });
-        if (videoId) return videoId;
-      } catch (err) {
-        lastError = err;
+  const considerResults = (results, query) => {
+    for (const row of results) {
+      const score = scoreSearchResult(row, { title, artist });
+      if (!best || score > best.score) {
+        best = {
+          id: row.id,
+          score,
+          title: row.title,
+          channel: row.channel,
+          query,
+        };
       }
     }
-  } else {
-    for (const query of queries) {
-      if (signal?.aborted) {
-        throw Object.assign(new Error('Поиск отменён'), { code: 'YTDLP_ABORTED' });
-      }
-      try {
-        const videoId = await searchFirstVideoIdWithRetry(ytDlpBin, query, { signal, proxy });
-        if (videoId) return videoId;
-      } catch {
-        /* artist name blocked — try next query without artist */
-      }
-    }
+  };
 
+  for (const query of queries) {
+    if (signal?.aborted) {
+      throw Object.assign(new Error('Поиск отменён'), { code: 'YTDLP_ABORTED' });
+    }
+    try {
+      const results = await searchYouTubeVideosAsync(ytDlpBin, query, {
+        signal,
+        proxy,
+        limit: 10,
+      });
+      considerResults(results, query);
+      // Strong match — no need to try weaker queries
+      if (best && best.score >= 95) break;
+    } catch (err) {
+      lastError = err;
+      if (err?.code === 'YTDLP_ABORTED') throw err;
+    }
+  }
+
+  if (sensitive && (!best || best.score < 50)) {
     try {
       const picked = await searchSensitiveArtistVideo(ytDlpBin, title, artist, { signal, proxy });
-      if (picked) return picked;
+      if (picked) {
+        // Keep scored best if better; otherwise use sensitive fallback id
+        if (!best || best.score < 50) return picked;
+      }
     } catch (err) {
       lastError = err;
     }
   }
 
+  const minScore = a ? 40 : 30;
+  if (best && best.score >= minScore) {
+    logError('youtube-import', 'Search pick', {
+      title,
+      artist,
+      pickedId: best.id,
+      pickedTitle: best.title,
+      score: best.score,
+      query: best.query,
+    });
+    return best.id;
+  }
+
   let message =
     lastError?.message ||
-    parseYtDlpError('', '', { phase: 'search', hasProxy });
+    'Не удалось уверенно найти нужный трек на YouTube (похожие названия дают чужие видео).';
+  message +=
+    ' Лучше вставьте прямую ссылку через «Добавить с YouTube», либо уточните название/исполнителя.';
   if (sensitive) {
     message +=
-      ' YouTube часто блокирует поиск по этому исполнителю — вставьте прямую ссылку через «Добавить с YouTube».';
+      ' YouTube часто блокирует поиск по этому исполнителю — прямая ссылка надёжнее.';
   }
-  throw Object.assign(new Error(message), { code: 'YTDLP_NO_SEARCH' });
+  if (best) {
+    message += ` Лучший кандидат набрал мало очков (${Math.round(best.score)}): «${best.title}».`;
+  }
+  throw Object.assign(new Error(message), {
+    code: 'YTDLP_NO_SEARCH',
+    hasProxy,
+  });
 }
 
 function normalizeImportPayload(raw, artistArg) {

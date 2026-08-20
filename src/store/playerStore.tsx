@@ -1549,44 +1549,122 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!window.imeMusic?.pushNowPlaying) return;
     const song = state.songs.find((s) => s.id === state.currentSongId);
+    const preview = state.previewItem;
+    const title = preview?.title || song?.title || null;
+    const artist = preview?.artist || song?.artist || null;
+    const coverUrl = preview?.coverUrl || (song ? getCoverSrc(song) : null);
+    const isPlaying = preview ? state.previewPlaying : state.isPlaying;
+    const currentTime = preview ? state.previewTime : state.currentTime;
+    const duration = preview?.duration || song?.duration || 0;
+
     const payload = {
-      title: song?.title || null,
-      artist: song?.artist || null,
-      coverUrl: song ? getCoverSrc(song) : null,
-      isPlaying: state.isPlaying,
-      currentTime: state.currentTime,
-      duration: song?.duration || 0,
+      title,
+      artist,
+      coverUrl,
+      isPlaying,
+      currentTime,
+      duration,
     };
     const immediate =
       !song ||
       state.currentSongId !== lastNowPlayingSongRef.current ||
-      state.isPlaying !== lastNowPlayingPlayingRef.current;
+      state.isPlaying !== lastNowPlayingPlayingRef.current ||
+      Boolean(preview) !== Boolean(lastNowPlayingSongRef.current && state.previewItem);
     lastNowPlayingSongRef.current = state.currentSongId;
     lastNowPlayingPlayingRef.current = state.isPlaying;
     if (immediate) {
       window.imeMusic.pushNowPlaying(payload);
-      return;
+    } else if (!nowPlayingTimerRef.current) {
+      nowPlayingTimerRef.current = setTimeout(() => {
+        nowPlayingTimerRef.current = null;
+        const s = stateRef.current;
+        const cur = s.songs.find((x) => x.id === s.currentSongId);
+        const prev = s.previewItem;
+        window.imeMusic.pushNowPlaying({
+          title: prev?.title || cur?.title || null,
+          artist: prev?.artist || cur?.artist || null,
+          coverUrl: prev?.coverUrl || (cur ? getCoverSrc(cur) : null),
+          isPlaying: prev ? s.previewPlaying : s.isPlaying,
+          currentTime: prev ? s.previewTime : s.currentTime,
+          duration: prev?.duration || cur?.duration || 0,
+        });
+      }, 400);
     }
-    if (nowPlayingTimerRef.current) return;
-    nowPlayingTimerRef.current = setTimeout(() => {
-      nowPlayingTimerRef.current = null;
-      const s = stateRef.current;
-      const cur = s.songs.find((x) => x.id === s.currentSongId);
-      window.imeMusic.pushNowPlaying({
-        title: cur?.title || null,
-        artist: cur?.artist || null,
-        coverUrl: cur ? getCoverSrc(cur) : null,
-        isPlaying: s.isPlaying,
-        currentTime: s.currentTime,
-        duration: cur?.duration || 0,
-      });
-    }, 400);
+
+    // Windows / OS media controls (SMTC via Chromium Media Session)
+    try {
+      if (typeof navigator !== 'undefined' && navigator.mediaSession) {
+        if (title) {
+          const artwork =
+            coverUrl && typeof coverUrl === 'string'
+              ? [{ src: coverUrl, sizes: '300x300', type: 'image/png' }]
+              : [];
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: title || 'IMe Music',
+            artist: artist || '',
+            album: preview?.album || song?.album || '',
+            artwork,
+          });
+        }
+        navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+        if (duration > 0 && Number.isFinite(currentTime)) {
+          try {
+            navigator.mediaSession.setPositionState({
+              duration: Math.max(duration, currentTime),
+              playbackRate: 1,
+              position: Math.min(Math.max(0, currentTime), Math.max(duration, currentTime)),
+            });
+          } catch {
+            /* some Electron builds reject position updates */
+          }
+        }
+      }
+    } catch {
+      /* mediaSession optional */
+    }
   }, [
     state.currentSongId,
     state.isPlaying,
     state.currentTime,
     state.songs,
+    state.previewItem,
+    state.previewPlaying,
+    state.previewTime,
   ]);
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.mediaSession) return undefined;
+    const ms = navigator.mediaSession;
+    const bind = (action: MediaSessionAction, handler: () => void) => {
+      try {
+        ms.setActionHandler(action, handler);
+      } catch {
+        /* unsupported action */
+      }
+    };
+    bind('play', () => {
+      if (stateRef.current.previewItem) {
+        if (!stateRef.current.previewPlaying) togglePlayPause();
+      } else if (!stateRef.current.isPlaying) togglePlayPause();
+    });
+    bind('pause', () => {
+      if (stateRef.current.previewItem) {
+        if (stateRef.current.previewPlaying) togglePlayPause();
+      } else if (stateRef.current.isPlaying) togglePlayPause();
+    });
+    bind('previoustrack', () => prevTrack());
+    bind('nexttrack', () => nextTrack());
+    bind('stop', () => pause());
+    return () => {
+      for (const action of ['play', 'pause', 'previoustrack', 'nexttrack', 'stop'] as MediaSessionAction[]) {
+        try {
+          ms.setActionHandler(action, null);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+  }, [nextTrack, pause, prevTrack, togglePlayPause]);
 
   useEffect(() => {
     if (state.sleepMode !== 'minutes' || !state.sleepEndsAt) return undefined;

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { RecommendationItem } from '../types';
 import { Icon } from './ui/Icon';
 import { Button } from './ui/Button';
@@ -6,6 +7,7 @@ import { usePlayer } from '../store/playerStore';
 import { useToast } from './ui/Toast';
 import { getDiscovery, toWishlistItem } from '../utils/discovery';
 import { useI18n } from '../i18n';
+import { buildOwnedTrackMap, trackMatchKey } from '../utils/trackMatch';
 
 interface Props {
   items: RecommendationItem[];
@@ -14,10 +16,11 @@ interface Props {
 }
 
 export function DemoTracksGrid({ items, showArtist = true, showRank = false }: Props) {
-  const { state, dispatch, togglePreview, pause } = usePlayer();
+  const { state, dispatch, togglePreview, pause, playSong } = usePlayer();
   const { showToast } = useToast();
   const { t } = useI18n();
   const discovery = getDiscovery(state.settings);
+  const ownedMap = useMemo(() => buildOwnedTrackMap(state.songs), [state.songs]);
 
   const addWishlist = async (item: RecommendationItem) => {
     if (discovery.wishlist.some((w) => w.id === item.id)) {
@@ -42,9 +45,14 @@ export function DemoTracksGrid({ items, showArtist = true, showRank = false }: P
         const active = state.previewItem?.id === item.id;
         const playing = active && state.previewPlaying;
         const inWish = discovery.wishlist.some((w) => w.id === item.id);
+        const local = ownedMap.get(trackMatchKey(item.artist, item.title));
+        const localPlaying = Boolean(local && state.currentSongId === local.id && state.isPlaying);
         const rankPosition = item.trackNumber != null ? item.trackNumber : index + 1;
         return (
-          <li key={item.id} className={`demo-track-card${active ? ' is-active' : ''}`}>
+          <li
+            key={item.id}
+            className={`demo-track-card${active || localPlaying ? ' is-active' : ''}${local ? ' has-local' : ''}`}
+          >
             {showRank ? (
               <span className="demo-track-rank" aria-hidden>
                 {rankPosition}
@@ -54,10 +62,20 @@ export function DemoTracksGrid({ items, showArtist = true, showRank = false }: P
               type="button"
               className="demo-track-play"
               onClick={() => {
+                if (local) {
+                  playSong(local.id);
+                  return;
+                }
                 if (state.isPlaying) pause();
                 void togglePreview(item);
               }}
-              aria-label={playing ? t('player.pause') : t('rec.listenDemo')}
+              aria-label={
+                local
+                  ? t('rec.playLocal')
+                  : playing
+                    ? t('player.pause')
+                    : t('rec.listenDemo')
+              }
             >
               {item.coverUrl ? (
                 <img src={item.coverUrl} alt="" loading="lazy" decoding="async" />
@@ -65,23 +83,37 @@ export function DemoTracksGrid({ items, showArtist = true, showRank = false }: P
                 <Icon name="disc" size={24} />
               )}
               <span className="demo-track-play-icon">
-                <Icon name={playing ? 'pause' : 'play'} size={18} />
+                <Icon name={playing || localPlaying ? 'pause' : 'play'} size={18} />
               </span>
             </button>
             <div className="demo-track-meta">
-              <div className="demo-track-title">{item.title}</div>
+              <div className="demo-track-title">
+                {item.title}
+                {local ? <span className="owned-badge">{t('rec.inLibraryShort')}</span> : null}
+              </div>
               {showArtist ? <ArtistLink artist={item.artist} className="demo-track-artist" /> : null}
               {item.album ? <div className="demo-track-album">{item.album}</div> : null}
+              {item.source ? (
+                <div className="demo-track-source">
+                  {item.source === 'itunes' ? 'Apple Music / iTunes' : 'Deezer'}
+                </div>
+              ) : null}
             </div>
             <div className="demo-track-actions">
-              <Button
-                variant="ghost"
-                title={inWish ? t('rec.inList') : t('rec.addWish')}
-                disabled={inWish}
-                onClick={() => void addWishlist(item)}
-              >
-                <Icon name={inWish ? 'check' : 'add'} size={16} />
-              </Button>
+              {local ? (
+                <Button variant="secondary" title={t('rec.playLocal')} onClick={() => playSong(local.id)}>
+                  <Icon name="play" size={16} />
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  title={inWish ? t('rec.inList') : t('rec.addWish')}
+                  disabled={inWish}
+                  onClick={() => void addWishlist(item)}
+                >
+                  <Icon name={inWish ? 'check' : 'add'} size={16} />
+                </Button>
+              )}
             </div>
           </li>
         );
