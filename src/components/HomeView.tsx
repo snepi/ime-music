@@ -34,6 +34,7 @@ function SongRail({
   isPlaying,
   onToggle,
   empty,
+  hideWhenEmpty,
 }: {
   title: string;
   songs: Song[];
@@ -41,9 +42,11 @@ function SongRail({
   isPlaying: boolean;
   onToggle: (id: string) => void;
   empty?: string;
+  hideWhenEmpty?: boolean;
 }) {
   const { t } = useI18n();
   if (!songs.length) {
+    if (hideWhenEmpty) return null;
     return (
       <section className="home-section">
         <h2 className="home-section-title">{title}</h2>
@@ -127,7 +130,6 @@ export function HomeView() {
   const playOrToggle = useCallback(
     (songId: string) => {
       if (state.previewItem) {
-        // Switching from demo preview to library track
         playSong(songId);
         return;
       }
@@ -205,8 +207,14 @@ export function HomeView() {
             {t('home.importFolder')}
           </Button>
         </div>
-        <HomeWavesCard />
-        <HomeDiscoverySearch />
+        <section className="home-zone">
+          <div className="home-zone-head">
+            <h2 className="home-zone-title">{t('home.discoverZone')}</h2>
+            <p className="home-zone-hint">{t('home.discoverZoneHint')}</p>
+          </div>
+          <HomeWavesCard />
+          <HomeDiscoverySearch compact />
+        </section>
       </div>
     );
   }
@@ -219,10 +227,11 @@ export function HomeView() {
   const continueCover = continueSong ? getCoverSrc(continueSong) : null;
   const continueActive = Boolean(continueSong && currentSongId === continueSong.id);
   const continuePlaying = continueActive && isPlaying;
+  const favorites = discovery.favoriteArtists.slice(0, 10);
 
   return (
     <div className="home-view">
-      <div className="view-header">
+      <div className="view-header home-header">
         <div className="view-info">
           <h1>{t('home.title')}</h1>
           <p>
@@ -232,66 +241,10 @@ export function HomeView() {
               : ''}
           </p>
         </div>
-        <Button variant="primary" disabled={mixBusy} onClick={() => void startDailyMix()}>
-          <Icon name="shuffle" size={16} />
-          {t('home.mix')}
-        </Button>
       </div>
 
-      <HomeWavesCard />
-
-      {genres.length > 0 ? (
-        <section className="home-section">
-          <h2 className="home-section-title">{t('home.genreMixes')}</h2>
-          <p className="home-section-hint">{t('home.genreMixesHint')}</p>
-          <ul className="home-genre-chip-grid">
-            {genres.map((g) => (
-              <li key={g.key}>
-                <button
-                  type="button"
-                  className="home-genre-chip"
-                  disabled={mixBusy}
-                  onClick={() => void startDailyMix(g.key)}
-                >
-                  <span className="home-genre-chip-name">{genreLabel(g)}</span>
-                  <span className="home-genre-chip-count">{g.count}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      <HomeDiscoverySearch />
-
-      {discovery.favoriteArtists.length > 0 ? (
-        <section className="home-section">
-          <h2 className="home-section-title">{t('artist.favorites')}</h2>
-          <ul className="artist-chip-grid">
-            {discovery.favoriteArtists.slice(0, 12).map((artist) => (
-              <li key={artist.key}>
-                <button
-                  type="button"
-                  className="artist-chip"
-                  onClick={() => openArtist(artist.name, artist.deezerId)}
-                >
-                  {artist.pictureUrl ? (
-                    <img src={artist.pictureUrl} alt="" className="artist-chip-avatar" />
-                  ) : (
-                    <span className="artist-chip-avatar artist-chip-avatar-fallback">
-                      <Icon name="disc" size={18} />
-                    </span>
-                  )}
-                  <span className="artist-chip-name">{artist.name}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
       {continueSong ? (
-        <section className="home-continue">
+        <section className="home-continue" aria-label={t('home.continue')}>
           <div
             className={`home-continue-card${continueActive ? ' is-active' : ''}${continuePlaying ? ' is-playing' : ''}`}
           >
@@ -322,9 +275,7 @@ export function HomeView() {
                   {!continueActive && feed.continueTime > 5 ? (
                     <span> · с {formatTime(feed.continueTime)}</span>
                   ) : null}
-                  {continueActive ? (
-                    <span> · {formatTime(state.currentTime)}</span>
-                  ) : null}
+                  {continueActive ? <span> · {formatTime(state.currentTime)}</span> : null}
                 </div>
               </div>
             </button>
@@ -356,56 +307,140 @@ export function HomeView() {
         isPlaying={isPlaying}
         onToggle={playOrToggle}
         empty={t('home.similarEmpty')}
+        hideWhenEmpty
       />
 
-      {demos.length > 0 ? (
-        <section className="home-section">
-          <div className="home-section-head">
-            <h2 className="home-section-title">{t('home.demos')}</h2>
-            <Button
-              variant="ghost"
-              onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'recommendations' } })}
-            >
-              {t('home.all')}
-            </Button>
-          </div>
-          <p className="home-section-hint">{t('home.demosHint')}</p>
-          <ul className="home-rail">
-            {demos.map((item) => {
-              const active = state.previewItem?.id === item.id;
-              const playing = active && state.previewPlaying;
-              return (
-                <li key={item.id}>
+      <section className="home-zone home-zone-listen">
+        <div className="home-zone-head">
+          <h2 className="home-zone-title">{t('home.listenZone')}</h2>
+          <p className="home-zone-hint">{t('home.listenZoneHint')}</p>
+        </div>
+
+        <div className="home-mix-panel">
+          <button
+            type="button"
+            className="home-mix-daily"
+            disabled={mixBusy}
+            onClick={() => void startDailyMix()}
+          >
+            <span className="home-mix-daily-icon" aria-hidden>
+              <Icon name="shuffle" size={18} />
+            </span>
+            <span className="home-mix-daily-text">
+              <span className="home-mix-daily-title">{t('home.mix')}</span>
+              <span className="home-mix-daily-sub">{t('home.mixStartedShort')}</span>
+            </span>
+          </button>
+
+          {genres.length > 0 ? (
+            <ul className="home-genre-chip-grid">
+              {genres.map((g) => (
+                <li key={g.key}>
                   <button
                     type="button"
-                    className={`home-card home-card-demo${active ? ' is-active' : ''}${playing ? ' is-playing' : ''}`}
-                    onClick={() => {
-                      if (state.isPlaying) pause();
-                      void togglePreview(item);
-                    }}
-                    aria-label={
-                      playing
-                        ? `${t('player.pause')}: ${item.title}`
-                        : `${t('rec.demo')}: ${item.title}`
-                    }
+                    className="home-genre-chip"
+                    disabled={mixBusy}
+                    onClick={() => void startDailyMix(g.key)}
                   >
-                    <div className="home-card-cover">
-                      {item.coverUrl ? <img src={item.coverUrl} alt="" /> : <Icon name="disc" size={22} />}
-                      <span className="home-card-play" aria-hidden>
-                        <Icon name={playing ? 'pause' : 'play'} size={14} />
-                      </span>
-                    </div>
-                    <div className="home-card-title">{item.title}</div>
-                    <div className="home-card-artist">
-                      <ArtistLink artist={item.artist} deezerId={item.deezerId} />
-                    </div>
+                    <span className="home-genre-chip-name">{genreLabel(g)}</span>
+                    <span className="home-genre-chip-count">{g.count}</span>
                   </button>
                 </li>
-              );
-            })}
+              ))}
+            </ul>
+          ) : null}
+        </div>
+
+        <HomeWavesCard />
+      </section>
+
+      {favorites.length > 0 ? (
+        <section className="home-section">
+          <h2 className="home-section-title">{t('artist.favorites')}</h2>
+          <ul className="artist-chip-grid home-artist-rail">
+            {favorites.map((artist) => (
+              <li key={artist.key}>
+                <button
+                  type="button"
+                  className="artist-chip"
+                  onClick={() => openArtist(artist.name, artist.deezerId)}
+                >
+                  {artist.pictureUrl ? (
+                    <img src={artist.pictureUrl} alt="" className="artist-chip-avatar" />
+                  ) : (
+                    <span className="artist-chip-avatar artist-chip-avatar-fallback">
+                      <Icon name="disc" size={18} />
+                    </span>
+                  )}
+                  <span className="artist-chip-name">{artist.name}</span>
+                </button>
+              </li>
+            ))}
           </ul>
         </section>
       ) : null}
+
+      <section className="home-zone home-zone-discover">
+        <div className="home-zone-head">
+          <h2 className="home-zone-title">{t('home.discoverZone')}</h2>
+          <p className="home-zone-hint">{t('home.discoverZoneHint')}</p>
+        </div>
+
+        <HomeDiscoverySearch compact />
+
+        {demos.length > 0 ? (
+          <div className="home-section home-section-nested">
+            <div className="home-section-head">
+              <h3 className="home-section-title">{t('home.demos')}</h3>
+              <Button
+                variant="ghost"
+                onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'recommendations' } })}
+              >
+                {t('home.all')}
+              </Button>
+            </div>
+            <p className="home-section-hint">{t('home.demosHint')}</p>
+            <ul className="home-rail">
+              {demos.map((item) => {
+                const active = state.previewItem?.id === item.id;
+                const playing = active && state.previewPlaying;
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      className={`home-card home-card-demo${active ? ' is-active' : ''}${playing ? ' is-playing' : ''}`}
+                      onClick={() => {
+                        if (state.isPlaying) pause();
+                        void togglePreview(item);
+                      }}
+                      aria-label={
+                        playing
+                          ? `${t('player.pause')}: ${item.title}`
+                          : `${t('rec.demo')}: ${item.title}`
+                      }
+                    >
+                      <div className="home-card-cover">
+                        {item.coverUrl ? (
+                          <img src={item.coverUrl} alt="" />
+                        ) : (
+                          <Icon name="disc" size={22} />
+                        )}
+                        <span className="home-card-play" aria-hidden>
+                          <Icon name={playing ? 'pause' : 'play'} size={14} />
+                        </span>
+                      </div>
+                      <div className="home-card-title">{item.title}</div>
+                      <div className="home-card-artist">
+                        <ArtistLink artist={item.artist} deezerId={item.deezerId} />
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }
