@@ -1433,6 +1433,49 @@ select:focus-visible {
   gap: 10px;
 }
 
+.home-genre-chip-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.home-genre-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.home-genre-chip:hover:not(:disabled) {
+  border-color: var(--accent, var(--border-strong, var(--border)));
+  background: var(--bg-hover, var(--bg-elevated));
+}
+
+.home-genre-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.home-genre-chip-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.home-genre-chip-count {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
 .artist-chip {
   display: flex;
   align-items: center;

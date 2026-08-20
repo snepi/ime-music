@@ -306,6 +306,36 @@ export interface LibraryMixResult {
   trackIds: string[];
   songs: Song[];
   generatedAt: number;
+  genre?: string | null;
+}
+
+export interface LibraryGenreItem {
+  key: string;
+  label: string;
+  count: number;
+}
+
+export interface LibraryBackupExportResult {
+  ok: boolean;
+  cancelled?: boolean;
+  path?: string;
+  liked?: number;
+  playlists?: number;
+  wishlist?: number;
+  error?: string;
+}
+
+export interface LibraryBackupImportResult {
+  ok: boolean;
+  cancelled?: boolean;
+  path?: string;
+  likedApplied?: number;
+  likedMissing?: number;
+  playlistsCreated?: number;
+  playlistTracksLinked?: number;
+  playlistTracksMissing?: number;
+  wishlist?: number;
+  error?: string;
 }
 
 export interface MetaSyncProgress {
@@ -609,7 +639,14 @@ export interface ImeMusicAPI {
   recordListen: (trackId: string) => Promise<Song | null>;
   getHistory: (limit?: number) => Promise<HistoryResult>;
   getHomeFeed: () => Promise<HomeFeed>;
-  getLibraryMix: (opts?: { size?: number }) => Promise<LibraryMixResult>;
+  getLibraryMix: (opts?: {
+    size?: number;
+    genre?: string | null;
+    excludeIds?: string[];
+  }) => Promise<LibraryMixResult>;
+  getLibraryGenres: () => Promise<{ ok: boolean; genres: LibraryGenreItem[] }>;
+  exportLibraryBackup: () => Promise<LibraryBackupExportResult>;
+  importLibraryBackup: () => Promise<LibraryBackupImportResult>;
   rebuildAutoPlaylists: () => Promise<{ ok: boolean; playlists: Playlist[] }>;
   startMetaSync: () => Promise<{ started: boolean }>;
   startMetaEnrich: () => Promise<{ started: boolean }>;

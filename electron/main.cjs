@@ -16,6 +16,7 @@ const metaEnrichService = require('./metaEnrichService.cjs');
 const libraryRepairService = require('./libraryRepairService.cjs');
 const artistService = require('./artistService.cjs');
 const wavesService = require('./wavesService.cjs');
+const libraryBackupService = require('./libraryBackupService.cjs');
 const updateService = require('./updateService.cjs');
 const scrobbleService = require('./scrobbleService.cjs');
 const { createSyncServer } = require('./syncServer.cjs');
@@ -693,8 +694,24 @@ wrapIpc('history:get', (_e, limit) => db.getListenHistory(limit));
 
 wrapIpc('home:feed', () => homeMixService.buildHomeFeed(db));
 wrapIpc('mix:library', (_e, opts = {}) =>
-  homeMixService.buildLibraryMix(db, { size: Math.min(80, Math.max(10, Number(opts?.size) || 40)) }),
+  homeMixService.buildLibraryMix(db, {
+    size: Math.min(80, Math.max(10, Number(opts?.size) || 40)),
+    genre: opts?.genre || null,
+    excludeIds: Array.isArray(opts?.excludeIds) ? opts.excludeIds : [],
+  }),
 );
+wrapIpc('mix:genres', () => ({
+  ok: true,
+  genres: homeMixService.listLibraryGenres(db, { limit: 14 }),
+}));
+
+wrapIpc('library:exportBackup', async () =>
+  libraryBackupService.exportLibraryBackup(db, mainWindow),
+);
+wrapIpc('library:importBackup', async () =>
+  libraryBackupService.importLibraryBackup(db, mainWindow),
+);
+
 wrapIpc('playlists:rebuildAuto', () => autoPlaylistService.rebuildAutoPlaylists(db));
 
 wrapIpc('meta:resyncStart', async () => {

@@ -84,10 +84,11 @@ function buildHomeFeed(db) {
 
 /**
  * Daily mix / radio pool from library.
+ * @param {{ size?: number, excludeIds?: string[], genre?: string|null }} [opts]
  */
-function buildLibraryMix(db, { size = 40, excludeIds = [] } = {}) {
+function buildLibraryMix(db, { size = 40, excludeIds = [], genre = null } = {}) {
   const songs = db.getAllTracks() || [];
-  if (!songs.length) return { trackIds: [], songs: [], generatedAt: Date.now() };
+  if (!songs.length) return { trackIds: [], songs: [], generatedAt: Date.now(), genre: genre || null };
 
   const exclude = new Set(excludeIds);
   const history = db.getListenHistory(120);
@@ -100,13 +101,22 @@ function buildLibraryMix(db, { size = 40, excludeIds = [] } = {}) {
     if (song) todayArtists.add(artistKey(song.artist));
   }
 
-  const scored = songs
-    .filter((s) => !exclude.has(s.id))
+  const genreKey = genre && genre !== 'all' ? String(genre) : null;
+  const pool = songs.filter((s) => {
+    if (exclude.has(s.id)) return false;
+    if (!genreKey) return true;
+    return matchesGenre(s, genreKey);
+  });
+
+  const usePool = pool.length >= Math.min(8, songs.length) ? pool : songs.filter((s) => !exclude.has(s.id));
+
+  const scored = usePool
     .map((s) => {
       let score = (s.playCount || 0) * 3;
       if (s.liked) score += 25;
       if (todayArtists.has(artistKey(s.artist))) score += 40;
       if (recentIds.has(s.id)) score -= 15;
+      if (genreKey && matchesGenre(s, genreKey)) score += 35;
       const last = s.lastPlayedAt || 0;
       const days = last ? (Date.now() - last) / DAY_MS : 90;
       if (days > 30) score += 12;
@@ -126,7 +136,7 @@ function buildLibraryMix(db, { size = 40, excludeIds = [] } = {}) {
     perArtist.set(ak, (perArtist.get(ak) || 0) + 1);
   }
 
-  if (out.length < Math.min(size, songs.length)) {
+  if (out.length < Math.min(size, usePool.length)) {
     const have = new Set(out.map((s) => s.id));
     for (const row of scored) {
       if (out.length >= size) break;
@@ -140,17 +150,92 @@ function buildLibraryMix(db, { size = 40, excludeIds = [] } = {}) {
     trackIds: out.map((s) => s.id),
     songs: out,
     generatedAt: Date.now(),
+    genre: genreKey,
   };
 }
 
-function pickNextRadioTrack(db, { recentIds = [] } = {}) {
-  const mix = buildLibraryMix(db, { size: 30, excludeIds: recentIds.slice(-12) });
+const GENRE_KEYWORDS = {
+  rock: [/rock/i, /рок/i, /alternative/i, /indie rock/i, /punk/i],
+  pop: [/pop/i, /поп/i, /synthpop/i, /dance pop/i],
+  rap: [/rap/i, /hip.?hop/i, /рэп/i, /реп/i, /trap/i],
+  electronic: [/electronic/i, /edm/i, /house/i, /techno/i, /electro/i, /электрон/i],
+  rnb: [/r&b/i, /\brnb\b/i, /soul/i, /neo.?soul/i],
+  metal: [/metal/i, /метал/i, /hardcore/i],
+  jazz: [/jazz/i, /джаз/i],
+  classical: [/classical/i, /classic/i, /classical/i, /класси/i, /orchestra/i],
+  indie: [/indie/i, /инди/i, /alternative/i],
+  dance: [/dance/i, /дэнс/i, /disco/i, /club/i],
+};
+
+function matchesGenre(song, genreKey) {
+  const blob = `${song.genre || ''} ${song.album || ''} ${song.title || ''}`.toLowerCase();
+  if (!blob.trim()) return false;
+  const patterns = GENRE_KEYWORDS[genreKey];
+  if (!patterns) {
+    const g = String(genreKey || '').toLowerCase();
+    return g && blob.includes(g);
+  }
+  return patterns.some((re) => re.test(blob));
+}
+
+/**
+ * Aggregate genres present in the local library for UI chips.
+ */
+function listLibraryGenres(db, { limit = 12 } = {}) {
+  const songs = db.getAllTracks() || [];
+  const counts = new Map();
+
+  const bump = (key, label) => {
+    const prev = counts.get(key) || { key, label, count: 0 };
+    prev.count += 1;
+    counts.set(key, prev);
+  };
+
+  for (const song of songs) {
+    const raw = String(song.genre || '').trim();
+    if (!raw) continue;
+    let matched = false;
+    for (const [key, patterns] of Object.entries(GENRE_KEYWORDS)) {
+      if (patterns.some((re) => re.test(raw))) {
+        bump(key, key);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      const label = raw.split(/[,/;|]/)[0].trim();
+      if (label.length >= 2) {
+        const key = label.toLowerCase();
+        bump(key, label);
+      }
+    }
+  }
+
+  // Also count keyword hits from title/album when genre tag empty
+  if (counts.size < 4) {
+    for (const song of songs) {
+      for (const [key, patterns] of Object.entries(GENRE_KEYWORDS)) {
+        if (matchesGenre(song, key)) bump(key, key);
+      }
+    }
+  }
+
+  return Array.from(counts.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+function pickNextRadioTrack(db, { recentIds = [], genre = null } = {}) {
+  const mix = buildLibraryMix(db, { size: 30, excludeIds: recentIds.slice(-12), genre });
   return mix.songs[0] || null;
 }
 
 module.exports = {
   buildHomeFeed,
   buildLibraryMix,
+  listLibraryGenres,
   pickNextRadioTrack,
   startOfLocalDay,
+  GENRE_KEYWORDS,
+  matchesGenre,
 };

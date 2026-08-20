@@ -42,6 +42,7 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
 
   useEffect(() => {
     setFfmpegPath(state.settings.ffmpegPath);
@@ -163,6 +164,57 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
     showToast(t('tools.autosUpdated', { count: res.playlists?.length || 0 }), 'success');
   };
 
+  const exportBackup = async () => {
+    setBackupBusy(true);
+    try {
+      const res = await window.imeMusic.exportLibraryBackup();
+      if (res?.cancelled) {
+        showToast(t('tools.backupCancelled'), 'info');
+      } else if (!res?.ok) {
+        showToast(res?.error || t('tools.backupFailed'), 'error');
+      } else {
+        showToast(
+          t('tools.backupExported', {
+            liked: res.liked || 0,
+            playlists: res.playlists || 0,
+            wishlist: res.wishlist || 0,
+          }),
+          'success',
+        );
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('tools.backupFailed'), 'error');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const importBackup = async () => {
+    setBackupBusy(true);
+    try {
+      const res = await window.imeMusic.importLibraryBackup();
+      if (res?.cancelled) {
+        showToast(t('tools.backupCancelled'), 'info');
+      } else if (!res?.ok) {
+        showToast(res?.error || t('tools.backupFailed'), 'error');
+      } else {
+        await refreshLibrary();
+        showToast(
+          t('tools.backupImported', {
+            liked: res.likedApplied || 0,
+            playlists: res.playlistsCreated || 0,
+            wishlist: res.wishlist || 0,
+          }),
+          'success',
+        );
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('tools.backupFailed'), 'error');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
   const checkUpdates = async () => {
     setUpdateBusy(true);
     setUpdateProgress(null);
@@ -240,6 +292,29 @@ export function ToolsPanel({ onOpenPhoneSync }: { onOpenPhoneSync?: () => void }
         {updateInfo?.updateAvailable && updateInfo.releaseNotes ? (
           <pre className="tools-update-notes">{updateInfo.releaseNotes.slice(0, 1200)}</pre>
         ) : null}
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ marginBottom: 8 }}>{t('tools.backup')}</h3>
+        <p className="field-hint" style={{ marginBottom: 12 }}>
+          {t('tools.backupHint')}
+        </p>
+        <div className="settings-inline-actions">
+          <Button
+            variant="secondary"
+            disabled={backupBusy}
+            onClick={() => void exportBackup()}
+          >
+            {t('tools.backupExport')}
+          </Button>
+          <Button
+            variant="primary"
+            disabled={backupBusy}
+            onClick={() => void importBackup()}
+          >
+            {t('tools.backupImport')}
+          </Button>
+        </div>
       </div>
 
       <div className="settings-section">

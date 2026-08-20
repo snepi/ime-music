@@ -261,7 +261,7 @@ interface PlayerContextValue {
   toggleShuffle: () => Promise<void>;
   cycleRepeat: () => Promise<void>;
   queueSimilarNext: () => Promise<number>;
-  startLibraryMix: () => Promise<number>;
+  startLibraryMix: (opts?: { genre?: string | null }) => Promise<number>;
   startImeWaves: (opts?: { force?: boolean }) => Promise<number>;
   stopImeWaves: () => void;
   setSleepTimer: (mode: SleepTimerMode, minutes?: number) => void;
@@ -326,6 +326,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const listenRecordedForRef = useRef<string | null>(null);
   const radioModeRef = useRef(false);
   const radioRecentRef = useRef<string[]>([]);
+  const radioGenreRef = useRef<string | null>(null);
   const wavesActiveRef = useRef(false);
   const wavesQueueRef = useRef<RecommendationItem[]>([]);
   const wavesIndexRef = useRef(0);
@@ -516,6 +517,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (songId: string, opts?: { fallbackIds?: string[]; fallbackIndex?: number; resumeTime?: number; autoPlay?: boolean }) => {
       if (!opts?.fallbackIds) {
         radioModeRef.current = false;
+        radioGenreRef.current = null;
       }
       // Switching to a local library track stops IMe Waves
       if (wavesActiveRef.current) {
@@ -657,6 +659,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const startImeWaves = useCallback(
     async (opts?: { force?: boolean }) => {
       radioModeRef.current = false;
+      radioGenreRef.current = null;
       await window.imeMusic.clearQueue?.();
       await refreshPlaybackQueue();
 
@@ -839,7 +842,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
       if (radioModeRef.current) {
         try {
-          const mix = await window.imeMusic.getLibraryMix({ size: 24 });
+          const mix = await window.imeMusic.getLibraryMix({
+            size: 24,
+            genre: radioGenreRef.current,
+            excludeIds: radioRecentRef.current.slice(-12),
+          });
           const recent = new Set(radioRecentRef.current);
           const nextSong = (mix.songs || []).find((song) => !recent.has(song.id));
           if (nextSong) {
@@ -1498,7 +1505,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return pick.length;
   }, [refreshPlaybackQueue]);
 
-  const startLibraryMix = useCallback(async () => {
+  const startLibraryMix = useCallback(async (opts?: { genre?: string | null }) => {
     if (wavesActiveRef.current) {
       wavesActiveRef.current = false;
       wavesQueueRef.current = [];
@@ -1506,9 +1513,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'SET_WAVES_ACTIVE', active: false });
       stopPreview();
     }
-    const mix = await window.imeMusic.getLibraryMix({ size: 40 });
+    const genre = opts?.genre || null;
+    const mix = await window.imeMusic.getLibraryMix({ size: 40, genre });
     if (!mix.trackIds.length) return 0;
     radioModeRef.current = true;
+    radioGenreRef.current = mix.genre || genre;
     radioRecentRef.current = mix.trackIds.slice(0, 8);
     await window.imeMusic.clearQueue();
     for (const id of mix.trackIds.slice(1, 10)) {

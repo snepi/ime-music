@@ -10,8 +10,22 @@ import { ArtistLink } from './ArtistLink';
 import { useOpenArtist } from '../hooks/useOpenArtist';
 import { getDiscovery } from '../utils/discovery';
 import { useToast } from './ui/Toast';
-import type { HomeFeed, RecommendationItem, Song } from '../types';
+import type { HomeFeed, LibraryGenreItem, RecommendationItem, Song } from '../types';
 import { useI18n } from '../i18n';
+import type { MessageKey } from '../i18n/messages';
+
+const KNOWN_GENRE_KEYS = new Set([
+  'rock',
+  'pop',
+  'rap',
+  'electronic',
+  'rnb',
+  'metal',
+  'jazz',
+  'classical',
+  'indie',
+  'dance',
+]);
 
 function SongRail({
   title,
@@ -90,6 +104,7 @@ export function HomeView() {
   const { t } = useI18n();
   const [feed, setFeed] = useState<HomeFeed | null>(null);
   const [demos, setDemos] = useState<RecommendationItem[]>([]);
+  const [genres, setGenres] = useState<LibraryGenreItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [mixBusy, setMixBusy] = useState(false);
   const openArtist = useOpenArtist();
@@ -98,6 +113,16 @@ export function HomeView() {
   const previewActive = Boolean(state.previewItem);
   const isPlaying = previewActive ? state.previewPlaying : state.isPlaying;
   const currentSongId = previewActive ? null : state.currentSongId;
+
+  const genreLabel = useCallback(
+    (item: LibraryGenreItem) => {
+      if (KNOWN_GENRE_KEYS.has(item.key)) {
+        return t(`genre.${item.key}` as MessageKey);
+      }
+      return item.label;
+    },
+    [t],
+  );
 
   const playOrToggle = useCallback(
     (songId: string) => {
@@ -121,6 +146,12 @@ export function HomeView() {
       const next = await window.imeMusic.getHomeFeed();
       setFeed(next);
       try {
+        const genreRes = await window.imeMusic.getLibraryGenres?.();
+        setGenres(genreRes?.genres || []);
+      } catch {
+        setGenres([]);
+      }
+      try {
         const recs = await window.imeMusic.getRecommendations({ mode: 'all', force: false });
         setDemos((recs.items || []).slice(0, 8));
       } catch {
@@ -137,11 +168,18 @@ export function HomeView() {
     void load();
   }, [load, state.songs.length]);
 
-  const startDailyMix = async () => {
+  const startDailyMix = async (genre?: string | null) => {
     setMixBusy(true);
     try {
-      const n = await startLibraryMix();
+      const n = await startLibraryMix(genre ? { genre } : undefined);
       if (!n) showToast(t('home.mixNotEnough'), 'info');
+      else if (genre)
+        showToast(
+          t('home.genreMixStarted', {
+            genre: genreLabel({ key: genre, label: genre, count: 0 }),
+          }),
+          'success',
+        );
       else showToast(t('home.mixStarted'), 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('home.mixFailed'), 'error');
@@ -201,6 +239,28 @@ export function HomeView() {
       </div>
 
       <HomeWavesCard />
+
+      {genres.length > 0 ? (
+        <section className="home-section">
+          <h2 className="home-section-title">{t('home.genreMixes')}</h2>
+          <p className="home-section-hint">{t('home.genreMixesHint')}</p>
+          <ul className="home-genre-chip-grid">
+            {genres.map((g) => (
+              <li key={g.key}>
+                <button
+                  type="button"
+                  className="home-genre-chip"
+                  disabled={mixBusy}
+                  onClick={() => void startDailyMix(g.key)}
+                >
+                  <span className="home-genre-chip-name">{genreLabel(g)}</span>
+                  <span className="home-genre-chip-count">{g.count}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <HomeDiscoverySearch />
 
