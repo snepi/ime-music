@@ -167,55 +167,42 @@ function findExistingDownload(destDir, videoId) {
   return findLooseDownload(destDir, videoId);
 }
 
-function buildSearchQueries(title, artist) {
-  const t = String(title || '').trim();
-  const a = String(artist || '').trim();
-  const sensitiveArtist = isSensitiveSearchTerm(a);
-  const queries = [];
-
-  if (a && t && !sensitiveArtist) {
-    queries.push(`${a} - ${t}`, `${a} ${t}`, `${t} ${a}`);
-  }
-
-  if (t) {
-    if (sensitiveArtist) {
-      queries.push(`${t} punk`, `${t} official audio`, `${t} official`, `${t} live`, t);
-    } else if (a) {
-      queries.push(`${t} ${a}`, t);
-    } else {
-      queries.push(t);
-    }
-  } else if (a && !sensitiveArtist) {
-    queries.push(a);
-  }
-
-  return [...new Set(queries.filter(Boolean))];
-}
-
-function buildWatchUrl(videoId) {
-  return `https://www.youtube.com/watch?v=${videoId}`;
-}
-
-function buildWishlistSearchQuery(title, artist) {
-  const t = String(title || '').trim();
-  const a = String(artist || '').trim();
-  if (!t && !a) return '';
-  if (!a) return t;
-  if (!t) return a;
-  return `${a} - ${t}`;
-}
-
-function validateSearchImport(title, artist) {
-  const queries = buildSearchQueries(title, artist);
-  if (queries.length === 0) {
-    return { ok: false, message: 'Укажите название и исполнителя' };
-  }
-  const label = buildWishlistSearchQuery(title, artist);
-  if (label.length > 240) {
-    return { ok: false, message: 'Слишком длинный запрос для поиска' };
-  }
-  return { ok: true, queries, label };
-}
+const TITLE_NOISE_WORDS = new Set([
+  'the',
+  'a',
+  'an',
+  'feat',
+  'ft',
+  'vs',
+  'and',
+  'и',
+  'official',
+  'audio',
+  'video',
+  'music',
+  'lyrics',
+  'lyric',
+  'mv',
+  'hd',
+  '4k',
+  'hq',
+  'visualizer',
+  'premiere',
+  'премьера',
+  'клип',
+  'клипа',
+  'клипе',
+  'песня',
+  'трек',
+  'track',
+  'song',
+  'full',
+  'version',
+  'remastered',
+  'remaster',
+  'topic',
+  'vevo',
+]);
 
 function isSensitiveSearchTerm(text) {
   const lower = String(text || '').toLowerCase();
@@ -236,11 +223,118 @@ function normalizeForMatch(text) {
     .trim();
 }
 
+/**
+ * Strip promo/meta junk from Deezer/YT-style titles so search+scoring
+ * look at the real song name (e.g. "ЁК" not "Дора — ЁК (Премьера клипа, 2025)").
+ */
+function stripTitleNoise(title) {
+  let s = String(title || '').trim();
+  if (!s) return '';
+
+  s = s
+    .replace(/\[[^\]]*]/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\{[^}]*\}/g, ' ');
+
+  s = s.replace(
+    /\b(official\s+(music\s+)?video|official\s+audio|lyrics?\s+video|music\s+video|visualizer|audio|lyrics?|hd|4k|hq|mv|remaster(ed)?|премьера(\s+клипа)?|клип|live|live\s+session)\b/gi,
+    ' ',
+  );
+  s = s.replace(/\b(19|20)\d{2}\b/g, ' ');
+  s = s.replace(/^[\s\-–—|:·•]+|[\s\-–—|:·•]+$/g, '').replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+function stripLeadingArtistFromTitle(title, artist) {
+  const t = String(title || '').trim();
+  const a = String(artist || '').trim();
+  if (!t || !a) return t;
+
+  const normT = normalizeForMatch(t);
+  const normA = normalizeForMatch(a);
+  if (!normA || !normT.startsWith(normA)) return t;
+
+  // Remove artist prefix from original using a loose separator match
+  const escaped = a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cleaned = t
+    .replace(new RegExp(`^${escaped}\\s*[\\-–—|:·•]+\\s*`, 'i'), '')
+    .replace(new RegExp(`^${escaped}\\s+`, 'i'), '')
+    .trim();
+  return cleaned || t;
+}
+
+function prepareSearchTerms(title, artist) {
+  const rawArtist = String(artist || '').trim();
+  const rawTitle = String(title || '').trim();
+  let cleanTitle = stripTitleNoise(rawTitle);
+  cleanTitle = stripLeadingArtistFromTitle(cleanTitle, rawArtist);
+  cleanTitle = stripTitleNoise(cleanTitle);
+  if (!cleanTitle) cleanTitle = stripTitleNoise(rawTitle) || rawTitle;
+  return {
+    title: cleanTitle || rawTitle,
+    artist: rawArtist,
+    rawTitle,
+    rawArtist,
+  };
+}
+
+function buildSearchQueries(title, artist) {
+  const prepared = prepareSearchTerms(title, artist);
+  const t = prepared.title;
+  const a = prepared.artist;
+  const sensitiveArtist = isSensitiveSearchTerm(a);
+  const queries = [];
+
+  if (a && t && !sensitiveArtist) {
+    queries.push(`${a} - ${t}`, `${a} ${t}`, `${t} ${a}`, `${a} ${t} official audio`);
+  }
+
+  if (t) {
+    if (sensitiveArtist) {
+      queries.push(`${t} punk`, `${t} official audio`, `${t} official`, `${t} live`, t);
+    } else if (a) {
+      queries.push(`${t} ${a}`, `${a} - ${t} topic`, t);
+    } else {
+      queries.push(t);
+    }
+  } else if (a && !sensitiveArtist) {
+    queries.push(a);
+  }
+
+  return [...new Set(queries.filter(Boolean))];
+}
+
+function buildWatchUrl(videoId) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+function buildWishlistSearchQuery(title, artist) {
+  const prepared = prepareSearchTerms(title, artist);
+  const t = prepared.title;
+  const a = prepared.artist;
+  if (!t && !a) return '';
+  if (!a) return t;
+  if (!t) return a;
+  return `${a} - ${t}`;
+}
+
+function validateSearchImport(title, artist) {
+  const queries = buildSearchQueries(title, artist);
+  if (queries.length === 0) {
+    return { ok: false, message: 'Укажите название и исполнителя' };
+  }
+  const label = buildWishlistSearchQuery(title, artist);
+  if (label.length > 240) {
+    return { ok: false, message: 'Слишком длинный запрос для поиска' };
+  }
+  return { ok: true, queries, label };
+}
+
 function matchTokens(text) {
   return normalizeForMatch(text)
     .split(' ')
     .filter((t) => t.length >= 2)
-    .filter((t) => !['the', 'a', 'an', 'feat', 'ft', 'vs', 'and', 'и'].includes(t));
+    .filter((t) => !TITLE_NOISE_WORDS.has(t) && !/^\d{4}$/.test(t));
 }
 
 function tokenCoverage(haystack, needleTokens) {
@@ -254,50 +348,63 @@ function tokenCoverage(haystack, needleTokens) {
  * Higher is better; below ~35 is treated as unreliable.
  */
 function scoreSearchResult(result, { title, artist }) {
+  const prepared = prepareSearchTerms(title, artist);
   const resultTitle = typeof result === 'string' ? result : result?.title || '';
   const channel = normalizeForMatch(
     (typeof result === 'object' && (result.channel || result.uploader)) || '',
   );
   const rt = normalizeForMatch(resultTitle);
-  const t = normalizeForMatch(title);
-  const a = normalizeForMatch(artist);
-  const titleTokens = matchTokens(title);
-  const artistTokens = matchTokens(artist);
+  const t = normalizeForMatch(prepared.title);
+  const a = normalizeForMatch(prepared.artist);
+  const titleTokens = matchTokens(prepared.title);
+  const artistTokens = matchTokens(prepared.artist);
+  const hay = `${rt} ${channel}`;
 
   if (!t && !a) return -999;
   if (!rt) return -999;
 
   const titleCov = tokenCoverage(rt, titleTokens);
-  // Title barely present → almost certainly wrong track
-  if (titleTokens.length >= 2 && titleCov < 0.55) return -120;
-  if (titleTokens.length === 1 && titleCov < 1) return -80;
+  const artistCov = tokenCoverage(hay, artistTokens);
+  const artistHit =
+    Boolean(a) &&
+    (rt.includes(a) ||
+      channel.includes(a) ||
+      artistCov >= 0.6 ||
+      (artistTokens.length && tokenCoverage(hay, artistTokens) >= 0.5));
 
-  let score = 15 + titleCov * 45;
-  if (t && rt.includes(t)) score += 28;
+  // Hard reject only when title is clearly missing AND artist also missing.
+  // Promo-junk titles used to force -120 even on the correct video.
+  if (titleTokens.length >= 2 && titleCov < 0.45 && !artistHit) return -100;
+  if (titleTokens.length === 1 && titleCov < 1 && !artistHit) return -70;
 
-  // Artist must show up in title or channel when we know it
+  let score = 18 + titleCov * 50;
+  if (titleTokens.length >= 2 && titleCov < 0.45 && artistHit) score -= 18;
+  if (t && (rt.includes(t) || hay.includes(t))) score += 30;
+  // Short titles (ЁК, Яд…): exact token in result is a strong signal
+  if (titleTokens.length === 1 && titleCov === 1) score += 22;
+
   if (a) {
     const artistInTitle = rt.includes(a) || tokenCoverage(rt, artistTokens) >= 0.6;
     const artistInChannel = channel.includes(a) || tokenCoverage(channel, artistTokens) >= 0.6;
     if (artistInTitle || artistInChannel) {
-      score += artistInTitle && artistInChannel ? 50 : 38;
+      score += artistInTitle && artistInChannel ? 52 : 40;
     } else if (artistTokens.length) {
-      const soft = tokenCoverage(`${rt} ${channel}`, artistTokens);
-      if (soft >= 0.4) score += 12;
-      else score -= 55; // different artist → strong penalty
+      const soft = tokenCoverage(hay, artistTokens);
+      if (soft >= 0.4) score += 14;
+      else score -= 40; // different artist → penalty (softer than before)
     }
   }
 
   // Prefer official / topic / audio uploads
-  if (/\btopic\b|vevo|official\s+artist/i.test(channel)) score += 22;
+  if (/\btopic\b|vevo|official\s+artist/i.test(channel)) score += 24;
   if (/\bofficial\s+audio\b/i.test(resultTitle)) score += 28;
-  if (/\bofficial\s+(music\s+)?video\b/i.test(resultTitle)) score += 12;
+  if (/\bofficial\s+(music\s+)?video\b/i.test(resultTitle)) score += 14;
   if (/\b(audio|lyrics?)\b/i.test(resultTitle)) score += 8;
 
-  const wantRemix = /\bremix\b/i.test(title);
-  const wantLive = /\blive\b/i.test(title);
-  const wantCover = /\bcover\b/i.test(title);
-  const wantKaraoke = /\bkaraoke\b/i.test(title);
+  const wantRemix = /\bremix\b/i.test(prepared.title) || /\bremix\b/i.test(prepared.rawTitle);
+  const wantLive = /\blive\b/i.test(prepared.title) || /\blive\b/i.test(prepared.rawTitle);
+  const wantCover = /\bcover\b/i.test(prepared.title) || /\bcover\b/i.test(prepared.rawTitle);
+  const wantKaraoke = /\bkaraoke\b/i.test(prepared.title) || /\bkaraoke\b/i.test(prepared.rawTitle);
 
   const penalties = [
     [/\bkaraoke\b/i, 55, wantKaraoke],
@@ -705,18 +812,24 @@ async function searchSensitiveArtistVideo(ytDlpBin, title, artist, options) {
 }
 
 async function resolveSearchVideoAsync(ytDlpBin, title, artist, { signal, proxy } = {}) {
+  const prepared = prepareSearchTerms(title, artist);
   const baseQueries = buildSearchQueries(title, artist);
   const extra = [];
-  const t = String(title || '').trim();
-  const a = String(artist || '').trim();
+  const t = prepared.title;
+  const a = prepared.artist;
   if (a && t) {
-    extra.push(`${a} - ${t} official audio`, `${a} ${t} official audio`, `"${a}" "${t}"`);
+    extra.push(
+      `${a} - ${t} official audio`,
+      `${a} ${t} official audio`,
+      `"${a}" "${t}"`,
+      `${a} ${t} topic`,
+    );
   } else if (t) {
     extra.push(`${t} official audio`);
   }
   const queries = [...new Set([...extra, ...baseQueries].filter(Boolean))];
   const hasProxy = Boolean(String(proxy || '').trim());
-  const sensitive = isSensitiveSearchTerm(artist);
+  const sensitive = isSensitiveSearchTerm(a);
   let lastError = null;
   let best = null;
 
@@ -743,34 +856,38 @@ async function resolveSearchVideoAsync(ytDlpBin, title, artist, { signal, proxy 
       const results = await searchYouTubeVideosAsync(ytDlpBin, query, {
         signal,
         proxy,
-        limit: 10,
+        limit: 12,
       });
       considerResults(results, query);
       // Strong match — no need to try weaker queries
-      if (best && best.score >= 95) break;
+      if (best && best.score >= 90) break;
     } catch (err) {
       lastError = err;
       if (err?.code === 'YTDLP_ABORTED') throw err;
     }
   }
 
-  if (sensitive && (!best || best.score < 50)) {
+  if (sensitive && (!best || best.score < 45)) {
     try {
-      const picked = await searchSensitiveArtistVideo(ytDlpBin, title, artist, { signal, proxy });
+      const picked = await searchSensitiveArtistVideo(ytDlpBin, t || title, a || artist, {
+        signal,
+        proxy,
+      });
       if (picked) {
-        // Keep scored best if better; otherwise use sensitive fallback id
-        if (!best || best.score < 50) return picked;
+        if (!best || best.score < 45) return picked;
       }
     } catch (err) {
       lastError = err;
     }
   }
 
-  const minScore = a ? 40 : 30;
+  // Artist+title known: accept solid matches; title-only: a bit stricter
+  const minScore = a && t ? 32 : a ? 38 : 28;
   if (best && best.score >= minScore) {
     logError('youtube-import', 'Search pick', {
-      title,
-      artist,
+      title: prepared.title,
+      artist: prepared.artist,
+      rawTitle: prepared.rawTitle,
       pickedId: best.id,
       pickedTitle: best.title,
       score: best.score,
@@ -790,6 +907,8 @@ async function resolveSearchVideoAsync(ytDlpBin, title, artist, { signal, proxy 
   }
   if (best) {
     message += ` Лучший кандидат набрал мало очков (${Math.round(best.score)}): «${best.title}».`;
+  } else if (prepared.title !== prepared.rawTitle) {
+    message += ` Искали как «${prepared.artist ? `${prepared.artist} - ` : ''}${prepared.title}».`;
   }
   throw Object.assign(new Error(message), {
     code: 'YTDLP_NO_SEARCH',
