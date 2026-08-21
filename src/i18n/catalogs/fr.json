@@ -336,6 +336,7 @@
   "wish.downloadAll": "Tout télécharger",
   "wish.downloadStarted": "Téléchargement démarré — progression en bas ou dans la cloche",
   "wish.downloadAllStarted": "Téléchargement de la liste démarré — progression en bas ou dans la cloche",
+  "wish.allOwned": "Tous les titres sont déjà dans votre bibliothèque — rien à télécharger",
   "wish.searchPlaceholder": "Rechercher par titre ou artiste…",
   "wish.searchCount": "{count} sur {total}",
   "wish.searchEmpty": "Aucun résultat",

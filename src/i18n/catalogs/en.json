@@ -336,6 +336,7 @@
   "wish.downloadAll": "Download all",
   "wish.downloadStarted": "Download started — progress at the bottom or in the bell icon",
   "wish.downloadAllStarted": "List download started — progress at the bottom or in the bell icon",
+  "wish.allOwned": "All tracks are already in your library — nothing to download",
   "wish.searchPlaceholder": "Search by title or artist…",
   "wish.searchCount": "{count} of {total}",
   "wish.searchEmpty": "Nothing found",

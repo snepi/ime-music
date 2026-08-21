@@ -32,6 +32,11 @@ export function WishlistView() {
     );
   }, [items, search]);
 
+  const itemsNeedingDownload = useMemo(
+    () => filteredItems.filter((item) => !ownedMap.get(trackMatchKey(item.artist, item.title))),
+    [filteredItems, ownedMap],
+  );
+
   const remove = async (id: string) => {
     const settings = await window.imeMusic.updateSettings({
       discovery: {
@@ -87,8 +92,14 @@ export function WishlistView() {
   };
 
   const downloadAll = async () => {
-    const batch = search.trim() ? filteredItems : items;
-    if (downloadingId || downloadingAll || batch.length === 0) return;
+    if (downloadingId || downloadingAll) return;
+    const batch = (search.trim() ? filteredItems : items).filter(
+      (item) => !ownedMap.get(trackMatchKey(item.artist, item.title)),
+    );
+    if (batch.length === 0) {
+      showToast(t('wish.allOwned'), 'info');
+      return;
+    }
     setDownloadingAll(true);
     try {
       await startImport(
@@ -112,7 +123,9 @@ export function WishlistView() {
             <Button
               variant="secondary"
               onClick={() => void downloadAll()}
-              disabled={downloadingAll || downloadingId != null || filteredItems.length === 0}
+              disabled={
+                downloadingAll || downloadingId != null || itemsNeedingDownload.length === 0
+              }
             >
               <Icon name="import" size={16} />
               {downloadingAll ? t('sync.starting') : t('wish.downloadAll')}

@@ -336,6 +336,7 @@
   "wish.downloadAll": "Завантажити все",
   "wish.downloadStarted": "Завантаження почалося — прогрес внизу або в дзвіночку",
   "wish.downloadAllStarted": "Завантаження списку почалося — прогрес внизу або в дзвіночку",
+  "wish.allOwned": "Усі треки вже є в бібліотеці — завантажувати нічого",
   "wish.searchPlaceholder": "Пошук за назвою або виконавцем…",
   "wish.searchCount": "{count} з {total}",
   "wish.searchEmpty": "Нічого не знайдено",

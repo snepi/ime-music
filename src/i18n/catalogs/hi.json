@@ -336,6 +336,7 @@
   "wish.downloadAll": "सभी डाउनलोड करें",
   "wish.downloadStarted": "डाउनलोड शुरू — प्रगति नीचे या घंटी आइकन में",
   "wish.downloadAllStarted": "सूची का डाउनलोड शुरू — प्रगति नीचे या घंटी आइकन में",
+  "wish.allOwned": "सभी ट्रैक पहले से लाइब्रेरी में हैं — डाउनलोड करने को कुछ नहीं",
   "history.title": "इतिहास",
   "history.subtitle": "हाल के सुने और आँकड़े",
   "history.unavailable": "इतिहास अनुपलब्ध.",

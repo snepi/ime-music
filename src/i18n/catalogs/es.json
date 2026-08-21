@@ -336,6 +336,7 @@
   "wish.downloadAll": "Descargar todo",
   "wish.downloadStarted": "Descarga iniciada — progreso abajo o en la campana",
   "wish.downloadAllStarted": "Descarga de la lista iniciada — progreso abajo o en la campana",
+  "wish.allOwned": "Todas las pistas ya están en tu biblioteca — no hay nada que descargar",
   "wish.searchPlaceholder": "Buscar por título o artista…",
   "wish.searchCount": "{count} de {total}",
   "wish.searchEmpty": "No se encontró nada",

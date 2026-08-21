@@ -4,7 +4,7 @@
   "description": "Local music player with recommendations, IMe Waves and phone sync",
   "author": "IMe Music",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "main": "electron/main.cjs",
   "repository": {
@@ -46,19 +46,25 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+      "artifactName": "IMe.Music-${version}-${os}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "IMe Music",
@@ -66,10 +72,10 @@
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false,
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "artifactName": "IMe.Music-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-Portable-${version}.${ext}"
+      "artifactName": "IMe.Music-Portable-${version}.${ext}"
     },
     "publish": [
       {
@@ -97,7 +103,7 @@
     "concurrently": "^9.2.4",
     "cross-env": "^7.0.3",
     "electron": "^35.7.5",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.15.7",
     "oxlint": "^1.75.0",
     "png-to-ico": "^3.0.2",
     "rcedit": "^5.0.2",

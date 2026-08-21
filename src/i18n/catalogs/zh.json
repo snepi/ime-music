@@ -336,6 +336,7 @@
   "wish.downloadAll": "全部下载",
   "wish.downloadStarted": "下载已开始 — 进度在底部或铃铛图标中",
   "wish.downloadAllStarted": "列表下载已开始 — 进度在底部或铃铛图标中",
+  "wish.allOwned": "所有曲目已在曲库中 — 无需下载",
   "wish.searchPlaceholder": "按标题或艺术家搜索…",
   "wish.searchCount": "{count} / {total}",
   "wish.searchEmpty": "未找到结果",

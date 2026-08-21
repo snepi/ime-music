@@ -918,8 +918,11 @@ async function maybeEnrichExistingTrack(existing, payload) {
   }
 }
 
-async function skipIfAlreadyInLibrary(payload, result, emit) {
-  const existing = db.findTrackByTitleArtist(payload.title, payload.artist);
+async function skipIfAlreadyInLibrary(payload, result, emit, ownedByKey = null) {
+  const existing =
+    (ownedByKey
+      ? ownedByKey.get(require('./trackMatch.cjs').normalizeKey(payload.artist, payload.title))
+      : null) || findOwnedLibraryTrack(payload.title, payload.artist);
   if (!existing) return false;
 
   await maybeEnrichExistingTrack(existing, payload);
@@ -928,6 +931,30 @@ async function skipIfAlreadyInLibrary(payload, result, emit) {
   result.phase = undefined;
   emit();
   return true;
+}
+
+function findOwnedLibraryTrack(title, artist) {
+  const direct = db.findTrackByTitleArtist(title, artist);
+  if (direct) return direct;
+
+  const { normalizeKey } = require('./trackMatch.cjs');
+  const key = normalizeKey(artist, title);
+  if (!key || key === '::') return null;
+  const tracks = db.getAllTracks() || [];
+  for (const track of tracks) {
+    if (normalizeKey(track.artist, track.title) === key) return track;
+  }
+  return null;
+}
+
+function buildOwnedLibraryKeyMap() {
+  const { normalizeKey } = require('./trackMatch.cjs');
+  const map = new Map();
+  for (const track of db.getAllTracks() || []) {
+    const key = normalizeKey(track.artist, track.title);
+    if (key && key !== '::' && !map.has(key)) map.set(key, track);
+  }
+  return map;
 }
 
 async function addDownloadedFileToLibrary(filePath, sourceLabel, result, emit, payload) {
@@ -1529,13 +1556,46 @@ async function runWishlistImport(items, { onProgress, signal } = {}) {
   }
 
   const proxy = resolveEffectiveProxy(settings);
+  const ownedByKey = buildOwnedLibraryKeyMap();
 
-  for (let index = 0; index < list.length; index += 1) {
+  // Drop tracks already in library before any YouTube search/download
+  const toDownload = [];
+  for (const item of list) {
+    const key = require('./trackMatch.cjs').normalizeKey(item.artist, item.title);
+    const existing = (key && ownedByKey.get(key)) || findOwnedLibraryTrack(item.title, item.artist);
+    if (existing) {
+      await maybeEnrichExistingTrack(existing, item);
+      result.skipped += 1;
+      result.processed += 1;
+    } else {
+      toDownload.push(item);
+    }
+  }
+  if (result.skipped > 0) {
+    result.statusMessage =
+      toDownload.length > 0
+        ? `Пропущено уже в библиотеке: ${result.skipped}. Осталось скачать: ${toDownload.length}`
+        : `Все треки уже в библиотеке (${result.skipped})`;
+    emit();
+  }
+
+  if (toDownload.length === 0) {
+    result.done = true;
+    result.phase = undefined;
+    result.downloadPercent = undefined;
+    if (!result.statusMessage) result.statusMessage = 'Нечего скачивать';
+    emit();
+    return result;
+  }
+
+  result.total = result.skipped + toDownload.length;
+
+  for (let index = 0; index < toDownload.length; index += 1) {
     if (signal?.aborted) break;
 
-    const item = list[index];
+    const item = toDownload[index];
     const validation = validateSearchImport(item.title, item.artist);
-    const position = `${index + 1}/${list.length}`;
+    const position = `${index + 1}/${toDownload.length}`;
 
     if (!validation.ok) {
       result.failed += 1;
@@ -1545,15 +1605,16 @@ async function runWishlistImport(items, { onProgress, signal } = {}) {
       continue;
     }
 
-    result.statusMessage = `(${position}) Поиск: ${validation.label}`;
-    result.downloadPercent = null;
-    emit();
-
-    if (await skipIfAlreadyInLibrary(item, result, emit)) {
+    // Safety net (should already be filtered)
+    if (await skipIfAlreadyInLibrary(item, result, emit, ownedByKey)) {
       result.processed += 1;
       emit();
       continue;
     }
+
+    result.statusMessage = `(${position}) Поиск: ${validation.label}`;
+    result.downloadPercent = null;
+    emit();
 
     let videoId;
     try {
@@ -1595,52 +1656,54 @@ async function runWishlistImport(items, { onProgress, signal } = {}) {
       filePath = download.filePath;
       result.downloadPercent = 100;
       result.statusMessage = download.downloaded
-        ? `(${position}) Обработка: ${validation.label}`
-        : `(${position}) Уже скачан: ${validation.label}`;
+        ? `(${position}) Обработка…`
+        : `(${position}) Уже скачан, добавление…`;
       result.phase = 'parse';
       emit();
     } catch (err) {
       if (isImportAborted(signal, err)) {
-        result.cancelled = true;
-        break;
+        return finalizeCancelledImport(result, emit);
       }
       result.failed += 1;
       result.processed += 1;
       result.errors.push({
         filePath: validation.label,
-        message: err?.message || 'Ошибка скачивания',
+        message: err?.message || 'Не удалось скачать',
       });
-      logError('youtube-import', 'Wishlist download failed', { title: item.title, artist: item.artist, url, err });
+      logError('youtube-import', 'Wishlist download failed', {
+        title: item.title,
+        artist: item.artist,
+        url,
+        err,
+      });
       emit();
       continue;
     }
 
-    if (signal?.aborted) break;
-
     try {
       await addDownloadedFileToLibrary(filePath, validation.label, result, emit, item);
+      result.processed += 1;
+      emit();
     } catch (err) {
       result.failed += 1;
+      result.processed += 1;
       result.errors.push({
         filePath: validation.label,
-        message: err?.message || 'Не удалось добавить трек',
+        message: err?.message || 'Не удалось добавить в библиотеку',
       });
-      logError('youtube-import', 'Wishlist insert failed', { title: item.title, artist: item.artist, filePath, err });
+      logError('youtube-import', 'Wishlist insert failed', {
+        title: item.title,
+        artist: item.artist,
+        filePath,
+        err,
+      });
+      emit();
     }
-
-    result.processed += 1;
-    result.downloadPercent = null;
-    emit();
-  }
-
-  if (signal?.aborted) {
-    result.cancelled = true;
-    result.statusMessage = 'Отменено';
   }
 
   result.done = true;
   result.phase = undefined;
-  result.statusMessage = result.cancelled ? result.statusMessage : undefined;
+  result.statusMessage = undefined;
   result.downloadPercent = undefined;
   emit();
   return result;
