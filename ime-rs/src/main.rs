@@ -34,6 +34,17 @@ struct AppState {
     data_path: PathBuf,
     static_dir: PathBuf,
     sync: Mutex<Option<SyncSession>>,
+    import_status: Arc<Mutex<ImportLive>>,
+}
+
+#[derive(Clone)]
+struct ImportLive {
+    active: bool,
+    label: String,
+    message: String,
+    percent: Option<u8>,
+    done: bool,
+    ok: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -78,6 +89,14 @@ fn main() {
         data_path,
         static_dir: static_dir.clone(),
         sync: Mutex::new(None),
+        import_status: Arc::new(Mutex::new(ImportLive {
+            active: false,
+            label: String::new(),
+            message: String::new(),
+            percent: None,
+            done: true,
+            ok: true,
+        })),
     });
     let port: u16 = std::env::var("IME_RS_PORT")
         .ok()
@@ -90,6 +109,7 @@ fn main() {
         .route("/import", post(import_files))
         .route("/import-path", post(import_path))
         .route("/import-search", post(import_search))
+        .route("/import-status", get(import_status))
         .route("/audio/:id", get(audio))
         .route("/cover/:id", get(cover_file))
         .route("/api/state", get(api_state))
@@ -626,10 +646,47 @@ async fn import_search(State(state): State<Arc<AppState>>, Form(form): Form<ActF
         save(&state, &store);
         return json_msg(true, "Трек уже есть в библиотеке");
     }
+    let label = if artist.trim().is_empty() {
+        title.trim().to_string()
+    } else if title.trim().is_empty() {
+        artist.trim().to_string()
+    } else {
+        format!("{} — {}", artist.trim(), title.trim())
+    };
+    {
+        let mut live = state.import_status.lock().expect("import");
+        *live = ImportLive {
+            active: true,
+            label: label.clone(),
+            message: format!("Поиск: {label}"),
+            percent: None,
+            done: false,
+            ok: false,
+        };
+    }
     let fetched = {
         let title = title.clone();
         let artist = artist.clone();
-        tokio::task::spawn_blocking(move || ytdlp::download_search(&title, &artist, &configured, &proxy, &dest)).await
+        let progress = Arc::clone(&state.import_status);
+        tokio::task::spawn_blocking(move || {
+            ytdlp::download_search(&title, &artist, &configured, &proxy, &dest, &mut |message, percent| {
+                if let Ok(mut live) = progress.lock() {
+                    live.message = message.to_string();
+                    live.percent = percent;
+                    live.active = true;
+                }
+            })
+        })
+        .await
+    };
+    let finish = |ok: bool, message: &str| {
+        if let Ok(mut live) = state.import_status.lock() {
+            live.active = false;
+            live.done = true;
+            live.ok = ok;
+            live.percent = if ok { Some(100) } else { live.percent };
+            live.message = message.to_string();
+        }
     };
     match fetched {
         Ok(Ok(path)) => {
@@ -640,11 +697,41 @@ async fn import_search(State(state): State<Arc<AppState>>, Form(form): Form<ActF
             let added = store.add_file(&path);
             store.apply_download_meta(&path, &title, &artist, &album, &cover);
             save(&state, &store);
-            json_msg(true, if added { "Трек добавлен в библиотеку" } else { "Файл уже был скачан" })
+            let message = format!(
+                "{}: {label}",
+                if added { "Добавлено" } else { "Уже было скачано" }
+            );
+            finish(true, &message);
+            json_msg(true, &message)
         }
-        Ok(Err(message)) => json_msg(false, &message),
-        Err(_) => json_msg(false, "Скачивание прервалось"),
+        Ok(Err(message)) => {
+            let message = format!("Не скачано: {label}. {message}");
+            finish(false, &message);
+            json_msg(false, &message)
+        }
+        Err(_) => {
+            let message = format!("Скачивание прервалось: {label}");
+            finish(false, &message);
+            json_msg(false, &message)
+        }
     }
+}
+
+async fn import_status(State(state): State<Arc<AppState>>) -> Response {
+    let live = state.import_status.lock().expect("import").clone();
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({
+            "active": live.active,
+            "label": live.label,
+            "message": live.message,
+            "percent": live.percent,
+            "done": live.done,
+            "ok": live.ok,
+        })
+        .to_string(),
+    )
+        .into_response()
 }
 
 fn json_msg(ok: bool, message: &str) -> Response {

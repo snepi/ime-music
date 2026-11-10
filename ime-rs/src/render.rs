@@ -703,7 +703,7 @@ fn empty_state(icon_name: &str, title: &str, desc: &str, actions: &str) -> Strin
 
 fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let mut html = format!(
-        r#"<div class="wishlist-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div>{}</div><p class="wishlist-download-status field-hint"></p>"#,
+        r#"<div class="wishlist-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div>{}</div><p class="wishlist-download-status field-hint"></p><div class="wishlist-download-panel" hidden><div class="import-bar import-bar-indeterminate"><div class="import-bar-fill"></div></div></div>"#,
         esc(&i18n.t("wish.title")),
         esc(&i18n.t("wish.subtitle")),
         if store.settings.wishlist.is_empty() {

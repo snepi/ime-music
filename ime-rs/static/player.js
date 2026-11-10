@@ -136,14 +136,28 @@
     const downloadAll = event.target.closest("[data-download-all]");
     if (downloadAll) {
       event.preventDefault();
-      const buttons = [...document.querySelectorAll("[data-download-wish]")];
+      const buttons = [...document.querySelectorAll("[data-download-wish]")].filter((button) => !button.disabled);
       downloadAll.disabled = true;
+      downloadAll.classList.add("is-busy");
+      notify(`Скачать все: ${buttons.length} ${buttons.length === 1 ? "трек" : "треков"}`, "info");
       (async () => {
-        for (const button of buttons) {
-          if (button.disabled) continue;
-          await downloadWish(button);
+        let added = 0;
+        let failed = 0;
+        for (let index = 0; index < buttons.length; index += 1) {
+          const button = buttons[index];
+          const label = [button.dataset.artist, button.dataset.title].filter(Boolean).join(" — ");
+          const status = document.querySelector(".wishlist-download-status");
+          if (status) status.textContent = `${index + 1} из ${buttons.length}: ${label}`;
+          const ok = await downloadWish(button, true, true);
+          if (ok) added += 1;
+          else failed += 1;
         }
+        downloadAll.classList.remove("is-busy");
         downloadAll.disabled = false;
+        notify(
+          `Готово. Добавлено: ${added}. Ошибок: ${failed}.`,
+          failed ? "error" : "success",
+        );
       })();
       return;
     }
@@ -629,10 +643,51 @@
     }
   }
 
-  async function downloadWish(button) {
+  function notify(text, kind) {
+    let host = document.querySelector(".toast-container");
+    if (!host) {
+      host = document.createElement("div");
+      host.className = "toast-container";
+      host.setAttribute("aria-live", "polite");
+      document.body.appendChild(host);
+    }
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${kind}`;
+    toast.setAttribute("role", "status");
+    toast.textContent = text;
+    host.appendChild(toast);
+    window.setTimeout(() => toast.remove(), 7000);
+  }
+
+  function paintImport(data, button) {
     const status = document.querySelector(".wishlist-download-status");
+    const panel = document.querySelector(".wishlist-download-panel");
+    if (panel) panel.hidden = false;
+    if (status) status.textContent = data.message || "";
+    const bar = panel?.querySelector(".import-bar");
+    const fill = bar?.querySelector(".import-bar-fill");
+    if (bar && fill) {
+      if (data.percent == null) bar.classList.add("import-bar-indeterminate");
+      else {
+        bar.classList.remove("import-bar-indeterminate");
+        fill.style.width = `${data.percent}%`;
+      }
+    }
+    if (button) {
+      button.textContent = data.percent != null ? `Скачивание ${data.percent}%` : "Поиск…";
+    }
+  }
+
+  async function downloadWish(button, quiet, stay) {
+    const label = [button.dataset.artist, button.dataset.title].filter(Boolean).join(" — ");
     button.disabled = true;
-    if (status) status.textContent = "Запуск…";
+    button.classList.add("is-busy");
+    paintImport({ message: `Поиск: ${label}`, percent: null }, button);
+    if (!quiet) notify(`Скачивание: ${label}`, "info");
+    const timer = window.setInterval(async () => {
+      const data = await fetch("/import-status").then((res) => res.json()).catch(() => null);
+      if (data) paintImport(data, button);
+    }, 400);
     const body = new URLSearchParams({
       title: button.dataset.title || "",
       artist: button.dataset.artist || "",
@@ -641,9 +696,14 @@
     });
     const response = await fetch("/import-search", { method: "POST", body });
     const data = await response.json().catch(() => ({}));
-    if (status) status.textContent = data.message || data.error || "";
-    if (data.ok) navigate("/?view=wishlist");
+    window.clearInterval(timer);
+    paintImport({ message: data.message || data.error || "", percent: data.ok ? 100 : null }, button);
+    notify(data.message || data.error || "Скачивание завершилось", data.ok ? "success" : "error");
+    button.classList.remove("is-busy");
+    if (!data.ok) button.textContent = "Скачать";
+    if (data.ok && !stay) navigate("/?view=wishlist");
     else button.disabled = false;
+    return Boolean(data.ok);
   }
 
   function panelHost() {

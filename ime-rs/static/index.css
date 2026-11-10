@@ -2704,6 +2704,11 @@ select:focus-visible {
   display: none;
 }
 
+.wishlist-download-status,
+.wishlist-download-panel {
+  margin: 0 var(--space-xl) 10px;
+}
+
 .wishlist-album {
   display: block;
   margin-top: 2px;

@@ -19,26 +19,35 @@ fn hidden(bin: &str) -> Command {
 
 const MISSING: &str = "yt-dlp не найден. Откройте Настройки и укажите путь, например: D:\\yt-dlp\\yt-dlp.exe (можно указать и папку D:\\yt-dlp)";
 
-pub fn download_search(title: &str, artist: &str, configured: &str, proxy: &str, dest_dir: &Path) -> Result<PathBuf, String> {
+pub fn download_search(
+    title: &str,
+    artist: &str,
+    configured: &str,
+    proxy: &str,
+    dest_dir: &Path,
+    report: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<PathBuf, String> {
     let title = title.trim();
     let artist = artist.trim();
     if title.is_empty() && artist.is_empty() {
         return Err("Укажите название и исполнителя".into());
     }
-    let query = if artist.is_empty() {
+    let label = if artist.is_empty() {
         title.to_string()
     } else if title.is_empty() {
         artist.to_string()
     } else {
-        format!("{artist} - {title}")
+        format!("{artist} — {title}")
     };
-    if query.chars().count() > 240 {
+    if label.chars().count() > 240 {
         return Err("Слишком длинный запрос для поиска".into());
     }
     let bin = resolve_bin(configured).ok_or_else(|| MISSING.to_string())?;
-    let video_id = search_id(&bin, &query, proxy)?;
+    report(&format!("Поиск: {label}"), None);
+    let video_id = resolve_video(&bin, title, artist, proxy, report)?;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    download_audio(&bin, &url, &video_id, proxy, dest_dir)
+    report(&format!("Скачивание: {label}"), Some(0));
+    download_audio(&bin, &url, &video_id, proxy, dest_dir, &label, report)
 }
 
 fn resolve_bin(configured: &str) -> Option<String> {
@@ -69,7 +78,82 @@ fn version_ok(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn search_id(bin: &str, query: &str, proxy: &str) -> Result<String, String> {
+struct Hit {
+    id: String,
+    title: String,
+    duration: f64,
+    channel: String,
+}
+
+fn search_queries(title: &str, artist: &str) -> Vec<String> {
+    let mut queries = Vec::new();
+    if !artist.is_empty() && !title.is_empty() {
+        queries.push(format!("{artist} - {title}"));
+        queries.push(format!("{artist} {title}"));
+        queries.push(format!("{title} {artist}"));
+        queries.push(format!("{artist} {title} official audio"));
+        queries.push(format!("\"{artist}\" \"{title}\""));
+        queries.push(format!("{artist} {title} topic"));
+        queries.push(format!("{title} official audio"));
+    } else if !title.is_empty() {
+        queries.push(format!("{title} official audio"));
+        queries.push(title.to_string());
+    } else if !artist.is_empty() {
+        queries.push(artist.to_string());
+    }
+    let mut unique = Vec::new();
+    for query in queries {
+        if !unique.iter().any(|item: &String| item == &query) {
+            unique.push(query);
+        }
+    }
+    unique
+}
+
+fn resolve_video(
+    bin: &str,
+    title: &str,
+    artist: &str,
+    proxy: &str,
+    report: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<String, String> {
+    let mut best: Option<(Hit, i32)> = None;
+    let mut last_error = String::new();
+    for query in search_queries(title, artist) {
+        report(&format!("Поиск: {query}"), None);
+        match search_hits(bin, &query, proxy) {
+            Ok(hits) => {
+                for hit in hits {
+                    let score = score_hit(&hit, title, artist);
+                    let better = best.as_ref().map(|(_, current)| score > *current).unwrap_or(true);
+                    if better {
+                        best = Some((hit, score));
+                    }
+                }
+                if best.as_ref().map(|(_, score)| *score >= 90).unwrap_or(false) {
+                    break;
+                }
+            }
+            Err(err) => last_error = err,
+        }
+    }
+    if let Some((hit, score)) = best {
+        if score >= 30 {
+            return Ok(hit.id);
+        }
+        return Err(format!(
+            "Не удалось уверенно найти «{title}». Ближе всего «{}» ({score}). Уточните название или исполнителя.",
+            hit.title
+        ));
+    }
+    if last_error.is_empty() {
+        Err("Не удалось найти видео на YouTube".into())
+    } else {
+        Err(last_error)
+    }
+}
+
+fn search_hits(bin: &str, query: &str, proxy: &str) -> Result<Vec<Hit>, String> {
     let mut args = vec![
         "--no-playlist".into(),
         "--ignore-config".into(),
@@ -77,7 +161,7 @@ fn search_id(bin: &str, query: &str, proxy: &str) -> Result<String, String> {
         "--extractor-args".into(),
         "youtube:player_client=android,web".into(),
         "--print".into(),
-        "id".into(),
+        "%(id)s||%(title)s||%(duration)s||%(channel)s||%(uploader)s".into(),
         "--socket-timeout".into(),
         "30".into(),
         "--retries".into(),
@@ -85,17 +169,125 @@ fn search_id(bin: &str, query: &str, proxy: &str) -> Result<String, String> {
     ];
     push_proxy(&mut args, proxy);
     args.push("--".into());
-    args.push(format!("ytsearch1:{query}"));
-    let output = run(bin, &args, None, Duration::from_secs(45))?;
-    output
-        .lines()
-        .map(str::trim)
-        .find(|line| line.len() >= 6 && line.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
-        .map(str::to_string)
-        .ok_or_else(|| "Не удалось найти видео на YouTube".into())
+    args.push(format!("ytsearch8:{query}"));
+    let (stdout, stderr, ok) = run(bin, &args, None, Duration::from_secs(45), &mut |_, _| {})?;
+    let mut hits = Vec::new();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.trim().split("||").collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let id = parts.first().copied().unwrap_or("").trim();
+        if id.len() < 6 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+            continue;
+        }
+        hits.push(Hit {
+            id: id.to_string(),
+            title: parts.get(1).copied().unwrap_or("").trim().to_string(),
+            duration: parts.get(2).and_then(|value| value.trim().parse().ok()).unwrap_or(0.0),
+            channel: parts
+                .get(3)
+                .copied()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| parts.get(4).copied())
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+        });
+    }
+    if !hits.is_empty() {
+        return Ok(hits);
+    }
+    Err(friendly_error(&stderr, &stdout, !proxy.trim().is_empty(), !ok))
 }
 
-fn download_audio(bin: &str, url: &str, video_id: &str, proxy: &str, dest_dir: &Path) -> Result<PathBuf, String> {
+fn score_hit(hit: &Hit, title: &str, artist: &str) -> i32 {
+    let result = hit.title.to_lowercase();
+    let channel = hit.channel.to_lowercase();
+    let title = title.to_lowercase();
+    let artist = artist.to_lowercase();
+    if result.is_empty() {
+        return -999;
+    }
+    let mut score = 18;
+    if !title.is_empty() && (result.contains(title.trim()) || channel.contains(title.trim())) {
+        score += 48;
+    }
+    if !artist.is_empty() && (result.contains(artist.trim()) || channel.contains(artist.trim())) {
+        score += 40;
+    } else if !artist.is_empty() {
+        score -= 24;
+    }
+    if result.contains("official audio") {
+        score += 28;
+    }
+    if channel.contains("topic") || channel.contains("vevo") {
+        score += 24;
+    }
+    for (needle, penalty) in [
+        ("karaoke", 55),
+        ("nightcore", 50),
+        ("slowed", 45),
+        ("reverb", 45),
+        ("reaction", 55),
+        ("tutorial", 50),
+        ("full album", 45),
+    ] {
+        if result.contains(needle) && !title.contains(needle) {
+            score -= penalty;
+        }
+    }
+    if hit.duration >= 80.0 && hit.duration <= 540.0 {
+        score += 16;
+    } else if hit.duration > 0.0 && hit.duration < 40.0 {
+        score -= 35;
+    } else if hit.duration > 900.0 {
+        score -= 45;
+    }
+    score
+}
+
+fn friendly_error(stderr: &str, stdout: &str, has_proxy: bool, failed: bool) -> String {
+    let text = format!("{stderr}\n{stdout}");
+    if text.trim().is_empty() {
+        return if has_proxy {
+            "YouTube не ответил на поиск. Проверьте прокси в Настройках → Инструменты и попробуйте снова.".into()
+        } else {
+            "YouTube не ответил на поиск. Если включён VPN, укажите его локальный прокси в Настройках → Инструменты (например socks5://127.0.0.1:1080).".into()
+        };
+    }
+    if text.contains("Connection aborted") || text.contains("10054") || text.contains("ConnectionReset") {
+        return "Не удалось подключиться к YouTube. Включите VPN и укажите прокси в Настройках → Инструменты (например socks5://127.0.0.1:1080).".into();
+    }
+    if text.to_lowercase().contains("video unavailable") || text.to_lowercase().contains("private video") {
+        return "Видео недоступно или требует авторизации".into();
+    }
+    if text.contains("403") {
+        return "Доступ к видео запрещён. Обновите yt-dlp до последней версии".into();
+    }
+    if text.to_lowercase().contains("timed out") || text.to_lowercase().contains("network") {
+        return "Ошибка сети при скачивании. Проверьте интернет и прокси в Настройках → Инструменты.".into();
+    }
+    if !failed {
+        return "Не удалось найти видео на YouTube".into();
+    }
+    text.lines()
+        .find(|line| !line.trim().is_empty() && !line.trim().starts_with('['))
+        .unwrap_or("Не удалось скачать аудио")
+        .chars()
+        .take(240)
+        .collect()
+}
+
+fn download_audio(
+    bin: &str,
+    url: &str,
+    video_id: &str,
+    proxy: &str,
+    dest_dir: &Path,
+    label: &str,
+    report: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dest_dir).map_err(|err| err.to_string())?;
     if let Some(existing) = find_download(dest_dir, video_id) {
         return Ok(existing);
@@ -123,8 +315,21 @@ fn download_audio(bin: &str, url: &str, video_id: &str, proxy: &str, dest_dir: &
     push_proxy(&mut args, proxy);
     args.push("--".into());
     args.push(url.to_string());
-    let _ = run(bin, &args, Some(dest_dir), Duration::from_secs(15 * 60))?;
-    find_download(dest_dir, video_id).ok_or_else(|| "yt-dlp завершился без файла".into())
+    let (_stdout, stderr, ok) = run(bin, &args, Some(dest_dir), Duration::from_secs(15 * 60), &mut |line, percent| {
+        if let Some(percent) = percent {
+            report(&format!("Скачивание: {label} · {percent}%"), Some(percent));
+        } else if !line.is_empty() {
+            report(&format!("Скачивание: {label}"), None);
+        }
+    })?;
+    if let Some(path) = find_download(dest_dir, video_id) {
+        return Ok(path);
+    }
+    Err(if ok {
+        "yt-dlp завершился без файла".into()
+    } else {
+        friendly_error(&stderr, "", !proxy.trim().is_empty(), true)
+    })
 }
 
 fn push_proxy(args: &mut Vec<String>, proxy: &str) {
@@ -135,46 +340,88 @@ fn push_proxy(args: &mut Vec<String>, proxy: &str) {
     }
 }
 
-fn run(bin: &str, args: &[String], cwd: Option<&Path>, timeout: Duration) -> Result<String, String> {
+fn run(
+    bin: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    timeout: Duration,
+    on_line: &mut dyn FnMut(&str, Option<u8>),
+) -> Result<(String, String, bool), String> {
     let mut command = hidden(bin);
     command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
     let mut child = command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| err.to_string())?;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let stdout_task = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = stdout_pipe {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let stderr_task = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = stderr_pipe {
+            let mut byte = [0u8; 1];
+            let mut line = Vec::new();
+            while pipe.read(&mut byte).unwrap_or(0) == 1 {
+                text.push(byte[0] as char);
+                if byte[0] == b'\n' || byte[0] == b'\r' {
+                    if !line.is_empty() {
+                        let _ = line_tx.send(String::from_utf8_lossy(&line).to_string());
+                        line.clear();
+                    }
+                } else {
+                    line.push(byte[0]);
+                }
+            }
+            if !line.is_empty() {
+                let _ = line_tx.send(String::from_utf8_lossy(&line).to_string());
+            }
+        }
+        text
+    });
     let started = std::time::Instant::now();
-    loop {
+    let status = loop {
+        while let Ok(line) = line_rx.try_recv() {
+            report_progress(&line, on_line);
+        }
         if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
-            let mut stdout = String::new();
-            if let Some(mut pipe) = child.stdout.take() {
-                use std::io::Read;
-                let _ = pipe.read_to_string(&mut stdout);
-            }
-            if status.success() || !stdout.trim().is_empty() {
-                return Ok(stdout);
-            }
-            let mut stderr = String::new();
-            if let Some(mut pipe) = child.stderr.take() {
-                use std::io::Read;
-                let _ = pipe.read_to_string(&mut stderr);
-            }
-            let detail = stderr.trim();
-            return Err(if detail.is_empty() {
-                format!("yt-dlp завершился с кодом {}", status.code().unwrap_or(1))
-            } else {
-                detail.chars().take(400).collect()
-            });
+            break status;
         }
         if started.elapsed() > timeout {
             let _ = child.kill();
             return Err("Превышено время ожидания скачивания (15 мин)".into());
         }
         std::thread::sleep(Duration::from_millis(200));
+    };
+    while let Ok(line) = line_rx.try_recv() {
+        report_progress(&line, on_line);
     }
+    let stdout = stdout_task.join().unwrap_or_default();
+    let stderr = stderr_task.join().unwrap_or_default();
+    Ok((stdout, stderr, status.success()))
+}
+
+fn report_progress(line: &str, on_line: &mut dyn FnMut(&str, Option<u8>)) {
+    let percent = line.find("[download]").and_then(|start| {
+        let rest = line[start + "[download]".len()..].trim();
+        let number = rest.split('%').next()?.trim();
+        if rest.contains('%') {
+            number.parse::<f32>().ok().map(|value| value.round().clamp(0.0, 100.0) as u8)
+        } else {
+            None
+        }
+    });
+    on_line(line, percent);
 }
 
 pub fn save_cover(url: &str, dir: &Path, seed: &str) -> Option<PathBuf> {
