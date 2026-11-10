@@ -2839,6 +2839,22 @@ select:focus-visible {
   flex: 1;
 }
 
+.player-track-names {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.player-track-names .player-track-text {
+  flex: 0 1 auto;
+}
+
+.player-track-names .wish-heart {
+  flex: 0 0 auto;
+}
+
 .player-track-title {
   font-size: 14px;
   font-weight: 600;

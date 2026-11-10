@@ -1,6 +1,6 @@
 (() => {
   const audio = new Audio();
-  let now = { title: "", artist: "" };
+  let now = { title: "", artist: "", url: "", cover: "" };
   audio.volume = Number(document.body.dataset.volume || 0.8) || 0.8;
   let waves = { active: false, queue: [], index: -1, seen: new Set() };
   const seeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal"];
@@ -503,7 +503,7 @@
   async function playUrl(url, title, artist) {
     audio.src = url;
     try { await audio.play(); } catch { /* autoplay */ }
-    setNowPlaying(title, artist);
+    setNowPlaying(title, artist, { url: url || "", cover: "" });
     syncPlayButton();
   }
 
@@ -513,7 +513,7 @@
     const data = await post("play", { id });
     audio.src = "/audio/" + encodeURIComponent(id);
     try { await audio.play(); } catch { /* autoplay */ }
-    setNowPlaying(title || data.title || "", artist || data.artist || "");
+    setNowPlaying(title || data.title || "", artist || data.artist || "", { url: "", cover: "" });
     markCurrent(id);
     syncPlayButton();
   }
@@ -551,7 +551,7 @@
     const row = document.querySelector(`[data-play="${cssEscape(data.id)}"]`);
     audio.src = "/audio/" + encodeURIComponent(data.id);
     try { await audio.play(); } catch { /* autoplay */ }
-    setNowPlaying(data.title || row?.dataset.title || now.title, data.artist || row?.dataset.artist || now.artist);
+    setNowPlaying(data.title || row?.dataset.title || now.title, data.artist || row?.dataset.artist || now.artist, { url: "", cover: "" });
     markCurrent(data.id);
     syncPlayButton();
   }
@@ -566,7 +566,7 @@
     const row = document.querySelector(`[data-play="${cssEscape(data.id)}"]`);
     audio.src = "/audio/" + encodeURIComponent(data.id);
     try { await audio.play(); } catch { /* autoplay */ }
-    setNowPlaying(data.title || row?.dataset.title || now.title, data.artist || row?.dataset.artist || now.artist);
+    setNowPlaying(data.title || row?.dataset.title || now.title, data.artist || row?.dataset.artist || now.artist, { url: "", cover: "" });
     markCurrent(data.id);
     syncPlayButton();
   }
@@ -619,12 +619,18 @@
     return `<button type="button" class="artist-link ${className || ""}" data-open-artist="1" data-artist-name="${escapeAttr(artist)}">${escapeHtml(artist)}</button>`;
   }
 
-  function setNowPlaying(title, artist) {
-    now = { title: title || "", artist: artist || "" };
+  function setNowPlaying(title, artist, extra) {
+    now = {
+      title: title || "",
+      artist: artist || "",
+      url: extra && Object.prototype.hasOwnProperty.call(extra, "url") ? extra.url || "" : now.url,
+      cover: extra && Object.prototype.hasOwnProperty.call(extra, "cover") ? extra.cover || "" : now.cover,
+    };
     const box = document.querySelector(".player-track-info");
     if (!box) return;
     const link = artistLink(now.artist, "player-track-artist");
-    box.innerHTML = `<div class="player-track-text"><div class="player-track-title">${escapeHtml(now.title || "Ничего не играет")}</div>${link}</div>`;
+    const heart = now.title ? wishButton({ title: now.title, artist: now.artist, preview: now.url, cover: now.cover }) : "";
+    box.innerHTML = `<div class="player-track-names"><div class="player-track-text"><div class="player-track-title">${escapeHtml(now.title || "Ничего не играет")}</div>${link}</div>${heart}</div>`;
   }
 
   function markCurrent(id) {
