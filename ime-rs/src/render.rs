@@ -620,9 +620,25 @@ fn empty_state(icon_name: &str, title: &str, desc: &str, actions: &str) -> Strin
 
 fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let mut html = format!(
-        r#"<div class="wishlist-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div></div>"#,
+        r#"<div class="wishlist-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div>{}</div><p class="wishlist-download-status field-hint"></p>"#,
         esc(&i18n.t("wish.title")),
-        esc(&i18n.t("wish.subtitle"))
+        esc(&i18n.t("wish.subtitle")),
+        if store.settings.wishlist.is_empty() {
+            String::new()
+        } else {
+            let pending = store.settings.wishlist.iter().any(|item| {
+                !store.songs.iter().any(|song| {
+                    song.title.eq_ignore_ascii_case(&item.title) && song.artist.eq_ignore_ascii_case(&item.artist)
+                })
+            });
+            format!(
+                r#"<div class="view-actions"><button type="button" class="btn btn-secondary" data-download-all="1" {} title="{}"><span class="btn-icon">{}</span>{}</button></div>"#,
+                if pending { "" } else { "disabled" },
+                esc(&i18n.t("wish.downloadAll")),
+                icon("import", 16),
+                esc(&i18n.t("wish.downloadAll")),
+            )
+        }
     );
     if store.settings.wishlist.is_empty() {
         let mut rec = screen.clone();
@@ -705,7 +721,13 @@ fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
                 icon = icon("play", 16),
             )
         } else {
-            String::new()
+            format!(
+                r#"<button type="button" class="btn btn-secondary wishlist-download-btn" data-download-wish="1" data-title="{title}" data-artist="{artist}" title="{label}"><span class="btn-icon">{icon}</span>{label}</button>"#,
+                title = esc(&item.title),
+                artist = esc(&item.artist),
+                label = esc(&i18n.t("wish.download")),
+                icon = icon("import", 16),
+            )
         };
         html.push_str(&format!(
             r#"<li class="wishlist-row" data-title="{title}" data-artist="{artist}" data-album="{album}" data-order="{order}"><button type="button" class="wishlist-play" data-title="{title}" data-artist="{artist}"{play}>{cover}<span class="wishlist-play-icon">{play_icon}</span></button><div class="wishlist-meta"><div class="wishlist-title">{title}{owned}</div><button type="button" class="artist-link wishlist-artist" data-open-artist="1" data-artist-name="{artist}" title="{card}">{artist}</button>{album_btn}<div class="wishlist-links">{links}</div></div><div class="wishlist-actions">{local_play}<button type="button" class="like-btn wish-heart liked" data-wish="1" data-title="{title}" data-artist="{artist}" data-album="{album}" data-url="{url}" data-cover="{cover_url}" aria-label="{remove}" title="{remove}">{heart}</button><button type="button" class="btn btn-ghost" data-wish="1" data-title="{title}" data-artist="{artist}" data-album="{album}" data-url="{url}" data-cover="{cover_url}" title="{remove}" aria-label="{remove}">{del}</button></div></li>"#,
@@ -1323,8 +1345,21 @@ fn playback_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 
 fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let back = esc(&screen.path());
+    let ytdlp = format!(
+        r#"<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="ytdlp_path"><input type="hidden" name="back" value="{}"><label class="field-label" for="ytdlp-path">{}</label><input id="ytdlp-path" class="field-input" name="value" value="{}" placeholder="D:\yt-dlp\yt-dlp.exe"><div class="settings-inline-actions" style="margin-top:10px"><button type="submit" class="btn btn-secondary">{}</button></div></form><form method="post" action="/act" style="margin-top:12px"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="ytdlp_proxy"><input type="hidden" name="back" value="{}"><label class="field-label" for="ytdlp-proxy">{}</label><p class="field-hint" style="margin-bottom:8px">{}</p><input id="ytdlp-proxy" class="field-input" name="value" value="{}" placeholder="socks5://127.0.0.1:1080"><div class="settings-inline-actions" style="margin-top:10px"><button type="submit" class="btn btn-secondary">{}</button></div></form></div>"#,
+        esc(&i18n.t("tools.ytdlpPath")),
+        back,
+        esc(&i18n.t("tools.ytdlpPath")),
+        esc(&store.settings.ytdlp_path),
+        esc(&i18n.t("common.save")),
+        back,
+        esc(&i18n.t("tools.ytdlpProxy")),
+        esc(&i18n.t("tools.ytdlpProxyHint")),
+        esc(&store.settings.ytdlp_proxy),
+        esc(&i18n.t("common.save")),
+    );
     format!(
-        r#"<div class="settings-panel"><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="check-updates"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="export-backup"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-primary">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary">{}</button><div style="margin-top:12px"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="rebuild-autos"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-ghost">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="find-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="merge-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-primary">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
+        r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="check-updates"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="export-backup"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-primary">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary">{}</button><div style="margin-top:12px"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="rebuild-autos"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-ghost">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="find-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="merge-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-primary">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
         esc(&i18n.tf("tools.currentVersion", &[("version", "1.2.0")])),
@@ -1353,6 +1388,7 @@ fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         esc(&i18n.t("tools.repairMerge")),
         esc(&i18n.t("tools.scrobble")),
         esc(&i18n.t("tools.scrobbleHint")),
+        ytdlp = ytdlp,
         lb = if store.settings.listenbrainz { "1" } else { "0" },
         checked = if store.settings.listenbrainz { "checked" } else { "" },
     )

@@ -7,6 +7,7 @@ mod i18n;
 mod icons;
 mod model;
 mod render;
+mod ytdlp;
 mod waves;
 
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
@@ -79,6 +80,7 @@ fn main() {
         .route("/act", post(act))
         .route("/import", post(import_files))
         .route("/import-path", post(import_path))
+        .route("/import-search", post(import_search))
         .route("/audio/:id", get(audio))
         .route("/api/state", get(api_state))
         .route("/api/deezer", get(deezer_proxy))
@@ -435,6 +437,8 @@ fn apply_field(store: &mut Store, field: &str, value: &str) {
         "eq" => store.settings.playback.eq_enabled = on,
         "tray" => store.settings.playback.close_to_tray = on,
         "listenbrainz" => store.settings.listenbrainz = on,
+        "ytdlp_path" => store.settings.ytdlp_path = value.trim().into(),
+        "ytdlp_proxy" => store.settings.ytdlp_proxy = value.trim().into(),
         "preset" => store.apply_preset(value),
         _ => {}
     }
@@ -472,6 +476,50 @@ fn model_nid() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis().to_string())
         .unwrap_or_else(|_| "0".into())
+}
+
+async fn import_search(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {
+    let title = form.title.unwrap_or_default();
+    let artist = form.artist.unwrap_or_default();
+    let (configured, proxy, already, dest) = {
+        let store = state.store.lock().expect("store");
+        let already = store.songs.iter().any(|song| {
+            song.title.eq_ignore_ascii_case(title.trim()) && song.artist.eq_ignore_ascii_case(artist.trim())
+        });
+        let dest = state
+            .data_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("downloads");
+        (
+            store.settings.ytdlp_path.clone(),
+            store.settings.ytdlp_proxy.clone(),
+            already,
+            dest,
+        )
+    };
+    if already {
+        return json_msg(true, "Трек уже есть в библиотеке");
+    }
+    let fetched = tokio::task::spawn_blocking(move || ytdlp::download_search(&title, &artist, &configured, &proxy, &dest)).await;
+    match fetched {
+        Ok(Ok(path)) => {
+            let mut store = state.store.lock().expect("store");
+            let added = store.add_file(&path);
+            save(&state, &store);
+            json_msg(true, if added { "Трек добавлен в библиотеку" } else { "Файл уже был скачан" })
+        }
+        Ok(Err(message)) => json_msg(false, &message),
+        Err(_) => json_msg(false, "Скачивание прервалось"),
+    }
+}
+
+fn json_msg(ok: bool, message: &str) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({ "ok": ok, "error": if ok { "" } else { message }, "message": message }).to_string(),
+    )
+        .into_response()
 }
 
 async fn import_path(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Redirect {

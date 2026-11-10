@@ -72,6 +72,26 @@
       openAlbum(albumBtn.dataset.albumId || "", albumBtn.dataset.albumTitle || "");
       return;
     }
+    const downloadAll = event.target.closest("[data-download-all]");
+    if (downloadAll) {
+      event.preventDefault();
+      const buttons = [...document.querySelectorAll("[data-download-wish]")];
+      downloadAll.disabled = true;
+      (async () => {
+        for (const button of buttons) {
+          if (button.disabled) continue;
+          await downloadWish(button);
+        }
+        downloadAll.disabled = false;
+      })();
+      return;
+    }
+    const downloadOne = event.target.closest("[data-download-wish]");
+    if (downloadOne) {
+      event.preventDefault();
+      downloadWish(downloadOne);
+      return;
+    }
     const platform = event.target.closest("[data-platform]");
     if (platform) {
       event.preventDefault();
@@ -534,6 +554,21 @@
       const empty = document.querySelector(".wishlist-search-empty");
       if (empty) empty.hidden = !needle || visible > 0;
     }
+  }
+
+  async function downloadWish(button) {
+    const status = document.querySelector(".wishlist-download-status");
+    button.disabled = true;
+    if (status) status.textContent = "Запуск…";
+    const body = new URLSearchParams({
+      title: button.dataset.title || "",
+      artist: button.dataset.artist || "",
+    });
+    const response = await fetch("/import-search", { method: "POST", body });
+    const data = await response.json().catch(() => ({}));
+    if (status) status.textContent = data.message || data.error || "";
+    if (data.ok) navigate("/?view=wishlist");
+    else button.disabled = false;
   }
 
   function panelHost() {

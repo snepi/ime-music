@@ -27,7 +27,7 @@ fn is_audio(path: &Path) -> bool {
             .unwrap_or("")
             .to_ascii_lowercase()
             .as_str(),
-        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "opus" | "wma" | "aiff" | "aif"
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "opus" | "wma" | "aiff" | "aif" | "webm" | "mp4" | "mkv"
     )
 }
 
