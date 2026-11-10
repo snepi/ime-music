@@ -68,6 +68,10 @@ pub struct Wish {
     pub title: String,
     pub artist: String,
     pub album: String,
+    #[serde(default)]
+    pub preview_url: String,
+    #[serde(default)]
+    pub cover_url: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -385,6 +389,31 @@ impl Store {
             self.player.playing = false;
         }
         self.player.queue.retain(|s| s != id);
+    }
+
+    pub fn toggle_wish(&mut self, title: &str, artist: &str, preview_url: &str, cover_url: &str) {
+        let title = title.trim();
+        if title.is_empty() {
+            return;
+        }
+        let artist = artist.trim();
+        if let Some(index) = self.settings.wishlist.iter().position(|wish| {
+            wish.title.eq_ignore_ascii_case(title) && wish.artist.eq_ignore_ascii_case(artist)
+        }) {
+            self.settings.wishlist.remove(index);
+            return;
+        }
+        self.settings.wishlist.insert(
+            0,
+            Wish {
+                id: nid(),
+                title: title.into(),
+                artist: artist.into(),
+                album: String::new(),
+                preview_url: preview_url.into(),
+                cover_url: cover_url.into(),
+            },
+        );
     }
 
     pub fn create_playlist(&mut self, name: &str) -> String {

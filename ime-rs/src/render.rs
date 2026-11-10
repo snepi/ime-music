@@ -287,7 +287,7 @@ fn main_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 
 fn home_view(i18n: &I18n) -> String {
     format!(
-        r#"<div class="home-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div><button type="button" class="btn btn-primary" data-pick="pick-folder">{}{}</button></div><section class="home-discovery-search"><div class="search-field home-discovery-search-field">{}<input type="search" class="search-input" placeholder="{}" aria-label="{}"></div><p class="home-discovery-search-hint">{}</p></section><section class="home-waves"><div class="home-waves-card"><button type="button" class="home-waves-main" data-act="waves" aria-label="{}"><div class="home-waves-visual" aria-hidden="true"><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span></div><div class="home-waves-text"><div class="home-waves-brand">IMe Waves</div><div class="home-waves-title">{}</div><div class="home-waves-meta">{}</div></div><span class="home-waves-play" aria-hidden="true">{}</span></button><div class="home-waves-actions"><button type="button" class="btn btn-ghost" data-act="waves-settings" title="{}" aria-expanded="false">{}</button></div></div></section></div>"#,
+        r#"<div class="home-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div><button type="button" class="btn btn-primary" data-pick="pick-folder">{}{}</button></div><section class="home-discovery-search"><div class="search-field home-discovery-search-field">{}<input type="search" class="search-input" placeholder="{}" aria-label="{}"></div><p class="home-discovery-search-hint">{}</p><div id="discovery-results"></div></section><section class="home-waves"><div class="home-waves-card"><button type="button" class="home-waves-main" data-act="waves" aria-label="{}"><div class="home-waves-visual" aria-hidden="true"><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span></div><div class="home-waves-text"><div class="home-waves-brand">IMe Waves</div><div class="home-waves-title">{}</div><div class="home-waves-meta">{}</div></div><span class="home-waves-play" aria-hidden="true">{}</span></button><div class="home-waves-actions"><button type="button" class="btn btn-ghost" data-act="waves-settings" title="{}" aria-expanded="false">{}</button></div></div></section></div>"#,
         esc(&i18n.t("home.title")),
         esc(&i18n.t("home.welcomeHint")),
         icon("import", 16),
@@ -409,7 +409,7 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         ));
     }
     html.push_str(&format!(
-        r#"<form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="sort"><input type="hidden" name="back" value="{}"><select class="sort-select" name="value" aria-label="{}" onchange="this.form.submit()">{}</select></form>"#,
+        r#"<form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="sort"><input type="hidden" name="back" value="{}"><select class="sort-select" name="value" aria-label="{}" onchange="this.form.requestSubmit()">{}</select></form>"#,
         esc(&screen.path()),
         esc(&i18n.t("lib.sort")),
         sort_options(i18n, &sort)
@@ -441,7 +441,7 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
                 song.artist.clone()
             };
             html.push_str(&format!(
-                r#"<div class="song-row{cur}" data-play="{id}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell"><div class="song-cover song-cover-fallback">{disc}</div></div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist">{artist}</button></div><button type="button" class="song-menu-btn" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
+                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell"><div class="song-cover song-cover-fallback">{disc}</div></div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist">{artist}</button></div><button type="button" class="song-menu-btn" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
                 cur = if current { " current" } else { "" },
                 id = esc(&song.id),
                 n = i + 1,
@@ -529,10 +529,19 @@ fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         html.push_str(r#"<ul class="wishlist-list">"#);
         for item in &store.settings.wishlist {
             html.push_str(&format!(
-                r#"<li class="wishlist-row"><button type="button" class="wishlist-play">{}</button><div class="wishlist-meta"><div class="wishlist-title">{}</div><button type="button" class="artist-link wishlist-artist">{}</button></div></li>"#,
-                icon("disc", 22),
-                esc(&item.title),
-                esc(&item.artist)
+                r#"<li class="wishlist-row" data-title="{title}" data-artist="{artist}"><button type="button" class="wishlist-play" data-title="{title}" data-artist="{artist}"{preview}>{cover}</button><div class="wishlist-meta"><div class="wishlist-title">{title}</div><button type="button" class="artist-link wishlist-artist">{artist}</button></div></li>"#,
+                title = esc(&item.title),
+                artist = esc(&item.artist),
+                preview = if item.preview_url.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#" data-preview="{}""#, esc(&item.preview_url))
+                },
+                cover = if item.cover_url.is_empty() {
+                    icon("disc", 22)
+                } else {
+                    format!(r#"<img src="{}" alt="">"#, esc(&item.cover_url))
+                },
             ));
         }
         html.push_str("</ul>");
@@ -567,13 +576,13 @@ fn history_view(store: &Store, i18n: &I18n) -> String {
         for item in &store.history {
             if let Some(song) = store.song(&item.song_id) {
                 html.push_str(&format!(
-                    r#"<li class="history-row"><button type="button" class="history-row-main" data-play="{}"><div class="history-cover">{}</div><div class="history-row-text"><div class="history-row-title">{}</div><span class="artist-link history-row-artist">{}</span></div><div class="history-row-meta"><span>{}</span><span>{}</span></div></button></li>"#,
-                    esc(&song.id),
-                    icon("music", 18),
-                    esc(&song.title),
-                    esc(&song.artist),
-                    esc(&i18n.t("history.today")),
-                    fmt_time(song.duration)
+                    r#"<li class="history-row" data-title="{title}" data-artist="{artist}"><button type="button" class="history-row-main" data-play="{id}" data-title="{title}" data-artist="{artist}"><div class="history-cover">{icon}</div><div class="history-row-text"><div class="history-row-title">{title}</div><span class="artist-link history-row-artist">{artist}</span></div><div class="history-row-meta"><span>{when}</span><span>{dur}</span></div></button></li>"#,
+                    id = esc(&song.id),
+                    title = esc(&song.title),
+                    artist = esc(&song.artist),
+                    icon = icon("music", 18),
+                    when = esc(&i18n.t("history.today")),
+                    dur = fmt_time(song.duration)
                 ));
             }
         }
@@ -906,7 +915,7 @@ fn select_field(
 
 fn toggle_row(screen: &Screen, field: &str, id: &str, checked: bool, label: &str) -> String {
     format!(
-        r#"<div class="settings-section"><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="{field}"><input type="hidden" name="value" value="{}"><input type="hidden" name="back" value="{}"><label class="ui-toggle" for="{id}"><input id="{id}" type="checkbox" class="ui-toggle-input" {} onchange="this.form.value.value=this.checked?'1':'0';this.form.submit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">{}</span></label></form></div>"#,
+        r#"<div class="settings-section"><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="{field}"><input type="hidden" name="value" value="{}"><input type="hidden" name="back" value="{}"><label class="ui-toggle" for="{id}"><input id="{id}" type="checkbox" class="ui-toggle-input" {} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">{}</span></label></form></div>"#,
         if checked { "1" } else { "0" },
         esc(&screen.path()),
         if checked { "checked" } else { "" },
@@ -1126,7 +1135,7 @@ fn playback_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let back = esc(&screen.path());
     format!(
-        r#"<div class="settings-panel"><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="check-updates"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="export-backup"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-primary">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary">{}</button><div style="margin-top:12px"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="rebuild-autos"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-ghost">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="find-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="merge-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-primary">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.submit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
+        r#"<div class="settings-panel"><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="check-updates"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="export-backup"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-primary">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary">{}</button><div style="margin-top:12px"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="rebuild-autos"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-ghost">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="find-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="merge-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-primary">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
         esc(&i18n.tf("tools.currentVersion", &[("version", "1.2.0")])),

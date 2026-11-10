@@ -46,6 +46,10 @@ struct ActForm {
     path: Option<String>,
     back: Option<String>,
     ajax: Option<String>,
+    title: Option<String>,
+    artist: Option<String>,
+    url: Option<String>,
+    cover: Option<String>,
 }
 
 fn main() {
@@ -254,7 +258,31 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             }
             .into();
         }
-        "mute" => store.settings.muted = !store.settings.muted,
+        "mute" => {
+            store.settings.muted = !store.settings.muted;
+            if store.settings.muted {
+                store.settings.volume = 0.0;
+            } else if store.settings.volume <= 0.0 {
+                store.settings.volume = 0.8;
+            }
+        }
+        "wish" => {
+            store.toggle_wish(
+                form.title.as_deref().unwrap_or(""),
+                form.artist.as_deref().unwrap_or(""),
+                form.url.as_deref().unwrap_or(""),
+                form.cover.as_deref().unwrap_or(""),
+            );
+        }
+        "volume" => {
+            if let Some(value) = form.value.as_deref() {
+                if let Ok(level) = value.parse::<f32>() {
+                    let level = level.clamp(0.0, 1.0);
+                    store.settings.volume = level;
+                    store.settings.muted = level == 0.0;
+                }
+            }
+        }
         "sort" => {
             if let Some(value) = form.value.as_deref() {
                 if let Some((by, order)) = value.split_once(':') {
@@ -298,11 +326,22 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
         }
     }
     let current = store.player.current_id.clone();
+    let current_song = current
+        .as_ref()
+        .and_then(|id| store.songs.iter().find(|song| &song.id == id));
+    let current_title = current_song.map(|song| song.title.clone()).unwrap_or_default();
+    let current_artist = current_song.map(|song| song.artist.clone()).unwrap_or_default();
     save(&state, &store);
     if ajax {
         return (
             [(header::CONTENT_TYPE, "application/json")],
-            serde_json::json!({ "ok": true, "id": current }).to_string(),
+            serde_json::json!({
+                "ok": true,
+                "id": current,
+                "title": current_title,
+                "artist": current_artist,
+            })
+            .to_string(),
         )
             .into_response();
     }
