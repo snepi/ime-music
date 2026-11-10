@@ -202,6 +202,8 @@ pub struct Settings {
     pub accent: Option<String>,
     pub listenbrainz: bool,
     pub lastfm: bool,
+    #[serde(default)]
+    pub colors: std::collections::BTreeMap<String, String>,
     pub ffmpeg_path: String,
     pub ytdlp_path: String,
     pub ytdlp_proxy: String,
@@ -232,6 +234,7 @@ impl Default for Settings {
             accent: None,
             listenbrainz: false,
             lastfm: false,
+            colors: std::collections::BTreeMap::new(),
             ffmpeg_path: String::new(),
             ytdlp_path: String::new(),
             ytdlp_proxy: String::new(),
@@ -371,6 +374,10 @@ impl Store {
     }
 
     pub fn add_file(&mut self, path: &Path) -> bool {
+        self.add_file_named(path, None)
+    }
+
+    pub fn add_file_named(&mut self, path: &Path, display_stem: Option<&str>) -> bool {
         if !is_audio(path) {
             return false;
         }
@@ -378,7 +385,7 @@ impl Store {
         if self.songs.iter().any(|s| s.path == path_str) {
             return false;
         }
-        let meta = read_tags(path);
+        let meta = read_tags(path, display_stem);
         let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let modified_at = fs::metadata(path)
             .ok()
@@ -629,6 +636,313 @@ impl Store {
         self.settings.bg_sidebar = Some(side.into());
         self.settings.accent = Some(accent.into());
     }
+
+    pub fn set_color(&mut self, key: &str, value: &str) {
+        let key = key.trim();
+        if key.is_empty() {
+            return;
+        }
+        let value = value.trim();
+        if value.is_empty() {
+            self.settings.colors.remove(key);
+        } else {
+            self.settings.colors.insert(key.to_string(), value.to_string());
+        }
+        match key {
+            "bgMain" => self.settings.bg_main = non_empty(value),
+            "accent" => self.settings.accent = non_empty(value),
+            _ => {}
+        }
+    }
+
+    pub fn enqueue(&mut self, id: &str) {
+        if self.song(id).is_none() || self.player.queue.iter().any(|item| item == id) {
+            return;
+        }
+        self.player.queue.push(id.to_string());
+    }
+
+    pub fn enqueue_next(&mut self, id: &str) {
+        if self.song(id).is_none() {
+            return;
+        }
+        self.player.queue.retain(|item| item != id);
+        let at = self.player.queue_index.saturating_add(1).min(self.player.queue.len());
+        self.player.queue.insert(at, id.to_string());
+    }
+
+    pub fn queue_remove(&mut self, id: &str) {
+        if let Some(pos) = self.player.queue.iter().position(|item| item == id) {
+            self.player.queue.remove(pos);
+            if pos < self.player.queue_index {
+                self.player.queue_index = self.player.queue_index.saturating_sub(1);
+            } else if self.player.queue_index >= self.player.queue.len() && !self.player.queue.is_empty() {
+                self.player.queue_index = self.player.queue.len() - 1;
+            }
+        }
+    }
+
+    pub fn queue_clear(&mut self) {
+        let current = self.player.current_id.clone();
+        self.player.queue.clear();
+        self.player.queue_index = 0;
+        if let Some(id) = current {
+            if self.song(&id).is_some() {
+                self.player.queue.push(id);
+            }
+        }
+    }
+
+    pub fn update_meta(&mut self, id: &str, title: &str, artist: &str, album: &str) {
+        if let Some(song) = self.songs.iter_mut().find(|song| song.id == id) {
+            if !title.trim().is_empty() {
+                song.title = title.trim().to_string();
+            }
+            song.artist = artist.trim().to_string();
+            song.album = album.trim().to_string();
+        }
+    }
+
+    pub fn add_to_playlist_by_name(&mut self, playlist_id: &str, song_id: &str) -> bool {
+        if self.song(song_id).is_none() {
+            return false;
+        }
+        let Some(pl) = self.playlists.iter_mut().find(|pl| pl.id == playlist_id) else {
+            return false;
+        };
+        if !pl.song_ids.iter().any(|id| id == song_id) {
+            pl.song_ids.push(song_id.to_string());
+        }
+        true
+    }
+
+    pub fn rebuild_autos(&mut self) -> usize {
+        let liked: Vec<String> = self
+            .songs
+            .iter()
+            .filter(|song| song.liked)
+            .map(|song| song.id.clone())
+            .collect();
+        let mut frequent: Vec<&Song> = self.songs.iter().filter(|song| song.play_count > 0).collect();
+        frequent.sort_by_key(|song| std::cmp::Reverse(song.play_count));
+        let frequent: Vec<String> = frequent.into_iter().take(25).map(|song| song.id.clone()).collect();
+        upsert_playlist(self, "auto-liked", "Избранное", liked);
+        upsert_playlist(self, "auto-often", "Часто слушаю", frequent);
+        2
+    }
+
+    pub fn backup_value(&self) -> serde_json::Value {
+        let liked: Vec<_> = self
+            .songs
+            .iter()
+            .filter(|song| song.liked)
+            .map(|song| track_ref(song))
+            .collect();
+        let playlists: Vec<_> = self
+            .playlists
+            .iter()
+            .filter(|pl| !pl.id.starts_with("auto-"))
+            .map(|pl| {
+                serde_json::json!({
+                    "name": pl.name,
+                    "tracks": pl.song_ids.iter().filter_map(|id| self.song(id)).map(track_ref).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let wishlist: Vec<_> = self
+            .settings
+            .wishlist
+            .iter()
+            .map(|wish| {
+                serde_json::json!({
+                    "title": wish.title,
+                    "artist": wish.artist,
+                    "album": wish.album,
+                    "preview": wish.preview_url,
+                    "cover": wish.cover_url,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "format": "ime-music-library-backup",
+            "version": 1,
+            "liked": liked,
+            "playlists": playlists,
+            "wishlist": wishlist,
+        })
+    }
+
+    pub fn import_backup(&mut self, value: &serde_json::Value) -> (usize, usize, usize) {
+        let mut liked_applied = 0;
+        if let Some(rows) = value.get("liked").and_then(|v| v.as_array()) {
+            for row in rows {
+                let title = row.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let artist = row.get("artist").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(song) = self.songs.iter_mut().find(|song| same_track(song, title, artist)) {
+                    if !song.liked {
+                        song.liked = true;
+                        liked_applied += 1;
+                    }
+                }
+            }
+        }
+        let mut playlists_created = 0;
+        if let Some(rows) = value.get("playlists").and_then(|v| v.as_array()) {
+            for row in rows {
+                let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if name.is_empty() {
+                    continue;
+                }
+                let id = if let Some(existing) = self.playlists.iter().find(|pl| pl.name.eq_ignore_ascii_case(name)) {
+                    existing.id.clone()
+                } else {
+                    playlists_created += 1;
+                    self.create_playlist(name)
+                };
+                if let Some(tracks) = row.get("tracks").and_then(|v| v.as_array()) {
+                    for track in tracks {
+                        let title = track.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let artist = track.get("artist").and_then(|v| v.as_str()).unwrap_or("");
+                        if let Some(song) = self.songs.iter().find(|song| same_track(song, title, artist)) {
+                            let song_id = song.id.clone();
+                            self.add_to_playlist_by_name(&id, &song_id);
+                        }
+                    }
+                }
+            }
+        }
+        let mut wishlist_added = 0;
+        if let Some(rows) = value.get("wishlist").and_then(|v| v.as_array()) {
+            for row in rows {
+                let title = row.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let artist = row.get("artist").and_then(|v| v.as_str()).unwrap_or("");
+                let album = row.get("album").and_then(|v| v.as_str()).unwrap_or("");
+                let preview = row.get("preview").and_then(|v| v.as_str()).unwrap_or("");
+                let cover = row.get("cover").and_then(|v| v.as_str()).unwrap_or("");
+                if title.trim().is_empty() {
+                    continue;
+                }
+                let existed = self.settings.wishlist.iter().any(|wish| {
+                    wish.title.eq_ignore_ascii_case(title) && wish.artist.eq_ignore_ascii_case(artist)
+                });
+                if !existed {
+                    self.toggle_wish(title, artist, album, preview, cover);
+                    wishlist_added += 1;
+                }
+            }
+        }
+        (liked_applied, playlists_created, wishlist_added)
+    }
+
+    pub fn import_track_lines(&mut self, name: &str, lines: &[(String, String)]) -> (usize, usize, usize) {
+        let mut matched = 0;
+        let mut unmatched = 0;
+        let mut wishlist_added = 0;
+        let label = if name.trim().is_empty() { "Импорт плейлиста" } else { name.trim() };
+        let playlist_id = self.create_playlist(label);
+        for (artist, title) in lines {
+            let title = title.trim();
+            let artist = artist.trim();
+            if title.is_empty() {
+                continue;
+            }
+            if let Some(song) = self.songs.iter().find(|song| same_track(song, title, artist)) {
+                let id = song.id.clone();
+                self.add_to_playlist_by_name(&playlist_id, &id);
+                matched += 1;
+            } else {
+                unmatched += 1;
+                let existed = self.settings.wishlist.iter().any(|wish| {
+                    wish.title.eq_ignore_ascii_case(title) && wish.artist.eq_ignore_ascii_case(artist)
+                });
+                if !existed {
+                    self.toggle_wish(title, artist, "", "", "");
+                    wishlist_added += 1;
+                }
+            }
+        }
+        if matched == 0 && unmatched == 0 {
+            self.playlists.retain(|pl| pl.id != playlist_id);
+        }
+        (matched, unmatched, wishlist_added)
+    }
+
+    pub fn fill_album(&mut self, id: &str, album: &str, year: Option<i32>) -> bool {
+        let Some(song) = self.songs.iter_mut().find(|song| song.id == id) else {
+            return false;
+        };
+        if !song.album.is_empty() || album.trim().is_empty() {
+            return false;
+        }
+        song.album = album.trim().to_string();
+        if song.year.is_none() {
+            song.year = year;
+        }
+        true
+    }
+
+    pub fn apply_synced(&mut self, id: &str, title: &str, artist: &str, album: &str, year: Option<i32>, cover_path: Option<&str>) -> bool {
+        let Some(song) = self.songs.iter_mut().find(|song| song.id == id) else {
+            return false;
+        };
+        let mut changed = false;
+        if !title.trim().is_empty() && song.title != title.trim() {
+            song.title = title.trim().to_string();
+            changed = true;
+        }
+        if !artist.trim().is_empty() && song.artist != artist.trim() {
+            song.artist = artist.trim().to_string();
+            changed = true;
+        }
+        if !album.trim().is_empty() && song.album != album.trim() {
+            song.album = album.trim().to_string();
+            changed = true;
+        }
+        if song.year.is_none() {
+            if let Some(year) = year {
+                song.year = Some(year);
+                changed = true;
+            }
+        }
+        if let Some(path) = cover_path.filter(|path| !path.is_empty()) {
+            if song.cover_path != path {
+                song.cover_path = path.to_string();
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() { None } else { Some(value.to_string()) }
+}
+
+fn track_ref(song: &Song) -> serde_json::Value {
+    serde_json::json!({
+        "title": song.title,
+        "artist": song.artist,
+        "album": song.album,
+    })
+}
+
+fn same_track(song: &Song, title: &str, artist: &str) -> bool {
+    song.title.eq_ignore_ascii_case(title.trim())
+        && (artist.trim().is_empty() || song.artist.eq_ignore_ascii_case(artist.trim()))
+}
+
+fn upsert_playlist(store: &mut Store, id: &str, name: &str, song_ids: Vec<String>) {
+    if let Some(pl) = store.playlists.iter_mut().find(|pl| pl.id == id) {
+        pl.name = name.to_string();
+        pl.song_ids = song_ids;
+        return;
+    }
+    store.playlists.push(Playlist {
+        id: id.to_string(),
+        name: name.to_string(),
+        song_ids,
+    });
 }
 
 struct Tags {
@@ -639,12 +953,17 @@ struct Tags {
     duration: f64,
 }
 
-fn read_tags(path: &Path) -> Tags {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Track")
-        .to_string();
+fn read_tags(path: &Path, display_stem: Option<&str>) -> Tags {
+    let stem = display_stem
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Track")
+                .to_string()
+        });
     let (artist, title) = split_name(&stem);
     let mut tags = Tags {
         title,
@@ -656,16 +975,16 @@ fn read_tags(path: &Path) -> Tags {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         if ext.eq_ignore_ascii_case("mp3") {
             if let Some(id3) = read_id3(path) {
-                if !id3.0.is_empty() {
-                    tags.title = id3.0;
+                if !id3.title.is_empty() {
+                    tags.title = id3.title;
                 }
-                if !id3.1.is_empty() {
-                    tags.artist = id3.1;
+                if !id3.artist.is_empty() {
+                    tags.artist = id3.artist;
                 }
-                if !id3.2.is_empty() {
-                    tags.album = id3.2;
+                if !id3.album.is_empty() {
+                    tags.album = id3.album;
                 }
-                tags.year = id3.3;
+                tags.year = id3.year;
             }
         }
         if ext.eq_ignore_ascii_case("wav") {
@@ -686,7 +1005,12 @@ fn split_name(stem: &str) -> (String, String) {
     (String::new(), stem.to_string())
 }
 
-fn read_id3(path: &Path) -> Option<(String, String, String, Option<i32>)> {
+pub fn embedded_tags(path: &Path) -> Option<(String, String, String, Option<i32>, Option<Vec<u8>>)> {
+    let id3 = read_id3(path)?;
+    Some((id3.title, id3.artist, id3.album, id3.year, id3.cover))
+}
+
+fn read_id3(path: &Path) -> Option<Id3> {
     let mut file = fs::File::open(path).ok()?;
     let mut header = [0u8; 10];
     file.read_exact(&mut header).ok()?;
@@ -701,6 +1025,7 @@ fn read_id3(path: &Path) -> Option<(String, String, String, Option<i32>)> {
     let mut artist = String::new();
     let mut album = String::new();
     let mut year = None;
+    let mut cover = None;
     let mut i = 0;
     while i + 10 <= buf.len() {
         let id = &buf[i..i + 4];
@@ -720,11 +1045,52 @@ fn read_id3(path: &Path) -> Option<(String, String, String, Option<i32>)> {
             b"TYER" | b"TDRC" => {
                 year = text.chars().take(4).collect::<String>().parse().ok();
             }
+            b"APIC" => {
+                if cover.is_none() {
+                    cover = apic_bytes(data);
+                }
+            }
             _ => {}
         }
         i += 10 + frame_size;
     }
-    Some((title, artist, album, year))
+    Some(Id3 { title, artist, album, year, cover })
+}
+
+struct Id3 {
+    title: String,
+    artist: String,
+    album: String,
+    year: Option<i32>,
+    cover: Option<Vec<u8>>,
+}
+
+fn apic_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 4 {
+        return None;
+    }
+    let mime_end = data[1..].iter().position(|b| *b == 0)? + 1;
+    let mut i = mime_end + 2;
+    if i >= data.len() {
+        return None;
+    }
+    let encoding = data[0];
+    if encoding == 1 || encoding == 2 {
+        while i + 1 < data.len() && !(data[i] == 0 && data[i + 1] == 0) {
+            i += 2;
+        }
+        i += 2;
+    } else {
+        i = data[i..].iter().position(|b| *b == 0).map(|pos| i + pos + 1)?;
+    }
+    if i >= data.len() {
+        return None;
+    }
+    let bytes = data[i..].to_vec();
+    if bytes.len() < 32 {
+        return None;
+    }
+    Some(bytes)
 }
 
 fn synchsafe(bytes: &[u8]) -> usize {

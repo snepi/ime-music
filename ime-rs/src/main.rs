@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Form, Router};
+use axum::{Form, Json, Router};
 use model::{data_file, Store};
 use render::{render, Screen};
 use serde::Deserialize;
@@ -22,10 +22,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tower_http::services::ServeDir;
 
+struct SyncSession {
+    token: String,
+    expires_at: i64,
+    files: u32,
+    bytes: u64,
+}
+
 struct AppState {
     store: Mutex<Store>,
     data_path: PathBuf,
     static_dir: PathBuf,
+    sync: Mutex<Option<SyncSession>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -69,6 +77,7 @@ fn main() {
         store: Mutex::new(store),
         data_path,
         static_dir: static_dir.clone(),
+        sync: Mutex::new(None),
     });
     let port: u16 = std::env::var("IME_RS_PORT")
         .ok()
@@ -84,8 +93,21 @@ fn main() {
         .route("/audio/:id", get(audio))
         .route("/cover/:id", get(cover_file))
         .route("/api/state", get(api_state))
+        .route("/api/queue", get(api_queue))
         .route("/api/deezer", get(deezer_proxy))
         .route("/api/waves", get(waves_pool))
+        .route("/api/updates", get(api_updates))
+        .route("/backup", get(backup_download))
+        .route("/import-backup", post(import_backup))
+        .route("/api/playlist", post(import_playlist))
+        .route("/api/meta", post(meta_sync))
+        .route("/api/phone/start", post(phone_start))
+        .route("/api/phone/stop", post(phone_stop))
+        .route("/sync/info", get(sync_info))
+        .route("/sync/join", get(sync_join))
+        .route("/sync/offer", post(sync_offer))
+        .route("/sync/file/:id", get(sync_file))
+        .route("/sync/done", post(sync_done))
         .nest_service("/brand", ServeDir::new(static_dir.join("brand")))
         .route("/index.css", get(css))
         .route("/player.js", get(player_js))
@@ -264,6 +286,9 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
     let ajax = form.ajax.as_deref() == Some("1");
     let action = form.action.clone().unwrap_or_default();
     let mut store = state.store.lock().expect("store");
+    let i18n = i18n::I18n::load(&state.static_dir.join("i18n"), &store.settings.locale);
+    let mut message = String::new();
+    let mut detail = serde_json::json!({});
     match action.as_str() {
         "set" => apply_field(&mut store, form.field.as_deref().unwrap_or(""), form.value.as_deref().unwrap_or("")),
         "preset" => {
@@ -368,10 +393,85 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 store.import_path(std::path::Path::new(&path));
             }
         }
-        "find-dupes" | "merge-dupes" => {
-            store.merge_duplicates();
+        "find-dupes" => {
+            let groups = store.duplicate_groups();
+            detail = serde_json::json!({ "groups": groups });
+            message = if groups == 0 {
+                i18n.t("tools.repairNone")
+            } else {
+                i18n.tf("tools.repairFound", &[("groups", &groups.to_string())])
+            };
         }
-        "refresh" | "rebuild-autos" | "check-updates" | "export-backup" | "youtube" | "enrich" => {}
+        "merge-dupes" => {
+            let (merged, removed) = store.merge_duplicates();
+            detail = serde_json::json!({ "merged": merged, "removed": removed });
+            message = if merged == 0 {
+                i18n.t("tools.repairNone")
+            } else {
+                i18n.tf("tools.repairMerged", &[("merged", &merged.to_string()), ("removed", &removed.to_string())])
+            };
+        }
+        "rebuild-autos" => {
+            let count = store.rebuild_autos();
+            detail = serde_json::json!({ "count": count });
+            message = i18n.tf("tools.autosUpdated", &[("count", &count.to_string())]);
+        }
+        "queue-add" => {
+            if let Some(id) = form.id.as_deref() {
+                store.enqueue(id);
+                message = i18n.t("menu.queueToast");
+            }
+        }
+        "queue-next" => {
+            if let Some(id) = form.id.as_deref() {
+                store.enqueue_next(id);
+                message = i18n.t("menu.nextToast");
+            }
+        }
+        "queue-remove" => {
+            if let Some(id) = form.id.as_deref() {
+                store.queue_remove(id);
+            }
+        }
+        "queue-clear" => store.queue_clear(),
+        "delete-song" => {
+            if let Some(id) = form.id.as_deref() {
+                store.remove_song(id);
+            }
+        }
+        "update-meta" => {
+            if let Some(id) = form.id.as_deref() {
+                store.update_meta(
+                    id,
+                    form.title.as_deref().unwrap_or(""),
+                    form.artist.as_deref().unwrap_or(""),
+                    form.album.as_deref().unwrap_or(""),
+                );
+            }
+        }
+        "add-playlist" => {
+            if let (Some(id), Some(playlist)) = (form.id.as_deref(), form.value.as_deref().or(form.name.as_deref())) {
+                store.add_to_playlist_by_name(playlist, id);
+            }
+        }
+        "set-color" => {
+            store.set_color(form.field.as_deref().unwrap_or(""), form.value.as_deref().unwrap_or(""));
+        }
+        "reveal" => {
+            if let Some(id) = form.id.as_deref() {
+                if let Some(song) = store.song(id) {
+                    message = song.path.clone();
+                    detail = serde_json::json!({ "path": song.path });
+                    let folder = std::path::Path::new(&song.path)
+                        .parent()
+                        .map(|dir| dir.to_path_buf());
+                    if let Some(folder) = folder {
+                        let _ = std::process::Command::new("xdg-open").arg(folder).spawn();
+                    }
+                }
+            }
+        }
+        "refresh" | "check-updates" | "export-backup" | "youtube" | "enrich" => {}
         _ => {}
     }
     if let Some(view) = back.split("view=").nth(1).and_then(|s| s.split('&').next()) {
@@ -394,6 +494,9 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 "id": current,
                 "title": current_title,
                 "artist": current_artist,
+                "album": current_song.map(|song| song.album.clone()).unwrap_or_default(),
+                "message": message,
+                "detail": detail,
             })
             .to_string(),
         )
@@ -451,21 +554,24 @@ async fn import_files(State(state): State<Arc<AppState>>, mut multipart: Multipa
     let mut saved = Vec::new();
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.file_name().unwrap_or("track.bin").to_string();
-        let name = name.rsplit(['/', '\\']).next().unwrap_or("track.bin");
-        let safe: String = name
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
-            .collect();
+        let original = name.rsplit(['/', '\\']).next().unwrap_or("track.bin").to_string();
+        let stem = std::path::Path::new(&original)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Track")
+            .trim()
+            .to_string();
+        let safe = safe_upload_name(&original);
         let dest = dir.join(format!("{}-{}", model_nid(), safe));
         if let Ok(bytes) = field.bytes().await {
             if std::fs::write(&dest, &bytes).is_ok() {
-                saved.push(dest);
+                saved.push((dest, stem));
             }
         }
     }
     let mut store = state.store.lock().expect("store");
-    for path in saved {
-        store.add_file(&path);
+    for (path, stem) in saved {
+        store.add_file_named(&path, Some(stem.as_str()));
     }
     save(&state, &store);
     Redirect::to("/?view=all")
@@ -580,7 +686,11 @@ async fn cover_file(State(state): State<Arc<AppState>>, Path(id): Path<String>) 
     ([(header::CONTENT_TYPE, kind)], bytes).into_response()
 }
 
-async fn audio(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
+async fn audio(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
     let path = {
         let store = state.store.lock().expect("store");
         store.song(&id).map(|song| song.path.clone())
@@ -598,13 +708,43 @@ async fn audio(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> im
         "flac" => "audio/flac",
         "ogg" => "audio/ogg",
         "wav" => "audio/wav",
-        "m4a" => "audio/mp4",
+        "m4a" | "mp4" => "audio/mp4",
+        "webm" => "audio/webm",
         _ => "application/octet-stream",
     };
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => (StatusCode::OK, [(header::CONTENT_TYPE, mime)], bytes).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "missing").into_response(),
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(_) => return (StatusCode::NOT_FOUND, "missing").into_response(),
+    };
+    let total = bytes.len() as u64;
+    let range = headers.get(header::RANGE).and_then(|value| value.to_str().ok()).unwrap_or("");
+    if let Some(spec) = range.strip_prefix("bytes=") {
+        let (start_text, end_text) = spec.split_once('-').unwrap_or((spec, ""));
+        let start: u64 = start_text.parse().unwrap_or(0);
+        let end: u64 = end_text.parse().unwrap_or(total.saturating_sub(1));
+        let end = end.min(total.saturating_sub(1));
+        if start >= total || start > end {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+                .body(axum::body::Body::empty())
+                .unwrap();
+        }
+        let slice = bytes[start as usize..=end as usize].to_vec();
+        return Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, mime)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+            .body(axum::body::Body::from(slice))
+            .unwrap();
     }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .body(axum::body::Body::from(bytes))
+        .unwrap()
 }
 
 async fn waves_pool(State(state): State<Arc<AppState>>) -> Response {
@@ -673,6 +813,722 @@ fn app_dirs() -> (PathBuf, PathBuf) {
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.join("static"));
     (static_dir, data_dir)
+}
+
+fn safe_upload_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+            out.push('_');
+        } else {
+            out.push(c);
+        }
+    }
+    let out = out.trim().trim_matches('.').to_string();
+    if out.is_empty() { "track.bin".into() } else { out }
+}
+
+fn json_response(value: serde_json::Value) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        value.to_string(),
+    )
+        .into_response()
+}
+
+async fn api_queue(State(state): State<Arc<AppState>>) -> Response {
+    let store = state.store.lock().expect("store");
+    let items: Vec<_> = store
+        .player
+        .queue
+        .iter()
+        .filter_map(|id| store.song(id))
+        .map(|song| {
+            serde_json::json!({
+                "id": song.id,
+                "title": song.title,
+                "artist": song.artist,
+                "album": song.album,
+            })
+        })
+        .collect();
+    let playlists: Vec<_> = store
+        .playlists
+        .iter()
+        .map(|pl| serde_json::json!({ "id": pl.id, "name": pl.name }))
+        .collect();
+    json_response(serde_json::json!({
+        "current": store.player.current_id,
+        "items": items,
+        "playlists": playlists,
+    }))
+}
+
+async fn api_updates() -> Response {
+    let fetched = tokio::task::spawn_blocking(|| {
+        ureq::get("https://api.github.com/repos/snepi/ime-music/releases/latest")
+            .set("User-Agent", "IMe-Music")
+            .set("Accept", "application/vnd.github+json")
+            .timeout(std::time::Duration::from_secs(12))
+            .call()
+            .map_err(|err| err.to_string())
+            .and_then(|response| response.into_string().map_err(|err| err.to_string()))
+    })
+    .await;
+    let current = "1.2.0";
+    let body = match fetched {
+        Ok(Ok(text)) => text,
+        _ => {
+            return json_response(serde_json::json!({
+                "ok": false,
+                "current": current,
+                "message": "Не удалось проверить обновления",
+            }));
+        }
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+    let tag = parsed.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").trim_start_matches('v').to_string();
+    let update = !tag.is_empty() && tag != current;
+    let message = if tag.is_empty() {
+        "Не удалось проверить обновления".to_string()
+    } else if update {
+        format!("Доступна версия {tag}")
+    } else {
+        "У вас последняя версия".to_string()
+    };
+    json_response(serde_json::json!({
+        "ok": true,
+        "current": current,
+        "latest": tag,
+        "update": update,
+        "htmlUrl": parsed.get("html_url").and_then(|v| v.as_str()).unwrap_or("https://github.com/snepi/ime-music/releases"),
+        "message": message,
+    }))
+}
+
+async fn backup_download(State(state): State<Arc<AppState>>) -> Response {
+    let store = state.store.lock().expect("store");
+    let body = serde_json::to_vec_pretty(&store.backup_value()).unwrap_or_else(|_| b"{}".to_vec());
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CONTENT_DISPOSITION, "attachment; filename=\"ime-music-backup.json\""),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn import_backup(State(state): State<Arc<AppState>>, body: String) -> Response {
+    let value: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(value) => value,
+        Err(_) => return json_response(serde_json::json!({ "ok": false, "message": "Файл бэкапа не читается" })),
+    };
+    let mut store = state.store.lock().expect("store");
+    let (liked, playlists, wishlist) = store.import_backup(&value);
+    save(&state, &store);
+    json_response(serde_json::json!({
+        "ok": true,
+        "liked": liked,
+        "playlists": playlists,
+        "wishlist": wishlist,
+        "message": format!("Импортировано: лайков {liked}, плейлистов {playlists}, wishlist {wishlist}"),
+    }))
+}
+
+#[derive(Deserialize, Default)]
+struct PlaylistForm {
+    url: Option<String>,
+    text: Option<String>,
+}
+
+async fn import_playlist(State(state): State<Arc<AppState>>, Form(form): Form<PlaylistForm>) -> Response {
+    let (lines, playlist_name) = if let Some(url) = form.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let owned = url.to_string();
+        let ytdlp = {
+            let store = state.store.lock().expect("store");
+            (store.settings.ytdlp_path.clone(), store.settings.ytdlp_proxy.clone())
+        };
+        match tokio::task::spawn_blocking(move || resolve_playlist_link(&owned, &ytdlp.0, &ytdlp.1)).await {
+            Ok(Ok((name, entries))) => (entries, name),
+            Ok(Err(message)) => return json_response(serde_json::json!({ "ok": false, "message": message })),
+            Err(_) => return json_response(serde_json::json!({ "ok": false, "message": "Не удалось открыть ссылку" })),
+        }
+    } else {
+        (parse_playlist_text(&form.text.unwrap_or_default()), "Импорт плейлиста".into())
+    };
+    let lines = lines;
+    if lines.is_empty() {
+        return json_response(serde_json::json!({
+            "ok": false,
+            "message": "В ссылке или файле нет строк «Артист - Название», M3U или CSV",
+        }));
+    }
+    let mut store = state.store.lock().expect("store");
+    let (matched, unmatched, wishlist) = store.import_track_lines(&playlist_name, &lines);
+    save(&state, &store);
+    json_response(serde_json::json!({
+        "ok": true,
+        "matched": matched,
+        "unmatched": unmatched,
+        "wishlist": wishlist,
+        "message": format!("Импорт «{playlist_name}»: найдено {matched}, не найдено {unmatched} (в wishlist: {wishlist})"),
+    }))
+}
+
+fn resolve_playlist_link(url: &str, ytdlp: &str, proxy: &str) -> Result<(String, Vec<(String, String)>), String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("music.yandex.") || lower.contains("ya.ru/music") {
+        return fetch_yandex_playlist(url);
+    }
+    if lower.contains("open.spotify.com") || lower.contains("spotify.com/playlist") {
+        return fetch_spotify_playlist(url);
+    }
+    if lower.contains("music.apple.com") || lower.contains("itunes.apple.com") {
+        return fetch_apple_playlist(url);
+    }
+    if lower.contains("music.youtube.com")
+        || ((lower.contains("youtube.com") || lower.contains("youtu.be")) && (lower.contains("list=") || lower.contains("/playlist")))
+    {
+        return fetch_youtube_playlist(url, ytdlp, proxy);
+    }
+    let text = http_text(url)?;
+    let lines = parse_playlist_text(&text);
+    if lines.is_empty() {
+        return Err("Не удалось прочитать плейлист. Нужна открытая ссылка Яндекс.Музыки, Spotify, Apple Music или YouTube Music, либо файл M3U/CSV.".into());
+    }
+    Ok(("Плейлист".into(), lines))
+}
+
+fn http_text(url: &str) -> Result<String, String> {
+    ureq::get(url)
+        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+        .set("Accept", "text/html,application/json,*/*")
+        .timeout(std::time::Duration::from_secs(20))
+        .call()
+        .map_err(|err| err.to_string())
+        .and_then(|response| response.into_string().map_err(|err| err.to_string()))
+}
+
+fn fetch_yandex_playlist(url: &str) -> Result<(String, Vec<(String, String)>), String> {
+    let (owner, kind) = if let Some(rest) = url.split("iframe/playlist/").nth(1) {
+        let mut parts = rest.split('/');
+        (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").trim_end_matches(|c: char| !c.is_ascii_digit() && c != '-').to_string())
+    } else if let Some(rest) = url.split("/users/").nth(1) {
+        let mut parts = rest.split('/');
+        let owner = parts.next().unwrap_or("").to_string();
+        let kind = parts.nth(1).unwrap_or("").chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
+        (owner, kind)
+    } else {
+        return Err("Не распознана ссылка Яндекс.Музыки".into());
+    };
+    if owner.is_empty() || kind.is_empty() {
+        return Err("Не распознана ссылка Яндекс.Музыки".into());
+    }
+    let api = format!(
+        "https://music.yandex.ru/handlers/playlist.jsx?owner={}&kinds={}&light=true",
+        urlencoding::encode(&owner),
+        urlencoding::encode(&kind)
+    );
+    let text = ureq::get(&api)
+        .set("Referer", "https://music.yandex.ru/")
+        .set("Accept", "application/json")
+        .set("X-Requested-With", "XMLHttpRequest")
+        .timeout(std::time::Duration::from_secs(20))
+        .call()
+        .map_err(|_| "Яндекс.Музыка не ответила".to_string())
+        .and_then(|response| response.into_string().map_err(|err| err.to_string()))?;
+    let data: serde_json::Value = serde_json::from_str(&text).map_err(|_| "Яндекс.Музыка вернула неожиданный ответ".to_string())?;
+    let playlist = data.get("playlist").ok_or("Плейлист Яндекс.Музыки не найден или закрыт")?;
+    let mut lines = Vec::new();
+    if let Some(tracks) = playlist.get("tracks").and_then(|v| v.as_array()) {
+        for track in tracks {
+            let node = track.get("track").unwrap_or(track);
+            let title = node.get("title").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let artist = node
+                .get("artists")
+                .and_then(|v| v.as_array())
+                .map(|artists| {
+                    artists.iter().filter_map(|a| a.get("name").and_then(|v| v.as_str())).collect::<Vec<_>>().join(", ")
+                })
+                .unwrap_or_default();
+            if !title.is_empty() {
+                lines.push((artist, title));
+            }
+        }
+    }
+    if lines.is_empty() {
+        return Err("В плейлисте Яндекс.Музыки нет треков".into());
+    }
+    let name = playlist.get("title").and_then(|v| v.as_str()).unwrap_or("Яндекс.Музыка").to_string();
+    Ok((name, lines))
+}
+
+fn fetch_spotify_playlist(url: &str) -> Result<(String, Vec<(String, String)>), String> {
+    let id = url.split("playlist/").nth(1).unwrap_or("").chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>();
+    if id.is_empty() {
+        return Err("Не распознана ссылка Spotify (нужен playlist/...)".into());
+    }
+    let text = http_text(&format!("https://open.spotify.com/embed/playlist/{id}"))?;
+    let mut lines = Vec::new();
+    for chunk in text.split("\"name\":\"").skip(1) {
+        let title = chunk.split('"').next().unwrap_or("").replace("\\u0026", "&");
+        if title.is_empty() || title.len() > 180 {
+            continue;
+        }
+        lines.push((String::new(), title));
+        if lines.len() >= 100 {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return Err("Не удалось прочитать плейлист Spotify. Сделайте его открытым или вставьте CSV.".into());
+    }
+    Ok(("Spotify".into(), lines))
+}
+
+fn fetch_apple_playlist(url: &str) -> Result<(String, Vec<(String, String)>), String> {
+    let text = http_text(url)?;
+    let mut lines = Vec::new();
+    for block in text.split("type=\"application/ld+json\">").skip(1) {
+        let json = block.split("</script>").next().unwrap_or("");
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(json) else { continue };
+        let nodes = if data.is_array() { data.as_array().cloned().unwrap_or_default() } else { vec![data] };
+        for node in nodes {
+            let items = node.get("track").or_else(|| node.get("itemListElement")).and_then(|v| v.as_array());
+            let Some(items) = items else { continue };
+            for item in items {
+                let song = item.get("item").unwrap_or(item);
+                let title = song.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                let artist = song.get("byArtist").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if !title.is_empty() {
+                    lines.push((artist, title));
+                }
+            }
+        }
+    }
+    if lines.is_empty() {
+        return Err("Не удалось прочитать плейлист Apple Music. Ссылка должна быть публичной.".into());
+    }
+    Ok(("Apple Music".into(), lines))
+}
+
+fn fetch_youtube_playlist(url: &str, configured: &str, proxy: &str) -> Result<(String, Vec<(String, String)>), String> {
+    let bin = if !configured.trim().is_empty() && std::path::Path::new(configured.trim()).exists() {
+        configured.trim().to_string()
+    } else if std::process::Command::new("yt-dlp").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        "yt-dlp".into()
+    } else {
+        return Err("Для YouTube Music нужен yt-dlp. Укажите путь в Настройки → Инструменты.".into());
+    };
+    let mut args: Vec<String> = vec!["--ignore-config".into(), "--flat-playlist".into(), "--no-download".into(), "-J".into()];
+    if !proxy.trim().is_empty() {
+        args.push("--proxy".into());
+        args.push(proxy.trim().into());
+    }
+    args.push(url.into());
+    let output = std::process::Command::new(bin).args(args).output().map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err("yt-dlp не смог прочитать плейлист. Аудио при этом не скачивается.".into());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let data: serde_json::Value = serde_json::from_str(&text).map_err(|_| "yt-dlp вернул не JSON".to_string())?;
+    let mut lines = Vec::new();
+    if let Some(entries) = data.get("entries").and_then(|v| v.as_array()) {
+        for entry in entries {
+            let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let artist = entry.get("artist").or_else(|| entry.get("uploader")).and_then(|v| v.as_str()).unwrap_or("").trim();
+            if !title.is_empty() {
+                lines.push((artist.to_string(), title.to_string()));
+            }
+        }
+    }
+    if lines.is_empty() {
+        return Err("В плейлисте YouTube Music нет треков".into());
+    }
+    let name = data.get("title").and_then(|v| v.as_str()).unwrap_or("YouTube Music").to_string();
+    Ok((name, lines))
+}
+
+fn parse_playlist_text(raw: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') && !line.starts_with("#EXTINF") {
+            continue;
+        }
+        let payload = if let Some(rest) = line.strip_prefix("#EXTINF:") {
+            rest.split_once(',').map(|(_, title)| title.trim()).unwrap_or("")
+        } else if line.starts_with('#') || line.starts_with("http://") || line.starts_with("https://") {
+            continue;
+        } else {
+            line
+        };
+        if payload.is_empty() {
+            continue;
+        }
+        let (artist, title) = if let Some((a, t)) = payload.split_once(" - ") {
+            (a.trim().to_string(), t.trim().to_string())
+        } else if let Some((t, a)) = payload.split_once(',') {
+            let t = t.trim().trim_matches('"');
+            let a = a.trim().trim_matches('"');
+            if t.eq_ignore_ascii_case("title") {
+                continue;
+            }
+            (a.to_string(), t.to_string())
+        } else {
+            (String::new(), payload.to_string())
+        };
+        if !title.is_empty() {
+            out.push((artist, title));
+        }
+    }
+    out
+}
+
+async fn meta_sync(State(state): State<Arc<AppState>>) -> Response {
+    let jobs: Vec<(String, String, String, String, bool)> = {
+        let store = state.store.lock().expect("store");
+        store
+            .songs
+            .iter()
+            .map(|song| {
+                (
+                    song.id.clone(),
+                    song.path.clone(),
+                    song.title.clone(),
+                    song.artist.clone(),
+                    song.cover_path.is_empty(),
+                )
+            })
+            .collect()
+    };
+    let covers = state.data_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("covers");
+    let _ = std::fs::create_dir_all(&covers);
+    let mut updated = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+    for (id, path, title, artist, needs_cover) in jobs {
+        if !std::path::Path::new(&path).exists() {
+            failed += 1;
+            continue;
+        }
+        let read = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || model::embedded_tags(std::path::Path::new(&path))
+        })
+        .await;
+        let (tag_title, tag_artist, mut tag_album, mut year, picture) = match read {
+            Ok(Some(tags)) => tags,
+            Ok(None) => (String::new(), String::new(), String::new(), None, None),
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+        let mut cover_file = None;
+        if let Some(bytes) = picture {
+            let ext = if bytes.starts_with(b"\x89PNG") { "png" } else { "jpg" };
+            let file = covers.join(format!("{id}.{ext}"));
+            if std::fs::write(&file, bytes).is_ok() {
+                cover_file = Some(file.to_string_lossy().into_owned());
+            }
+        } else if needs_cover {
+            if let Some((bytes, found_album, found_year)) = deezer_cover(&artist, &title).await {
+                let file = covers.join(format!("{id}.jpg"));
+                if std::fs::write(&file, bytes).is_ok() {
+                    cover_file = Some(file.to_string_lossy().into_owned());
+                }
+                if tag_album.is_empty() {
+                    tag_album = found_album;
+                }
+                if year.is_none() {
+                    year = found_year;
+                }
+            }
+        }
+        let mut store = state.store.lock().expect("store");
+        if store.apply_synced(&id, &tag_title, &tag_artist, &tag_album, year, cover_file.as_deref()) {
+            updated += 1;
+        } else {
+            skipped += 1;
+        }
+        save(&state, &store);
+    }
+    json_response(serde_json::json!({
+        "ok": true,
+        "updated": updated,
+        "skipped": skipped,
+        "failed": failed,
+        "message": format!("Синхронизация: обновлено {updated}, без изменений {skipped}, ошибок {failed}"),
+    }))
+}
+
+async fn deezer_cover(artist: &str, title: &str) -> Option<(Vec<u8>, String, Option<i32>)> {
+    let query = format!("{artist} {title}").trim().to_string();
+    if query.is_empty() {
+        return None;
+    }
+    let path = format!("/search/track?q={}&limit=1", urlencoding::encode(&query));
+    let found = tokio::task::spawn_blocking(move || {
+        ureq::get(&format!("https://api.deezer.com{path}"))
+            .timeout(std::time::Duration::from_secs(8))
+            .call()
+            .ok()
+            .and_then(|response| response.into_string().ok())
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let parsed: serde_json::Value = serde_json::from_str(&found).ok()?;
+    let album_node = parsed.get("data")?.as_array()?.first()?.get("album")?;
+    let url = album_node.get("cover_medium")?.as_str()?.to_string();
+    let album = album_node.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let year = album_node
+        .get("release_date")
+        .and_then(|v| v.as_str())
+        .and_then(|date| date.get(..4))
+        .and_then(|year| year.parse().ok());
+    let bytes = tokio::task::spawn_blocking(move || {
+        ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(8))
+            .call()
+            .ok()
+            .and_then(|response| {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes).ok()?;
+                Some(bytes)
+            })
+    })
+    .await
+    .ok()
+    .flatten()
+    .filter(|bytes| bytes.len() > 32)?;
+    Some((bytes, album, year))
+}
+
+fn lan_addresses() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_to_string("/proc/net/fib_trie") {
+        for line in entries.lines() {
+            let line = line.trim();
+            if let Some(ip) = line.strip_prefix("|-- ") {
+                if ip.starts_with("127.") || ip.contains(':') || !ip.split('.').all(|part| part.parse::<u8>().is_ok()) {
+                    continue;
+                }
+                if !out.iter().any(|have: &String| have == ip) {
+                    out.push(ip.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn sync_public(session: &SyncSession) -> serde_json::Value {
+    let lan = lan_addresses();
+    let _host = lan.first().cloned().unwrap_or_else(|| "127.0.0.1".into());
+    serde_json::json!({
+        "active": true,
+        "token": session.token,
+        "expiresAt": session.expires_at,
+        "transferredFiles": session.files,
+        "transferredBytes": session.bytes,
+        "lanAddresses": lan,
+        "joinUrl": format!("/sync/join?t={}", session.token),
+    })
+}
+
+async fn phone_start(State(state): State<Arc<AppState>>) -> Response {
+    let mut sync = state.sync.lock().expect("sync");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    if sync.as_ref().map(|session| session.expires_at > now).unwrap_or(false) {
+        return json_response(serde_json::json!({ "ok": true, "status": sync_public(sync.as_ref().unwrap()) }));
+    }
+    let token = format!("{:x}{:x}", now, now.wrapping_mul(17));
+    let session = SyncSession {
+        token,
+        expires_at: now + 30 * 60 * 1000,
+        files: 0,
+        bytes: 0,
+    };
+    let body = sync_public(&session);
+    *sync = Some(session);
+    json_response(serde_json::json!({ "ok": true, "status": body }))
+}
+
+async fn phone_stop(State(state): State<Arc<AppState>>) -> Response {
+    *state.sync.lock().expect("sync") = None;
+    json_response(serde_json::json!({ "ok": true, "status": { "active": false } }))
+}
+
+fn bearer_token(headers: &axum::http::HeaderMap, query_token: Option<&str>) -> String {
+    if let Some(token) = query_token.filter(|s| !s.is_empty()) {
+        return token.to_string();
+    }
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn session_ok(state: &AppState, token: &str) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    state
+        .sync
+        .lock()
+        .expect("sync")
+        .as_ref()
+        .map(|session| session.token == token && session.expires_at > now)
+        .unwrap_or(false)
+}
+
+#[derive(Deserialize, Default)]
+struct TokenQuery {
+    t: Option<String>,
+}
+
+async fn sync_info(State(state): State<Arc<AppState>>) -> Response {
+    let active = state.sync.lock().expect("sync").is_some();
+    json_response(serde_json::json!({
+        "ok": true,
+        "app": "IMe Music",
+        "protocol": 1,
+        "active": active,
+    }))
+}
+
+async fn sync_join(State(state): State<Arc<AppState>>, Query(query): Query<TokenQuery>) -> Response {
+    let ok = session_ok(&state, query.t.as_deref().unwrap_or(""));
+    let body = format!(
+        r#"<!doctype html><html lang="ru"><meta charset="utf-8"/><title>IMe Sync</title><body style="font-family:system-ui;background:#111;color:#eee;padding:24px"><h1>IMe Music — синхронизация</h1><p>{}</p><p style="opacity:.7;font-size:13px">Протокол v1 · только новые файлы</p></body></html>"#,
+        if ok {
+            "Сессия активна. Откройте приложение IMe на телефоне и продолжите приём."
+        } else {
+            "Сессия недействительна или истекла. Запустите синк заново на ПК."
+        }
+    );
+    (
+        StatusCode::from_u16(if ok { 200 } else { 410 }).unwrap_or(StatusCode::OK),
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
+#[derive(Deserialize, Default)]
+struct OfferBody {
+    fingerprints: Option<Vec<String>>,
+    token: Option<String>,
+}
+
+async fn sync_offer(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<TokenQuery>,
+    Json(body): Json<OfferBody>,
+) -> Response {
+    let token = {
+        let from_body = body.token.clone().unwrap_or_default();
+        if !from_body.is_empty() {
+            from_body
+        } else {
+            bearer_token(&headers, query.t.as_deref())
+        }
+    };
+    if !session_ok(&state, &token) {
+        return json_response(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    let known: std::collections::HashSet<String> = body.fingerprints.unwrap_or_default().into_iter().collect();
+    let store = state.store.lock().expect("store");
+    let mut missing = Vec::new();
+    for song in &store.songs {
+        if !std::path::Path::new(&song.path).exists() {
+            continue;
+        }
+        let fp = format!(
+            "{}::{}::{}::{}",
+            song.artist.to_lowercase(),
+            song.title.to_lowercase(),
+            song.duration.round() as i64,
+            song.file_size
+        );
+        if known.contains(&fp) {
+            continue;
+        }
+        let format = std::path::Path::new(&song.path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("mp3");
+        missing.push(serde_json::json!({
+            "id": song.id,
+            "fingerprint": fp,
+            "title": song.title,
+            "artist": song.artist,
+            "album": song.album,
+            "duration": song.duration,
+            "fileSize": song.file_size,
+            "format": format,
+            "liked": song.liked,
+        }));
+    }
+    json_response(serde_json::json!({
+        "ok": true,
+        "missing": missing,
+        "trackCount": store.songs.len(),
+    }))
+}
+
+async fn sync_file(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<TokenQuery>,
+    Path(id): Path<String>,
+) -> Response {
+    let token = bearer_token(&headers, query.t.as_deref());
+    if !session_ok(&state, &token) {
+        return json_response(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    let path = {
+        let store = state.store.lock().expect("store");
+        store.song(&id).map(|song| song.path.clone())
+    };
+    let Some(path) = path else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            if let Some(session) = state.sync.lock().expect("sync").as_mut() {
+                session.files = session.files.saturating_add(1);
+                session.bytes = session.bytes.saturating_add(bytes.len() as u64);
+            }
+            (
+                [
+                    (header::CONTENT_TYPE, "application/octet-stream"),
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn sync_done(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Query(query): Query<TokenQuery>) -> Response {
+    let token = bearer_token(&headers, query.t.as_deref());
+    if !session_ok(&state, &token) {
+        return json_response(serde_json::json!({ "ok": false, "error": "unauthorized" }));
+    }
+    json_response(serde_json::json!({ "ok": true }))
 }
 
 async fn file_response(path: &std::path::Path, mime: &'static str) -> Response {

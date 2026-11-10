@@ -1,7 +1,12 @@
 (() => {
   const audio = new Audio();
-  let now = { title: "", artist: "", url: "", cover: "" };
-  audio.volume = Number(document.body.dataset.volume || 0.8) || 0.8;
+  let now = { title: "", artist: "", album: "", url: "", cover: "" };
+  const rawVolume = document.body.dataset.volume;
+  const parsedVolume = Number(rawVolume);
+  audio.volume = rawVolume != null && rawVolume !== "" && Number.isFinite(parsedVolume) ? Math.min(1, Math.max(0, parsedVolume)) : 0.8;
+  let drag = null;
+  let sleep = { mode: "off", timer: 0 };
+  const imports = [];
   let waves = { active: false, queue: [], index: -1, seen: new Set() };
   const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
 
@@ -12,6 +17,8 @@
   const HEART_PATH =
     "M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z";
   const wished = new Set();
+  const VOL = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>';
+  const VOL_MUTE = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
   let lastSearchHtml = "";
   let lastArtistHtml = "";
 
@@ -23,13 +30,67 @@
       if (window.ipc && window.ipc.postMessage) window.ipc.postMessage("drag");
     }
     const progress = event.target.closest(".progress-bar");
-    if (progress && audio.duration) {
-      const rect = progress.getBoundingClientRect();
-      audio.currentTime = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * audio.duration;
+    if (progress) {
+      drag = { kind: "seek", el: progress };
+      try { progress.setPointerCapture(event.pointerId); } catch { /* capture */ }
+      seekTo(progress, event.clientX);
     }
+    const volume = event.target.closest(".volume-bar");
+    if (volume) {
+      drag = { kind: "volume", el: volume };
+      try { volume.setPointerCapture(event.pointerId); } catch { /* capture */ }
+      setVolume(volume, event.clientX);
+    }
+  });
+  document.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    if (drag.kind === "seek") seekTo(drag.el, event.clientX);
+    if (drag.kind === "volume") setVolume(drag.el, event.clientX, false);
+  });
+  document.addEventListener("pointerup", () => {
+    if (drag && drag.kind === "volume") post("volume", { value: String(audio.volume) });
+    drag = null;
+  });
+  document.addEventListener("pointercancel", () => {
+    drag = null;
   });
 
   document.addEventListener("click", (event) => {
+    const scrim = event.target.closest(".modal-overlay-dismiss");
+    if (scrim) {
+      event.preventDefault();
+      navigate(scrim.dataset.href || "/");
+      return;
+    }
+    const resetColor = event.target.closest("[data-color-reset]");
+    if (resetColor) {
+      event.preventDefault();
+      applyColor(resetColor.dataset.colorReset, resetColor.dataset.colorDefault);
+      return;
+    }
+    if (event.target.closest("[data-color-reset-all]")) {
+      event.preventDefault();
+      document.querySelectorAll("[data-color-reset]").forEach((btn) => applyColor(btn.dataset.colorReset, btn.dataset.colorDefault));
+      return;
+    }
+    const tool = event.target.closest("[data-tool]");
+    if (tool) {
+      event.preventDefault();
+      runTool(tool.dataset.tool);
+      return;
+    }
+    const menuBtn = event.target.closest("[data-menu]");
+    if (menuBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      openTrackMenu(menuBtn);
+      return;
+    }
+    if (event.target.closest("[data-bell]")) {
+      event.preventDefault();
+      toggleBell();
+      return;
+    }
     const winBtn = event.target.closest("[data-win]");
     if (winBtn && window.ipc && window.ipc.postMessage) {
       event.preventDefault();
@@ -193,6 +254,9 @@
     }
     if (name === "waves-settings") toggleWavesSettings();
     if (name === "waves") startWaves();
+    if (name === "queue") toggleQueue();
+    if (name === "sleep") toggleSleep(act);
+    if (name === "mini") toggleMini();
   });
 
   document.addEventListener("change", (event) => {
@@ -262,9 +326,11 @@
     const input = event.target;
     if (!(input instanceof HTMLInputElement) || !input.matches("input[data-upload]")) return;
     if (!input.files || !input.files.length) return;
+    const count = input.files.length;
     const body = new FormData();
     for (const file of input.files) body.append("files", file, file.name);
     const res = await fetch("/import", { method: "POST", body, redirect: "follow" });
+    imports.unshift({ title: "Импорт файлов", state: "Завершено", meta: String(count) });
     navigate(res.url, await res.text());
   });
 
@@ -320,24 +386,20 @@
     const whole = Math.max(0, Math.floor(value || 0));
     return String(Math.floor(whole / 60)).padStart(2, "0") + ":" + String(whole % 60).padStart(2, "0");
   };
-  audio.addEventListener("timeupdate", () => paintProgress());
+  audio.addEventListener("timeupdate", () => {
+    if (drag && drag.kind === "seek") return;
+    paintProgress();
+  });
   audio.addEventListener("play", () => syncPlayButton());
   audio.addEventListener("pause", () => syncPlayButton());
   audio.addEventListener("ended", () => {
+    if (sleep.mode === "track" || sleep.mode === "album") {
+      finishSleep("Стоп в конце трека");
+      return;
+    }
     if (waves.active) playWavesIndex(waves.index + 1);
     else playNext();
   });
-
-  const volumeBar = document.querySelector(".volume-bar");
-  if (volumeBar) {
-    volumeBar.addEventListener("pointerdown", (event) => {
-      const rect = volumeBar.getBoundingClientRect();
-      const next = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-      audio.volume = next;
-      paintVolume(next);
-      post("volume", { value: String(next) });
-    });
-  }
 
   let discoveryTimer = 0;
   function scheduleDiscovery(value) {
@@ -348,6 +410,11 @@
   function wishKey(title, artist) {
     return `${title}\n${artist}`.trim().toLowerCase();
   }
+  try {
+    const seed = document.getElementById("wishlist-seed");
+    const items = seed ? JSON.parse(seed.textContent || "[]") : [];
+    for (const item of items) wished.add(wishKey(item.title || "", item.artist || ""));
+  } catch { /* seed */ }
 
   function heartIcon(on) {
     return svg(on ? `<path d="${HEART_PATH}" fill="currentColor" stroke="none"/>` : `<path d="${HEART_PATH}"/>`, 16);
@@ -429,9 +496,15 @@
   }
 
   async function openArtist(id, name) {
-    const host = panelHost();
-    if (!host) return;
     const artistName = String(name || "").trim();
+    const blocked = ["неизвестный исполнитель", "unknown artist", "unknown", "—", "-"];
+    if (!id && (!artistName || blocked.includes(artistName.toLowerCase()))) return;
+    let host = panelHost();
+    if (!host) {
+      await navigate("/?view=home");
+      host = document.getElementById("discovery-results");
+    }
+    if (!host) return;
     if (!artistName && !id) return;
     rememberPanel(host);
     host.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
@@ -776,6 +849,11 @@
     const data = await post("next");
     if (!data.id) return;
     const row = document.querySelector(`[data-play="${cssEscape(data.id)}"]`);
+    const nextAlbum = data.album || row?.dataset.album || "";
+    if (sleep.mode === "album" && now.album && nextAlbum && nextAlbum !== now.album) {
+      finishSleep("Стоп в конце альбома");
+      return;
+    }
     audio.src = "/audio/" + encodeURIComponent(data.id);
     try { await audio.play(); } catch { /* autoplay */ }
     setNowPlaying(data.title || row?.dataset.title || now.title, data.artist || row?.dataset.artist || now.artist, { url: "", cover: "" });
@@ -803,9 +881,11 @@
       audio.dataset.prev = String(audio.volume);
       audio.volume = 0;
     } else {
-      audio.volume = Number(audio.dataset.prev || 0.8);
+      const restored = Number(audio.dataset.prev);
+      audio.volume = Number.isFinite(restored) && restored > 0 ? restored : 0.8;
     }
     paintVolume(audio.volume);
+    paintMuteIcon();
     post("volume", { value: String(audio.volume) });
   }
 
@@ -820,15 +900,16 @@
     if (wavesIcon) wavesIcon.innerHTML = svg(waves.active && playing ? PAUSE : PLAY, 22);
   }
 
-  function paintProgress() {
+  function paintProgress(at) {
     const duration = audio.duration || 0;
-    const ratio = duration ? (audio.currentTime / duration) * 100 : 0;
+    const time = typeof at === "number" ? at : audio.currentTime || 0;
+    const ratio = duration ? (time / duration) * 100 : 0;
     const fill = document.querySelector(".progress-fill");
     const thumb = document.querySelector(".progress-thumb");
     const times = document.querySelectorAll(".player-time");
     if (fill) fill.style.width = ratio + "%";
     if (thumb) thumb.style.left = ratio + "%";
-    if (times[0]) times[0].textContent = fmt(audio.currentTime);
+    if (times[0]) times[0].textContent = fmt(time);
     if (times[1]) times[1].textContent = fmt(duration);
   }
 
@@ -850,6 +931,7 @@
     now = {
       title: title || "",
       artist: artist || "",
+      album: extra && Object.prototype.hasOwnProperty.call(extra, "album") ? extra.album || "" : now.album,
       url: extra && Object.prototype.hasOwnProperty.call(extra, "url") ? extra.url || "" : now.url,
       cover: extra && Object.prototype.hasOwnProperty.call(extra, "cover") ? extra.cover || "" : now.cover,
     };
@@ -926,5 +1008,330 @@
     toggle();
   });
 
+  function barRatio(el, clientX) {
+    const rect = el.getBoundingClientRect();
+    if (!rect.width) return 0;
+    return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  }
+  function seekTo(el, clientX) {
+    const duration = Number(audio.duration);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const time = barRatio(el, clientX) * duration;
+    paintProgress(time);
+    try {
+      audio.currentTime = time;
+    } catch { /* seek */ }
+  }
+  function setVolume(el, clientX) {
+    audio.volume = barRatio(el, clientX);
+    paintVolume(audio.volume);
+    paintMuteIcon();
+  }
+  document.addEventListener("wheel", (event) => {
+    if (!event.target.closest(".player-volume")) return;
+    event.preventDefault();
+    const step = 0.05;
+    const delta = event.deltaY < 0 ? step : -step;
+    audio.volume = Math.min(1, Math.max(0, audio.volume + delta));
+    paintVolume(audio.volume);
+    paintMuteIcon();
+    post("volume", { value: String(audio.volume) });
+  }, { passive: false });
+  function paintMuteIcon() {
+    const btn = document.querySelector('[data-act="mute"]');
+    if (!btn) return;
+    const muted = audio.volume <= 0.001;
+    btn.innerHTML = svg(muted ? VOL_MUTE : VOL, 18);
+    btn.setAttribute("aria-label", muted ? "Включить звук" : "Без звука");
+  }
+  function toast(message, kind) {
+    if (!message) return;
+    let box = document.querySelector(".toast-container");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "toast-container";
+      document.body.appendChild(box);
+    }
+    const node = document.createElement("div");
+    node.className = "toast toast-" + (kind || "info");
+    node.textContent = message;
+    box.appendChild(node);
+    window.setTimeout(() => node.remove(), 3200);
+  }
+  function applyColor(key, hex) {
+    if (!key || !hex) return;
+    const row = document.querySelector(`[data-color-key="${cssEscape(key)}"]`);
+    if (row) {
+      const swatch = row.querySelector('input[type="color"]');
+      const field = row.querySelector(".theme-color-hex");
+      const preview = row.querySelector(".theme-color-preview");
+      if (swatch) swatch.value = hex;
+      if (field) field.value = hex;
+      if (preview) preview.style.background = hex;
+    }
+    const cssVar = {
+      bgMain: "--bg-main",
+      bgElevated: "--bg-elevated",
+      textPrimary: "--text-primary",
+      textSecondary: "--text-secondary",
+      textMuted: "--text-muted",
+      accent: "--accent",
+    }[key];
+    if (cssVar) document.documentElement.style.setProperty(cssVar, hex);
+    post("set-color", { field: key, value: hex });
+  }
+  document.addEventListener("input", (event) => {
+    const row = event.target.closest && event.target.closest("[data-color-key]");
+    if (!row || !event.target.matches('input[type="color"], .theme-color-hex')) return;
+    applyColor(row.dataset.colorKey, event.target.value);
+  });
+  function closePopups() {
+    document.querySelectorAll(".context-menu, .player-sleep-menu, .import-notifications-portal, .queue-overlay, .phone-sync-modal").forEach((node) => {
+      if (!node.classList.contains("queue-overlay") || node.dataset.sticky !== "1") node.remove();
+    });
+  }
+  async function runTool(name) {
+    if (name === "releases") {
+      window.open("https://github.com/snepi/ime-music/releases", "_blank", "noopener");
+      return;
+    }
+    if (name === "updates") {
+      const data = await fetch("/api/updates").then((res) => res.json()).catch(() => ({ message: "Не удалось проверить обновления" }));
+      toast(data.message || "Проверено", data.update ? "info" : "success");
+      return;
+    }
+    if (name === "export-backup") {
+      const blob = await fetch("/backup").then((res) => res.blob());
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "ime-music-backup.json";
+      link.click();
+      URL.revokeObjectURL(link.href);
+      toast("Бэкап скачан", "success");
+      return;
+    }
+    if (name === "import-backup") {
+      document.getElementById("pick-backup")?.click();
+      return;
+    }
+    if (name === "playlist-file") {
+      document.getElementById("pick-playlist")?.click();
+      return;
+    }
+    if (name === "playlist-url") {
+      const url = document.getElementById("playlist-url")?.value || "";
+      const data = await fetch("/api/playlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ url }),
+      }).then((res) => res.json());
+      toast(data.message || "Готово", data.ok ? "success" : "error");
+      return;
+    }
+    if (name === "phone") {
+      const data = await fetch("/api/phone/start", { method: "POST" }).then((res) => res.json());
+      const status = data.status || {};
+      const join = status.joinUrl ? (status.joinUrl.startsWith("http") ? status.joinUrl : location.origin + status.joinUrl) : "";
+      const box = document.createElement("div");
+      box.className = "modal-overlay";
+      box.innerHTML = `<div class="modal phone-sync-modal" role="dialog" style="max-width:520px;position:relative"><div class="modal-header"><h2>Синхронизация с телефоном</h2></div><div class="modal-body"><p class="field-hint">ПК → телефон, только новые файлы. Одна домашняя сеть. Откройте эту ссылку в приложении на Android.</p><code class="phone-sync-url">${escapeHtml(join)}</code><p class="field-hint">${escapeHtml((status.lanAddresses || []).join(", "))}</p></div><div class="modal-footer"><button type="button" class="btn btn-danger" data-phone-stop="1">Остановить</button><button type="button" class="btn btn-ghost" data-close-pop="1">Закрыть</button></div></div>`;
+      document.body.appendChild(box);
+      return;
+    }
+    if (name === "meta") {
+      toast("Синхронизация обложек и тегов…", "info");
+      const data = await fetch("/api/meta", { method: "POST" }).then((res) => res.json());
+      toast(data.message || "Готово", data.ok ? "success" : "error");
+      if (data.ok) navigate(location.pathname + location.search);
+      return;
+    }
+    if (name === "rebuild-autos" || name === "find-dupes" || name === "merge-dupes") {
+      const action = name === "rebuild-autos" ? "rebuild-autos" : name;
+      const data = await post(action);
+      toast(data.message || "Готово", "success");
+      if (name === "merge-dupes" || name === "rebuild-autos") navigate(location.pathname + location.search);
+    }
+  }
+  document.addEventListener("change", async (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement)) return;
+    if (input.id === "pick-backup" && input.files[0]) {
+      const text = await input.files[0].text();
+      const data = await fetch("/import-backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: text }).then((res) => res.json());
+      toast(data.message || "Импортировано", data.ok ? "success" : "error");
+      input.value = "";
+      return;
+    }
+    if (input.id === "pick-playlist" && input.files[0]) {
+      const text = await input.files[0].text();
+      const data = await fetch("/api/playlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ text }),
+      }).then((res) => res.json());
+      toast(data.message || "Импортировано", data.ok ? "success" : "error");
+      input.value = "";
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target.closest("[data-close-pop]")) {
+      event.target.closest(".modal-overlay, .queue-overlay, .import-notifications-portal, .context-menu, .player-sleep-menu")?.remove();
+    }
+    if (event.target.closest("[data-phone-stop]")) {
+      fetch("/api/phone/stop", { method: "POST" });
+      event.target.closest(".modal-overlay")?.remove();
+      toast("Синхронизация остановлена", "info");
+    }
+    const menuItem = event.target.closest("[data-menu-act]");
+    if (!menuItem) return;
+    const id = menuItem.dataset.id;
+    const act = menuItem.dataset.menuAct;
+    document.querySelectorAll(".context-menu").forEach((node) => node.remove());
+    if (act === "play") playId(id, menuItem.dataset.title || "", menuItem.dataset.artist || "");
+    if (act === "next") post("queue-next", { id }).then((data) => toast(data.message, "info"));
+    if (act === "queue") post("queue-add", { id }).then((data) => toast(data.message, "info"));
+    if (act === "like") post("like", { id });
+    if (act === "playlist") post("add-playlist", { id, value: menuItem.dataset.playlist }).then(() => toast("Добавлено в плейлист", "success"));
+    if (act === "edit") {
+      const title = window.prompt("Название", menuItem.dataset.title || "");
+      if (title == null) return;
+      const artist = window.prompt("Артист", menuItem.dataset.artist || "") || "";
+      const album = window.prompt("Альбом", menuItem.dataset.album || "") || "";
+      post("update-meta", { id, title, artist, album }).then(() => navigate(location.pathname + location.search));
+    }
+    if (act === "reveal") post("reveal", { id }).then((data) => toast(data.message || "Файл", "info"));
+    if (act === "delete") post("delete-song", { id }).then(() => navigate(location.pathname + location.search));
+  });
+  async function openTrackMenu(button) {
+    document.querySelectorAll(".context-menu").forEach((node) => node.remove());
+    const id = button.dataset.menu;
+    const meta = await fetch("/api/queue").then((res) => res.json()).catch(() => ({ playlists: [] }));
+    const playlists = (meta.playlists || [])
+      .map((pl) => `<button type="button" class="context-menu-item" data-menu-act="playlist" data-id="${escapeAttr(id)}" data-playlist="${escapeAttr(pl.id)}">${escapeHtml(pl.name)}</button>`)
+      .join("");
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    const rect = button.getBoundingClientRect();
+    menu.style.left = Math.max(8, rect.left - 160) + "px";
+    menu.style.top = rect.bottom + 6 + "px";
+    const attrs = `data-id="${escapeAttr(id)}" data-title="${escapeAttr(button.dataset.title || "")}" data-artist="${escapeAttr(button.dataset.artist || "")}" data-album="${escapeAttr(button.dataset.album || "")}"`;
+    menu.innerHTML =
+      `<button type="button" class="context-menu-item" data-menu-act="play" ${attrs}>Воспроизвести сейчас</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="next" ${attrs}>Добавить следующим</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="queue" ${attrs}>Добавить в очередь</button>` +
+      (playlists ? `<div class="context-menu-header">В плейлист</div>${playlists}` : "") +
+      `<button type="button" class="context-menu-item" data-menu-act="like" ${attrs}>Нравится</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="edit" ${attrs}>Редактировать метаданные</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="reveal" ${attrs}>Открыть расположение</button>` +
+      `<button type="button" class="context-menu-item danger" data-menu-act="delete" ${attrs}>Удалить из библиотеки</button>`;
+    document.body.appendChild(menu);
+  }
+  async function toggleQueue() {
+    const existing = document.querySelector(".queue-overlay");
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    const data = await fetch("/api/queue").then((res) => res.json());
+    const rows = (data.items || [])
+      .map((item) => `<li class="queue-row"><button type="button" class="context-menu-item" data-menu-act="play" data-id="${escapeAttr(item.id)}" data-title="${escapeAttr(item.title)}" data-artist="${escapeAttr(item.artist)}">${escapeHtml(item.title)} — ${escapeHtml(item.artist)}</button><button type="button" class="icon-btn" data-queue-remove="${escapeAttr(item.id)}" aria-label="Удалить из очереди">×</button></li>`)
+      .join("");
+    const panel = document.createElement("div");
+    panel.className = "queue-overlay";
+    panel.dataset.sticky = "1";
+    panel.innerHTML = `<aside class="queue-panel" role="dialog" aria-label="Очередь"><div class="queue-panel-header"><h3>Очередь</h3><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div><p class="queue-hint">Сюда попадают треки из меню «Добавить в очередь».</p>${rows ? `<ul class="queue-list">${rows}</ul>` : '<p class="queue-hint">Очередь пуста</p>'}<div class="queue-panel-footer"><button type="button" class="btn btn-ghost" data-queue-clear="1">Очистить очередь</button></div></aside>`;
+    document.body.appendChild(panel);
+  }
+  document.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-queue-remove]");
+    if (remove) {
+      post("queue-remove", { id: remove.dataset.queueRemove }).then(() => {
+        document.querySelector(".queue-overlay")?.remove();
+        toggleQueue();
+      });
+    }
+    if (event.target.closest("[data-queue-clear]")) {
+      post("queue-clear").then(() => document.querySelector(".queue-overlay")?.remove());
+    }
+    const sleepBtn = event.target.closest("[data-sleep]");
+    if (sleepBtn) {
+      const mode = sleepBtn.dataset.sleep;
+      window.clearTimeout(sleep.timer);
+      sleep.mode = mode;
+      document.querySelectorAll(".player-sleep-menu").forEach((node) => node.remove());
+      const playerBtn = document.querySelector('[data-act="sleep"]');
+      if (playerBtn) playerBtn.classList.toggle("active", mode !== "off");
+      if (mode === "off") toast("Сон-таймер выключен", "info");
+      else if (mode === "track") toast("Стоп в конце трека", "success");
+      else if (mode === "album") toast("Стоп в конце альбома", "success");
+      else {
+        const minutes = Number(mode);
+        toast("Сон через " + minutes + " мин", "success");
+        sleep.mode = "minutes";
+        sleep.timer = window.setTimeout(() => finishSleep("Сон-таймер"), minutes * 60 * 1000);
+      }
+    }
+  });
+  function finishSleep(message) {
+    window.clearTimeout(sleep.timer);
+    sleep.mode = "off";
+    audio.pause();
+    syncPlayButton();
+    const playerBtn = document.querySelector('[data-act="sleep"]');
+    if (playerBtn) playerBtn.classList.remove("active");
+    toast(message, "info");
+  }
+  function toggleSleep(button) {
+    const existing = document.querySelector(".player-sleep-menu");
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    const menu = document.createElement("div");
+    menu.className = "player-sleep-menu";
+    menu.style.left = rect.left + "px";
+    menu.style.bottom = window.innerHeight - rect.top + 8 + "px";
+    menu.innerHTML = ["off:Выкл", "15:15 мин", "30:30 мин", "45:45 мин", "60:60 мин", "track:Конец трека", "album:Конец альбома"]
+      .map((item) => {
+        const [id, label] = item.split(":");
+        return `<button type="button" data-sleep="${id}">${label}</button>`;
+      })
+      .join("");
+    document.body.appendChild(menu);
+  }
+  function toggleMini() {
+    let mini = document.querySelector(".mini-player");
+    if (mini) {
+      mini.remove();
+      return;
+    }
+    mini = document.createElement("div");
+    mini.className = "mini-player";
+    mini.style.cssText = "position:fixed;right:16px;bottom:92px;width:420px;height:108px;z-index:320;border-radius:16px;box-shadow:0 16px 40px rgba(0,0,0,.45)";
+    mini.innerHTML = `<div class="mini-player-art-fallback">${svg(PLAY, 22)}</div><div class="mini-player-meta"><div class="mini-player-title">${escapeHtml(now.title || "Ничего не играет")}</div><div class="mini-player-artist">${escapeHtml(now.artist || "")}</div><div class="mini-player-progress"><div class="mini-player-progress-fill" style="width:${audio.duration ? (audio.currentTime / audio.duration) * 100 : 0}%"></div></div></div><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="Играть">${svg(audio.paused ? PLAY : PAUSE, 22)}</button>`;
+    document.body.appendChild(mini);
+    syncPlayButton();
+  }
+  function toggleBell() {
+    const existing = document.querySelector(".import-notifications-portal");
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    const anchor = document.querySelector("[data-bell]");
+    const rect = anchor ? anchor.getBoundingClientRect() : { bottom: 40, right: 80 };
+    const list = imports
+      .map((item) => `<li class="import-notifications-item"><div class="import-notifications-item-main"><span class="import-notifications-item-title">${escapeHtml(item.title)}</span><span class="import-notifications-item-state">${escapeHtml(item.state)}</span></div><div class="import-notifications-item-meta">${escapeHtml(item.meta || "")}</div></li>`)
+      .join("");
+    const panel = document.createElement("div");
+    panel.className = "import-notifications import-notifications-portal";
+    panel.style.top = rect.bottom + 8 + "px";
+    panel.style.right = Math.max(8, window.innerWidth - rect.right) + "px";
+    panel.innerHTML = `<div class="import-notifications-header"><strong>Установки</strong><button type="button" class="icon-btn" data-close-pop="1" aria-label="Скрыть">×</button></div><p class="import-notifications-empty">${imports.length ? "" : "Сейчас ничего не скачивается"}</p>${list ? `<ul class="import-notifications-list">${list}</ul>` : ""}`;
+    document.body.appendChild(panel);
+  }
+
+  paintMuteIcon();
   syncPlayButton();
 })();

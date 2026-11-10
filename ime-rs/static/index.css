@@ -3143,6 +3143,16 @@ select:focus-visible {
   height: 5px;
 }
 
+.progress-bar::before,
+.volume-bar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -14px;
+  bottom: -14px;
+}
+
 .progress-fill,
 .volume-fill {
   height: 100%;

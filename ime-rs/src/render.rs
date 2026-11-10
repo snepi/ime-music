@@ -72,6 +72,20 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
             accent = esc(accent)
         ));
     }
+    if !store.settings.colors.is_empty() {
+        let mut css = String::from("<style>:root{");
+        for (key, value) in &store.settings.colors {
+            let Some(var_name) = color_var(key) else { continue };
+            if value.starts_with('#') || value.starts_with("rgb") {
+                css.push_str(var_name);
+                css.push(':');
+                css.push_str(value);
+                css.push(';');
+            }
+        }
+        css.push_str("}</style>");
+        html.push_str(&css);
+    }
     html.push_str("</head><body");
     html.push_str(&format!(
         r#" data-volume="{}" data-current="{}">"#,
@@ -103,12 +117,72 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         html.push_str(&youtube_modal(i18n, screen));
     }
     html.push_str("</div></div>");
-    html.push_str(
+    html.push_str(&format!(
         r#"<input id="pick-files" data-upload="1" type="file" multiple accept="audio/*,.mp3,.flac,.wav,.ogg,.m4a,.aac,.opus,.wma" hidden>
 <input id="pick-folder" data-upload="1" type="file" webkitdirectory directory multiple hidden>
+<input id="pick-backup" type="file" accept="application/json,.json" hidden>
+<input id="pick-playlist" type="file" accept=".m3u,.m3u8,.csv,.txt,text/plain" hidden>
+<script type="application/json" id="wishlist-seed">{}</script>
 <script src="/player.js"></script></body></html>"#,
-    );
+        wishlist_seed(store),
+    ));
     html
+}
+
+fn color_var(key: &str) -> Option<&'static str> {
+    match key {
+        "bgMain" => Some("--bg-main"),
+        "bgElevated" => Some("--bg-elevated"),
+        "textPrimary" => Some("--text-primary"),
+        "textSecondary" => Some("--text-secondary"),
+        "textMuted" => Some("--text-muted"),
+        "accent" => Some("--accent"),
+        _ => None,
+    }
+}
+
+fn wishlist_seed(store: &Store) -> String {
+    let mut parts = Vec::new();
+    for wish in &store.settings.wishlist {
+        parts.push(format!(
+            r#"{{"title":"{}","artist":"{}"}}"#,
+            json_escape(&wish.title),
+            json_escape(&wish.artist)
+        ));
+    }
+    format!("[{}]", parts.join(","))
+}
+
+fn json_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn history_when(i18n: &I18n, played_at: i64) -> String {
+    let played = (played_at.max(0) as u64) / 1000;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let clock = format!("{:02}:{:02}", (played % 86400) / 3600, (played % 3600) / 60);
+    if played / 86400 == now / 86400 {
+        return i18n.tf("history.today", &[("time", &clock)]);
+    }
+    let (year, month, day) = civil_date(played / 86400);
+    format!("{day:02}.{month:02}.{year} {clock}")
+}
+
+fn civil_date(days_since_epoch: u64) -> (i32, u32, u32) {
+    let z = days_since_epoch as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    (year as i32, month as u32, day as u32)
 }
 
 fn go_button(class: &str, href_screen: &Screen, inner: &str) -> String {
@@ -169,7 +243,7 @@ fn titlebar(i18n: &I18n, screen: &Screen) -> String {
     settings.section = "general".into();
     settings.modal.clear();
     format!(
-        r#"<div class="titlebar"><div class="titlebar-left"><img class="titlebar-app-icon" src="/brand/icon.png" alt="" width="22" height="22" draggable="false"><img class="titlebar-wordmark" src="/brand/wordmark.png" alt="IMe Music" draggable="false"></div><div class="titlebar-controls"><div class="titlebar-notifications-wrap"><button type="button" class="titlebar-btn" aria-label="{bell}" title="{bell_hint}"><span class="titlebar-btn-icon">{bell_icon}</span></button></div>{settings_btn}<button type="button" class="titlebar-btn" data-win="minimize" aria-label="{min}" title="{min}">{min_icon}</button><button type="button" class="titlebar-btn" data-win="maximize" aria-label="{max}" title="{max}">{max_icon}</button><button type="button" class="titlebar-btn close" data-win="close" aria-label="{close}" title="{close}">{close_icon}</button></div></div>"#,
+        r#"<div class="titlebar"><div class="titlebar-left"><img class="titlebar-app-icon" src="/brand/icon.png" alt="" width="22" height="22" draggable="false"><img class="titlebar-wordmark" src="/brand/wordmark.png" alt="IMe Music" draggable="false"></div><div class="titlebar-controls"><div class="titlebar-notifications-wrap"><button type="button" class="titlebar-btn" data-bell="1" aria-label="{bell}" title="{bell_hint}"><span class="titlebar-btn-icon">{bell_icon}</span></button></div>{settings_btn}<button type="button" class="titlebar-btn" data-win="minimize" aria-label="{min}" title="{min}">{min_icon}</button><button type="button" class="titlebar-btn" data-win="maximize" aria-label="{max}" title="{max}">{max_icon}</button><button type="button" class="titlebar-btn close" data-win="close" aria-label="{close}" title="{close}">{close_icon}</button></div></div>"#,
         bell = esc(&i18n.t("import.notifications")),
         bell_hint = esc(&i18n.t("import.notificationsHint")),
         bell_icon = icon("bell", 14),
@@ -258,10 +332,11 @@ fn sidebar(store: &Store, i18n: &I18n, screen: &Screen) -> String {
                 song.artist.clone()
             };
             html.push_str(&format!(
-                r#"<div class="sidebar-now-playing"><div class="sidebar-cover sidebar-cover-fallback">{}</div><div class="sidebar-song-info"><div class="sidebar-song-title" title="{}">{}</div><button type="button" class="artist-link sidebar-song-artist">{}</button></div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{}"><input type="hidden" name="back" value="{}"><button type="submit" class="like-btn {}" aria-label="{}">{}</button></form></div>"#,
+                r#"<div class="sidebar-now-playing"><div class="sidebar-cover sidebar-cover-fallback">{}</div><div class="sidebar-song-info"><div class="sidebar-song-title" title="{}">{}</div><button type="button" class="artist-link sidebar-song-artist" data-open-artist="1" data-artist-name="{}">{}</button></div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{}"><input type="hidden" name="back" value="{}"><button type="submit" class="like-btn {}" aria-label="{}">{}</button></form></div>"#,
                 icon("disc", 20),
                 esc(&song.title),
                 esc(&song.title),
+                esc(&artist_label),
                 esc(&artist_label),
                 esc(&song.id),
                 esc(&screen.path()),
@@ -558,7 +633,7 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
                 song.artist.clone()
             };
             html.push_str(&format!(
-                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell">{disc}</div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist">{artist}</button></div><button type="button" class="song-menu-btn" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
+                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell">{disc}</div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button></div><button type="button" class="song-menu-btn" data-menu="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
                 cur = if current { " current" } else { "" },
                 id = esc(&song.id),
                 n = i + 1,
@@ -797,12 +872,12 @@ fn history_view(store: &Store, i18n: &I18n) -> String {
         for item in &store.history {
             if let Some(song) = store.song(&item.song_id) {
                 html.push_str(&format!(
-                    r#"<li class="history-row" data-title="{title}" data-artist="{artist}"><button type="button" class="history-row-main" data-play="{id}" data-title="{title}" data-artist="{artist}"><div class="history-cover">{icon}</div><div class="history-row-text"><div class="history-row-title">{title}</div><span class="artist-link history-row-artist">{artist}</span></div><div class="history-row-meta"><span>{when}</span><span>{dur}</span></div></button></li>"#,
+                    r#"<li class="history-row" data-title="{title}" data-artist="{artist}" data-play="{id}"><div class="history-row-main"><div class="history-cover">{icon}</div><div class="history-row-text"><div class="history-row-title">{title}</div><button type="button" class="artist-link history-row-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button></div><div class="history-row-meta"><span>{when}</span><span>{dur}</span></div></div></li>"#,
                     id = esc(&song.id),
                     title = esc(&song.title),
                     artist = esc(&song.artist),
                     icon = icon("music", 18),
-                    when = esc(&i18n.t("history.today")),
+                    when = esc(&history_when(i18n, item.played_at)),
                     dur = fmt_time(song.duration)
                 ));
             }
@@ -885,9 +960,10 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         .and_then(|id| store.song(id));
     let track = if let Some(song) = current {
         format!(
-            r#"<div class="player-cover player-cover-fallback">{}</div><div class="player-track-text"><button type="button" class="player-track-title copyable-label">{}</button><button type="button" class="artist-link player-track-artist">{}</button></div>"#,
+            r#"<div class="player-cover player-cover-fallback">{}</div><div class="player-track-text"><button type="button" class="player-track-title copyable-label">{}</button><button type="button" class="artist-link player-track-artist" data-open-artist="1" data-artist-name="{}">{}</button></div>"#,
             icon("disc", 20),
             esc(&song.title),
+            esc(&song.artist),
             esc(&song.artist)
         )
     } else {
@@ -1018,7 +1094,7 @@ fn settings_modal(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         body.push_str("</div>");
     }
     format!(
-        r#"<div class="modal-overlay" role="presentation"><a class="modal-overlay-dismiss" href="{close_href}" style="position:absolute;inset:0"></a><div class="modal settings-modal-wide" style="max-width:{width}px;position:relative" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="modal-header"><h2 id="modal-title">{title}</h2>{close_btn}</div><div class="modal-body"><div class="settings-shell"><nav class="settings-tabs" aria-label="{tabs_aria}">{tabs}</nav>{body}</div></div><div class="modal-footer">{footer}</div></div></div>"#,
+        r#"<div class="modal-overlay" role="presentation"><button type="button" class="modal-overlay-dismiss" data-href="{close_href}" style="position:absolute;inset:0;border:0;padding:0;background:transparent"></button><div class="modal settings-modal-wide" style="max-width:{width}px;position:relative" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="modal-header"><h2 id="modal-title">{title}</h2>{close_btn}</div><div class="modal-body"><div class="settings-shell"><nav class="settings-tabs" aria-label="{tabs_aria}">{tabs}</nav>{body}</div></div><div class="modal-footer">{footer}</div></div></div>"#,
         close_href = close.path(),
         width = width,
         title = esc(&i18n.t("settings.title")),
@@ -1156,7 +1232,7 @@ fn theme_editor(i18n: &I18n, screen: &Screen) -> String {
     let mut rows = String::new();
     for (key, hex, label, desc) in colors {
         rows.push_str(&format!(
-            r#"<div class="theme-color-row"><div class="theme-color-meta"><div class="theme-color-title">{}</div><code class="theme-color-key">{key}</code><p class="theme-color-desc">{}</p></div><div class="theme-color-controls"><span class="theme-color-preview" style="background:{hex}"></span><input type="color" class="ui-color-swatch" value="{hex}" aria-label="{}"><input class="field-input theme-color-hex" value="{hex}" spellcheck="false"><button type="button" class="btn btn-ghost" title="{}">↺</button></div></div>"#,
+            r#"<div class="theme-color-row" data-color-key="{key}"><div class="theme-color-meta"><div class="theme-color-title">{}</div><code class="theme-color-key">{key}</code><p class="theme-color-desc">{}</p></div><div class="theme-color-controls"><span class="theme-color-preview" style="background:{hex}"></span><input type="color" class="ui-color-swatch" value="{hex}" aria-label="{}"><input class="field-input theme-color-hex" value="{hex}" spellcheck="false"><button type="button" class="btn btn-ghost" data-color-reset="{key}" data-color-default="{hex}" title="{}">↺</button></div></div>"#,
             esc(&i18n.t(label)),
             esc(&i18n.t(desc)),
             esc(&i18n.t(label)),
@@ -1164,7 +1240,7 @@ fn theme_editor(i18n: &I18n, screen: &Screen) -> String {
         ));
     }
     format!(
-        r#"<div class="theme-editor"><div class="theme-editor-toolbar">{select}<div class="settings-actions-row">{actions}</div><p class="field-hint">{hint}</p></div><div class="theme-editor-controls">{live}{dirty}<input class="field-input" placeholder="{search_ph}"><button type="button" class="btn btn-ghost">{expand}</button><button type="button" class="btn btn-ghost">{collapse}</button>{palette}</div><div class="theme-editor-grid"><div class="theme-editor-groups"><section class="theme-group"><header class="theme-group-header"><button type="button" class="theme-group-toggle"><strong>{}</strong><span>{}</span></button><div class="theme-group-actions"><button type="button" class="btn btn-ghost">{}</button><button type="button" class="btn btn-ghost">{}</button></div></header>{rows}</section></div><aside class="theme-editor-preview-pane"><div class="settings-actions-row">{win}{page}</div>{preview}<div class="settings-actions-row"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-secondary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></aside></div></div>"#,
+        r#"<div class="theme-editor"><div class="theme-editor-toolbar">{select}<div class="settings-actions-row">{actions}</div><p class="field-hint">{hint}</p></div><div class="theme-editor-controls">{live}{dirty}<input class="field-input" placeholder="{search_ph}"><button type="button" class="btn btn-ghost">{expand}</button><button type="button" class="btn btn-ghost">{collapse}</button>{palette}</div><div class="theme-editor-grid"><div class="theme-editor-groups"><section class="theme-group"><header class="theme-group-header"><button type="button" class="theme-group-toggle"><strong>{}</strong><span>{}</span></button><div class="theme-group-actions"><button type="button" class="btn btn-ghost" data-color-reset-all="1">{}</button><button type="button" class="btn btn-ghost">{}</button></div></header>{rows}</section></div><aside class="theme-editor-preview-pane"><div class="settings-actions-row">{win}{page}</div>{preview}<div class="settings-actions-row"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-secondary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></aside></div></div>"#,
         esc(&i18n.t("theme.group.common.title")),
         esc(&i18n.t("theme.group.common.desc")),
         esc(&i18n.t("settings.theme.resetGroup")),
@@ -1369,7 +1445,7 @@ fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         esc(&i18n.t("common.save")),
     );
     format!(
-        r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="check-updates"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="export-backup"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><button type="button" class="btn btn-primary">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary">{}</button><div style="margin-top:12px"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="rebuild-autos"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-ghost">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="find-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="merge-dupes"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-primary">{}</button></form></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
+        r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="updates">{}</button><button type="button" class="btn btn-ghost" data-tool="releases">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="export-backup">{}</button><button type="button" class="btn btn-primary" data-tool="import-backup">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary" data-tool="playlist-url">{}</button><button type="button" class="btn btn-ghost" data-tool="playlist-file">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary" data-tool="phone">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary" data-tool="meta">{}</button><div style="margin-top:12px"><button type="button" class="btn btn-ghost" data-tool="rebuild-autos">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="find-dupes">{}</button><button type="button" class="btn btn-primary" data-tool="merge-dupes">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
         esc(&i18n.tf("tools.currentVersion", &[("version", "1.2.0")])),
