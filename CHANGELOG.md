@@ -4,6 +4,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 
+## [Unreleased]
+
+### Added
+- Версия на Rust в каталоге `ime-rs`, рядом с текущим приложением. Electron-версия (`src/`, `electron/`) остаётся. Экраны и поведение те же: главная, библиотека, «Хочу послушать», история и настройки.
+
 ## [1.1.0] — 2026-08-20
 
 ### Added

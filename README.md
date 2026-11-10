@@ -127,10 +127,15 @@ Default · Graphite · Midnight · Ocean · Forest · Rose · Amber · Violet �
 
 ---
 
+## Версия на Rust
+
+В каталоге `ime-rs` лежит новая версия на Rust. Приложение на Electron не удаляется и не заменяется: те же экраны и то же поведение. Запуск: `cd ime-rs && cargo run`, затем http://127.0.0.1:4173.
+
 ## Структура репозитория
 
 | Папка | Назначение |
 |--------|------------|
+| `ime-rs/` | Версия на Rust (рядом с Electron) |
 | `src/` | UI (React) |
 | `electron/` | Main-процесс Electron |
 | `shared/` | Общие типы |
