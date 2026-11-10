@@ -13,6 +13,7 @@
     "M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z";
   const wished = new Set();
   let lastSearchHtml = "";
+  let lastArtistHtml = "";
 
   const byId = (id) => document.getElementById(id);
 
@@ -41,6 +42,20 @@
       event.preventDefault();
       const host = document.getElementById("discovery-results");
       if (host) host.innerHTML = lastSearchHtml;
+      return;
+    }
+    const albumBack = event.target.closest("[data-album-back]");
+    if (albumBack) {
+      event.preventDefault();
+      const host = document.getElementById("discovery-results");
+      if (host) host.innerHTML = lastArtistHtml;
+      return;
+    }
+    const albumBtn = event.target.closest("[data-open-album]");
+    if (albumBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      openAlbum(albumBtn.dataset.albumId || "", albumBtn.dataset.albumTitle || "");
       return;
     }
     const artistBtn = event.target.closest("[data-open-artist]");
@@ -76,6 +91,12 @@
     if (wishPlay && !wishPlay.dataset.preview) {
       event.preventDefault();
       playQuery(wishPlay.dataset.title || "", wishPlay.dataset.artist || "");
+      return;
+    }
+    const queryPlay = event.target.closest("[data-play-query]");
+    if (queryPlay) {
+      event.preventDefault();
+      playQuery(queryPlay.dataset.title || "", queryPlay.dataset.artist || "");
       return;
     }
     const preview = event.target.closest("[data-preview]");
@@ -228,11 +249,15 @@
   }
 
   function trackCard(track) {
-    return `<li class="demo-track-card"><button type="button" class="demo-track-play" data-preview="${escapeAttr(track.preview)}" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><img src="${escapeAttr(track.cover || "")}" alt=""><span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div><div class="demo-track-actions">${wishButton(track)}</div></li>`;
+    const play = track.preview
+      ? `data-preview="${escapeAttr(track.preview)}"`
+      : `data-play-query="1"`;
+    const cover = track.cover ? `<img src="${escapeAttr(track.cover)}" alt="">` : "";
+    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}</div></li>`;
   }
 
-  function mapDeezerTrack(row) {
-    if (!row || !row.preview || !row.title) return null;
+  function mapDeezerTrack(row, requirePreview = true) {
+    if (!row || !row.title || (requirePreview && !row.preview)) return null;
     return {
       id: row.id,
       title: row.title_short || row.title,
@@ -262,7 +287,7 @@
     try {
       const [artistData, trackData] = await Promise.all([
         deezer("/search/artist?q=" + encodeURIComponent(query) + "&limit=8"),
-        deezer("/search/track?q=" + encodeURIComponent(query) + "&limit=18"),
+        deezer("/search/track?q=" + encodeURIComponent(query) + "&limit=25"),
       ]);
       const artists = (artistData.data || []).filter((item) => item && item.id && item.name);
       const tracks = (trackData.data || []).map(mapDeezerTrack).filter(Boolean);
@@ -310,9 +335,9 @@
       if (!artistId) throw new Error("missing");
       const [info, top, albums, foundTracks] = await Promise.all([
         deezer("/artist/" + encodeURIComponent(artistId)),
-        deezer("/artist/" + encodeURIComponent(artistId) + "/top?limit=25"),
-        deezer("/artist/" + encodeURIComponent(artistId) + "/albums?limit=40"),
-        deezer("/search/track?q=" + encodeURIComponent(artistName || "") + "&limit=40"),
+        deezer("/artist/" + encodeURIComponent(artistId) + "/top?limit=100"),
+        deezer("/artist/" + encodeURIComponent(artistId) + "/albums?limit=100"),
+        deezer("/search/track?q=" + encodeURIComponent(artistName || "") + "&limit=100"),
       ]);
       await renderArtist(host, info, top.data || [], albums.data || [], foundTracks.data || []);
     } catch {
@@ -328,11 +353,12 @@
     const own = [];
     const seen = new Set();
     for (const row of [...topRows, ...searchRows]) {
-      const track = mapDeezerTrack(row);
-      if (!track || seen.has(track.preview)) continue;
+      const track = mapDeezerTrack(row, false);
+      const key = String(track?.id || track?.preview || "");
+      if (!track || !key || seen.has(key)) continue;
       if (Number(row.artist?.id) !== artistId) continue;
       if (/\bfeat\.|\bft\./i.test(row.title || "")) continue;
-      seen.add(track.preview);
+      seen.add(key);
       own.push(track);
     }
     const featureRows = [];
@@ -356,13 +382,39 @@
     const albums = albumRows.filter((album) => album && album.title && (album.record_type === "album" || album.record_type === "compile"));
     const fans = Number(info.nb_fan) || 0;
     const albumCount = Number(info.nb_album) || albums.length;
-    host.innerHTML = `<div class="artist-view"><div class="artist-view-header"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><div class="artist-view-hero"><div class="artist-view-cover">${info.picture_medium ? `<img src="${escapeAttr(info.picture_xl || info.picture_big || info.picture_medium)}" alt="">` : ""}</div><div class="artist-view-info"><h1>${escapeHtml(artistName)}</h1><p class="artist-view-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p></div></div></div><section class="artist-view-section"><h2>Треки</h2>${own.length ? `<ul class="demo-tracks-grid">${own.slice(0, 6).map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет демо-треков</p>'}</section><section class="artist-view-section"><h2>Альбомы</h2>${albums.length ? `<ul class="artist-releases-grid">${albums
-      .slice(0, 4)
+    const albumCards = albums
       .map((album) => {
         const year = String(album.release_date || "").slice(0, 4);
-        return `<li><div class="artist-release-card"><div class="artist-release-cover">${album.cover_medium ? `<img src="${escapeAttr(album.cover_medium)}" alt="">` : ""}</div><div class="artist-release-meta"><div class="artist-release-title">${escapeHtml(album.title)}</div><div class="artist-release-sub">${escapeHtml(year)}</div></div></div></li>`;
+        return `<li><button type="button" class="artist-release-card" data-open-album="1" data-album-id="${escapeAttr(album.id)}" data-album-title="${escapeAttr(album.title)}"><div class="artist-release-cover">${album.cover_medium ? `<img src="${escapeAttr(album.cover_medium)}" alt="">` : ""}</div><div class="artist-release-meta"><div class="artist-release-title">${escapeHtml(album.title)}</div><div class="artist-release-sub">${escapeHtml(year)}</div></div></button></li>`;
       })
-      .join("")}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-view-section"><h2>Фиты</h2>${features.length ? `<ul class="demo-tracks-grid">${features.slice(0, 6).map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет фитов</p>'}</section></div>`;
+      .join("");
+    host.innerHTML = `<div class="artist-view"><div class="artist-view-header"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><div class="artist-view-hero"><div class="artist-view-cover">${info.picture_medium ? `<img src="${escapeAttr(info.picture_xl || info.picture_big || info.picture_medium)}" alt="">` : ""}</div><div class="artist-view-info"><h1>${escapeHtml(artistName)}</h1><p class="artist-view-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p></div></div></div><section class="artist-view-section"><h2>Треки <span class="artist-view-tab-count">${own.length}</span></h2>${own.length ? `<ul class="demo-tracks-grid">${own.map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет треков</p>'}</section><section class="artist-view-section"><h2>Альбомы</h2>${albumCards ? `<ul class="artist-releases-grid">${albumCards}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-view-section"><h2>Фиты</h2>${features.length ? `<ul class="demo-tracks-grid">${features.map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет фитов</p>'}</section></div>`;
+    lastArtistHtml = host.innerHTML;
+  }
+
+  async function openAlbum(id) {
+    const host = document.getElementById("discovery-results");
+    if (!host || !id) return;
+    if (host.querySelector(".artist-view")) lastArtistHtml = host.innerHTML;
+    host.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
+    try {
+      const [album, listed] = await Promise.all([
+        deezer("/album/" + encodeURIComponent(id)),
+        deezer("/album/" + encodeURIComponent(id) + "/tracks?limit=100"),
+      ]);
+      const rows = listed.data || album.tracks?.data || [];
+      const tracks = rows
+        .map((row) => {
+          if (!row.album) row.album = { title: album.title || "", cover_medium: album.cover_medium || album.cover || "" };
+          if (!row.artist && album.artist) row.artist = album.artist;
+          return mapDeezerTrack(row, false);
+        })
+        .filter(Boolean);
+      const cover = album.cover_medium || album.cover_xl || "";
+      host.innerHTML = `<div class="album-view artist-view"><div class="artist-view-header"><button type="button" class="artist-view-back" data-album-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><div class="artist-view-hero"><div class="artist-view-cover">${cover ? `<img src="${escapeAttr(cover)}" alt="">` : ""}</div><div class="artist-view-info"><h1>${escapeHtml(album.title || "")}</h1><p class="artist-view-stats">${escapeHtml(album.artist?.name || "")}${tracks.length ? ` · ${tracks.length} треков` : ""}</p></div></div></div><section class="artist-view-section"><h2>Треки альбома</h2>${tracks.length ? `<ul class="demo-tracks-grid">${tracks.map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет треков</p>'}</section></div>`;
+    } catch {
+      host.innerHTML = '<p class="home-discovery-search-error">Альбом не открылся</p><button type="button" class="btn btn-secondary" data-album-back="1">Назад</button>';
+    }
   }
 
   function filterLibrary(query) {
@@ -432,7 +484,7 @@
     const title = document.querySelector(".home-waves-title");
     const meta = document.querySelector(".home-waves-meta");
     if (title) title.textContent = item.title;
-    if (meta) meta.textContent = item.artist;
+    if (meta) meta.innerHTML = artistLink(item.artist);
     playUrl(item.url, item.title, item.artist);
   }
 
@@ -561,11 +613,18 @@
     if (thumb) thumb.style.left = width;
   }
 
+  function artistLink(name, className) {
+    const artist = String(name || "").trim();
+    if (!artist) return "";
+    return `<button type="button" class="artist-link ${className || ""}" data-open-artist="1" data-artist-name="${escapeAttr(artist)}">${escapeHtml(artist)}</button>`;
+  }
+
   function setNowPlaying(title, artist) {
     now = { title: title || "", artist: artist || "" };
     const box = document.querySelector(".player-track-info");
     if (!box) return;
-    box.innerHTML = `<div class="player-track-text"><div class="player-track-title">${escapeHtml(now.title || "Ничего не играет")}</div><div class="player-track-artist">${escapeHtml(now.artist)}</div></div>`;
+    const link = artistLink(now.artist, "player-track-artist");
+    box.innerHTML = `<div class="player-track-text"><div class="player-track-title">${escapeHtml(now.title || "Ничего не играет")}</div>${link}</div>`;
   }
 
   function markCurrent(id) {

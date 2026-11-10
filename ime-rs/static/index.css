@@ -2031,6 +2031,23 @@ select:focus-visible {
   flex-shrink: 0;
 }
 
+.demo-track-names {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+  margin-right: auto;
+}
+
+.demo-track-names .demo-track-meta {
+  flex: 0 1 auto;
+}
+
+.demo-track-names .wish-heart {
+  flex: 0 0 auto;
+}
+
 /* Artist page */
 .artist-view {
   flex: 1;

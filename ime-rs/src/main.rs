@@ -216,7 +216,10 @@ struct DeezerQuery {
 /// Deezer has no browser CORS header, so the desktop page asks this proxy.
 async fn deezer_proxy(Query(query): Query<DeezerQuery>) -> Response {
     let path = query.path.trim();
-    let allowed = path.starts_with("/search/") || path.starts_with("/artist/") || path.starts_with("/track/");
+    let allowed = path.starts_with("/search/")
+        || path.starts_with("/artist/")
+        || path.starts_with("/track/")
+        || path.starts_with("/album/");
     if !allowed || path.contains("://") || path.contains("..") || path.contains('\n') {
         return (StatusCode::BAD_REQUEST, "bad path").into_response();
     }
