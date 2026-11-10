@@ -634,28 +634,78 @@ fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
             &i18n.t("wish.emptyHint"),
             &go_button("btn btn-secondary", &rec, &esc(&i18n.t("wish.toRecs"))),
         ));
-    } else {
-        html.push_str(r#"<ul class="wishlist-list">"#);
-        for item in &store.settings.wishlist {
-            html.push_str(&format!(
-                r#"<li class="wishlist-row" data-title="{title}" data-artist="{artist}"><button type="button" class="wishlist-play" data-title="{title}" data-artist="{artist}"{preview}>{cover}</button><div class="wishlist-meta"><div class="wishlist-title">{title}</div><button type="button" class="artist-link wishlist-artist">{artist}</button></div></li>"#,
-                title = esc(&item.title),
-                artist = esc(&item.artist),
-                preview = if item.preview_url.is_empty() {
-                    String::new()
-                } else {
-                    format!(r#" data-preview="{}""#, esc(&item.preview_url))
-                },
-                cover = if item.cover_url.is_empty() {
-                    icon("disc", 22)
-                } else {
-                    format!(r#"<img src="{}" alt="">"#, esc(&item.cover_url))
-                },
-            ));
-        }
-        html.push_str("</ul>");
+        html.push_str("</div>");
+        return html;
     }
-    html.push_str("</div>");
+    html.push_str(&format!(
+        r#"<div class="wishlist-toolbar"><div class="search-field">{}<input type="search" class="search-input" placeholder="{}" aria-label="{}"></div><select class="sort-select wish-sort" aria-label="{}"><option value="added:desc">{}</option><option value="added:asc">{}</option><option value="title:asc">{}</option><option value="title:desc">{}</option><option value="artist:asc">{}</option><option value="album:asc">{}</option></select><span class="wishlist-search-count" hidden></span></div>"#,
+        icon("search", 16),
+        esc(&i18n.t("wish.searchPlaceholder")),
+        esc(&i18n.t("common.search")),
+        esc(&i18n.t("lib.sort")),
+        esc(&i18n.t("lib.sortAddNew")),
+        esc(&i18n.t("lib.sortAddOld")),
+        esc(&i18n.t("lib.sortTitleAsc")),
+        esc(&i18n.t("lib.sortTitleDesc")),
+        esc(&i18n.t("lib.col.artist")),
+        esc(&i18n.t("lib.col.album")),
+    ));
+    html.push_str(r#"<div id="wishlist-body"><ul class="wishlist-list">"#);
+    for (index, item) in store.settings.wishlist.iter().enumerate() {
+        let local = store.songs.iter().find(|song| {
+            song.title.eq_ignore_ascii_case(&item.title) && song.artist.eq_ignore_ascii_case(&item.artist)
+        });
+        let play_attr = if let Some(song) = local {
+            format!(r#" data-play="{}""#, esc(&song.id))
+        } else if item.preview_url.is_empty() {
+            r#" data-play-query="1""#.to_string()
+        } else {
+            format!(r#" data-preview="{}""#, esc(&item.preview_url))
+        };
+        let cover = if item.cover_url.is_empty() {
+            icon("disc", 22)
+        } else {
+            format!(r#"<img src="{}" alt="">"#, esc(&item.cover_url))
+        };
+        let owned = if local.is_some() {
+            format!(r#"<span class="owned-badge">{}</span>"#, esc(&i18n.t("rec.inLibraryShort")))
+        } else {
+            String::new()
+        };
+        let album = if item.album.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"<button type="button" class="artist-link wishlist-album" data-open-album-query="1" data-album-title="{album}" data-artist-name="{artist}">{album}</button>"#,
+                album = esc(&item.album),
+                artist = esc(&item.artist),
+            )
+        };
+        html.push_str(&format!(
+            r#"<li class="wishlist-row" data-title="{title}" data-artist="{artist}" data-album="{album}" data-order="{order}"><button type="button" class="wishlist-play" data-title="{title}" data-artist="{artist}"{play}>{cover}<span class="wishlist-play-icon">{play_icon}</span></button><div class="wishlist-meta"><div class="wishlist-title">{title}{owned}</div><button type="button" class="artist-link wishlist-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button>{album_btn}</div><div class="wishlist-actions"><button type="button" class="like-btn wish-heart liked" data-wish="1" data-title="{title}" data-artist="{artist}" data-url="{url}" data-cover="{cover_url}" aria-label="{remove}" title="{remove}">{heart}</button></div></li>"#,
+            title = esc(&item.title),
+            artist = esc(&item.artist),
+            album = esc(&item.album),
+            order = format!("{index:04}"),
+            play = play_attr,
+            cover = cover,
+            play_icon = icon("play", 16),
+            owned = owned,
+            album_btn = album,
+            url = esc(&item.preview_url),
+            cover_url = esc(&item.cover_url),
+            remove = esc(&i18n.t("wish.remove")),
+            heart = icon("heart", 16),
+        ));
+    }
+    html.push_str("</ul>");
+    html.push_str(&empty_state(
+        "search",
+        &i18n.t("wish.searchEmpty"),
+        &i18n.t("wish.searchEmptyHint"),
+        "",
+    ).replace("<div class=\"empty-state\">", "<div class=\"empty-state wishlist-search-empty\" hidden>"));
+    html.push_str("</div></div>");
     html
 }
 

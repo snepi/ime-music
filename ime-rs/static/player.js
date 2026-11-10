@@ -40,15 +40,29 @@
     const back = event.target.closest("[data-artist-back]");
     if (back) {
       event.preventDefault();
-      const host = document.getElementById("discovery-results");
-      if (host) host.innerHTML = lastSearchHtml;
+      const host = panelHost();
+      if (host?.dataset.restore) {
+        host.innerHTML = host.dataset.restore;
+        delete host.dataset.restore;
+      } else if (host) host.innerHTML = lastSearchHtml;
       return;
     }
     const albumBack = event.target.closest("[data-album-back]");
     if (albumBack) {
       event.preventDefault();
-      const host = document.getElementById("discovery-results");
-      if (host) host.innerHTML = lastArtistHtml;
+      const host = panelHost();
+      if (host?.dataset.albumFromList && host.dataset.restore) {
+        host.innerHTML = host.dataset.restore;
+        delete host.dataset.restore;
+        delete host.dataset.albumFromList;
+      } else if (host) host.innerHTML = lastArtistHtml;
+      return;
+    }
+    const albumQuery = event.target.closest("[data-open-album-query]");
+    if (albumQuery) {
+      event.preventDefault();
+      event.stopPropagation();
+      openAlbumByName(albumQuery.dataset.albumTitle || "", albumQuery.dataset.artistName || "");
       return;
     }
     const albumBtn = event.target.closest("[data-open-album]");
@@ -70,21 +84,28 @@
       event.preventDefault();
       event.stopPropagation();
       const key = wishKey(wish.dataset.title || "", wish.dataset.artist || "");
-      const removing = wished.has(key);
+      const removing = wish.classList.contains("liked") || wished.has(key);
       post("wish", {
         title: wish.dataset.title || "",
         artist: wish.dataset.artist || "",
         url: wish.dataset.url || "",
         cover: wish.dataset.cover || "",
+        album: wish.dataset.album || "",
       });
       if (removing) wished.delete(key);
       else wished.add(key);
       document.querySelectorAll("[data-wish]").forEach((node) => {
         if (wishKey(node.dataset.title || "", node.dataset.artist || "") !== key) return;
-        const on = wished.has(key);
+        const on = !removing;
         node.classList.toggle("liked", on);
         node.innerHTML = heartIcon(on);
       });
+      const row = wish.closest(".wishlist-row");
+      if (removing && row) {
+        row.remove();
+        const list = document.querySelector(".wishlist-list");
+        if (list && !list.querySelector(".wishlist-row")) navigate("/?view=wishlist");
+      }
       return;
     }
     const wishPlay = event.target.closest(".wishlist-play");
@@ -190,6 +211,27 @@
     if (input.classList.contains("search-input")) filterLibrary(input.value);
   });
 
+  document.addEventListener("change", (event) => {
+    const select = event.target;
+    if (!(select instanceof HTMLSelectElement) || !select.classList.contains("wish-sort")) return;
+    const list = document.querySelector(".wishlist-list");
+    if (!list) return;
+    const [field, order] = select.value.split(":");
+    const rows = [...list.querySelectorAll(".wishlist-row")];
+    const valueOf = (row) => {
+      if (field === "title") return row.dataset.title || "";
+      if (field === "artist") return row.dataset.artist || "";
+      if (field === "album") return row.dataset.album || "";
+      return row.dataset.order || "";
+    };
+    rows.sort((a, b) => {
+      const cmp = valueOf(a).localeCompare(valueOf(b), "ru", { numeric: true, sensitivity: "base" });
+      if (field === "added") return order === "asc" ? -cmp : cmp;
+      return order === "desc" ? -cmp : cmp;
+    });
+    rows.forEach((row) => list.appendChild(row));
+  });
+
   document.addEventListener("change", async (event) => {
     const input = event.target;
     if (!(input instanceof HTMLInputElement) || !input.matches("input[data-upload]")) return;
@@ -268,7 +310,7 @@
 
   function wishButton(track) {
     const on = wished.has(wishKey(track.title, track.artist));
-    return `<button type="button" class="like-btn wish-heart${on ? " liked" : ""}" data-wish="1" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}" data-url="${escapeAttr(track.preview || "")}" data-cover="${escapeAttr(track.cover || "")}" aria-label="Добавить в «Хочу послушать»" title="Добавить в «Хочу послушать»">${heartIcon(on)}</button>`;
+    return `<button type="button" class="like-btn wish-heart${on ? " liked" : ""}" data-wish="1" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}" data-album="${escapeAttr(track.album || "")}" data-url="${escapeAttr(track.preview || "")}" data-cover="${escapeAttr(track.cover || "")}" aria-label="Добавить в «Хочу послушать»" title="Добавить в «Хочу послушать»">${heartIcon(on)}</button>`;
   }
 
   function trackCard(track) {
@@ -342,10 +384,11 @@
   }
 
   async function openArtist(id, name) {
-    const host = document.getElementById("discovery-results");
+    const host = panelHost();
     if (!host) return;
     const artistName = String(name || "").trim();
     if (!artistName && !id) return;
+    rememberPanel(host);
     host.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
     try {
       let artistId = String(id || "");
@@ -416,9 +459,10 @@
   }
 
   async function openAlbum(id) {
-    const host = document.getElementById("discovery-results");
+    const host = panelHost();
     if (!host || !id) return;
-    if (host.querySelector(".artist-view")) lastArtistHtml = host.innerHTML;
+    if (host.querySelector(".artist-view") && !host.querySelector(".album-view")) lastArtistHtml = host.innerHTML;
+    else if (!host.dataset.restore) rememberPanel(host);
     host.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
     try {
       const [album, listed] = await Promise.all([
@@ -454,6 +498,49 @@
       ).toLowerCase();
       row.hidden = Boolean(needle) && !blob.includes(needle);
     });
+    const wishRows = document.querySelectorAll(".wishlist-row");
+    if (wishRows.length) {
+      const visible = [...wishRows].filter((row) => !row.hidden).length;
+      const count = document.querySelector(".wishlist-search-count");
+      if (count) {
+        count.hidden = !needle;
+        count.textContent = `${visible} из ${wishRows.length}`;
+      }
+      const empty = document.querySelector(".wishlist-search-empty");
+      if (empty) empty.hidden = !needle || visible > 0;
+    }
+  }
+
+  function panelHost() {
+    return document.getElementById("discovery-results") || document.getElementById("wishlist-body");
+  }
+
+  async function openAlbumByName(title, artist) {
+    const host = panelHost();
+    if (!host) return;
+    rememberPanel(host);
+    host.dataset.albumFromList = "1";
+    host.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
+    try {
+      const data = await deezer(
+        "/search/album?q=" + encodeURIComponent(`${title} ${artist}`.trim()) + "&limit=8",
+      );
+      const want = title.trim().toLowerCase();
+      const hit =
+        (data.data || []).find((album) => String(album.title || "").toLowerCase() === want) ||
+        (data.data || [])[0];
+      if (!hit?.id) throw new Error("missing");
+      await openAlbum(String(hit.id));
+    } catch {
+      host.innerHTML =
+        '<p class="home-discovery-search-error">Альбом не найден</p><button type="button" class="btn btn-secondary" data-album-back="1">Назад</button>';
+    }
+  }
+
+  function rememberPanel(host) {
+    if (!host || host.querySelector(".artist-view") || host.querySelector(".album-view")) return;
+    if (host.id === "discovery-results") lastSearchHtml = host.innerHTML;
+    else host.dataset.restore = host.innerHTML;
   }
 
   async function startWaves() {

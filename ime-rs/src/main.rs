@@ -51,6 +51,7 @@ struct ActForm {
     artist: Option<String>,
     url: Option<String>,
     cover: Option<String>,
+    album: Option<String>,
 }
 
 fn main() {
@@ -307,6 +308,7 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             store.toggle_wish(
                 form.title.as_deref().unwrap_or(""),
                 form.artist.as_deref().unwrap_or(""),
+                form.album.as_deref().unwrap_or(""),
                 form.url.as_deref().unwrap_or(""),
                 form.cover.as_deref().unwrap_or(""),
             );

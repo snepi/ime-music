@@ -412,7 +412,7 @@ impl Store {
         }
     }
 
-    pub fn toggle_wish(&mut self, title: &str, artist: &str, preview_url: &str, cover_url: &str) {
+    pub fn toggle_wish(&mut self, title: &str, artist: &str, album: &str, preview_url: &str, cover_url: &str) {
         let title = title.trim();
         if title.is_empty() {
             return;
@@ -430,7 +430,7 @@ impl Store {
                 id: nid(),
                 title: title.into(),
                 artist: artist.into(),
-                album: String::new(),
+                album: album.trim().into(),
                 preview_url: preview_url.into(),
                 cover_url: cover_url.into(),
             },
