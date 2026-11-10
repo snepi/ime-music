@@ -33,6 +33,11 @@ pub fn open(url: &str) {
     if hwnd.0 == 0 {
         super::fail("Не удалось создать окно IMe Music.");
     }
+    unsafe {
+        ShowWindow(hwnd, SW_SHOW);
+    }
+    pump_pending();
+    wait_for_server(url);
 
     let controller = match create_controller(hwnd) {
         Ok(controller) => controller,
@@ -46,15 +51,19 @@ pub fn open(url: &str) {
         Err(err) => super::fail(&format!("Не удалось открыть окно IMe Music.\n{err}")),
     };
 
+    unsafe {
+        let ptr = Box::into_raw(Box::new(controller));
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
+    }
+    if let Err(err) = fit_and_show(hwnd) {
+        super::fail(&format!("Не удалось открыть окно IMe Music.\n{err}"));
+    }
     if let Err(err) = show_player(&webview, hwnd, url) {
         super::fail(&format!("Не удалось открыть окно IMe Music.\n{err}"));
     }
 
+    message_loop();
     unsafe {
-        let ptr = Box::into_raw(Box::new(controller));
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
-        ShowWindow(hwnd, SW_SHOW);
-        message_loop();
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ICoreWebView2Controller;
         if !ptr.is_null() {
             drop(Box::from_raw(ptr));
@@ -137,8 +146,72 @@ fn create_controller(parent: HWND) -> windows::core::Result<ICoreWebView2Control
     rx.recv().map_err(|_| windows::core::Error::from_win32())?
 }
 
+fn fit_and_show(hwnd: HWND) -> windows::core::Result<()> {
+    unsafe {
+        let controller = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ICoreWebView2Controller;
+        if controller.is_null() {
+            return Ok(());
+        }
+        let rect = client_rect(hwnd);
+        (*controller).SetBounds(rect)?;
+        (*controller).SetIsVisible(true)?;
+        (*controller).NotifyParentWindowPositionChanged()?;
+    }
+    Ok(())
+}
+
+fn client_rect(hwnd: HWND) -> RECT {
+    unsafe {
+        let mut rect = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rect);
+        if rect.right - rect.left < 100 || rect.bottom - rect.top < 100 {
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1100,
+                bottom: 720,
+            }
+        } else {
+            rect
+        }
+    }
+}
+
+fn wait_for_server(url: &str) {
+    let rest = url.trim_start_matches("http://");
+    for _ in 0..100 {
+        if std::net::TcpStream::connect_timeout(
+            &rest.parse().unwrap_or_else(|_| "127.0.0.1:4173".parse().unwrap()),
+            std::time::Duration::from_millis(50),
+        )
+        .is_ok()
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn pump_pending() {
+    unsafe {
+        let mut msg = MSG::default();
+        while WindowsAndMessaging::PeekMessageW(
+            &mut msg,
+            HWND::default(),
+            0,
+            0,
+            WindowsAndMessaging::PM_REMOVE,
+        )
+        .as_bool()
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
 fn show_player(webview: &ICoreWebView2, hwnd: HWND, url: &str) -> windows::core::Result<()> {
-    resize_to_client(hwnd);
+    let _ = fit_and_show(hwnd);
     let script = "window.ipc={postMessage:function(msg){window.chrome.webview.postMessage(msg);}};";
     let script = windows::core::HSTRING::from(script);
     unsafe {
@@ -200,15 +273,7 @@ fn release_capture() {
 }
 
 fn resize_to_client(hwnd: HWND) {
-    unsafe {
-        let controller = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ICoreWebView2Controller;
-        if controller.is_null() {
-            return;
-        }
-        let mut rect = RECT::default();
-        let _ = GetClientRect(hwnd, &mut rect);
-        let _ = (*controller).SetBounds(rect);
-    }
+    let _ = fit_and_show(hwnd);
 }
 
 fn message_loop() {
