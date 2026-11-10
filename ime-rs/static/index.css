@@ -1216,6 +1216,10 @@ select:focus-visible {
   gap: 14px;
 }
 
+.home-waves-settings[hidden] {
+  display: none !important;
+}
+
 .home-waves-settings-block {
   display: flex;
   flex-direction: column;

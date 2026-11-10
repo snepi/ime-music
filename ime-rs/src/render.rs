@@ -281,13 +281,121 @@ fn main_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         "wishlist" => wishlist_view(store, i18n, screen),
         "history" => history_view(store, i18n),
         "recommendations" => recommendations_view(i18n, screen),
-        _ => home_view(i18n),
+        _ => home_view(store, i18n),
     }
 }
 
-fn home_view(i18n: &I18n) -> String {
+fn waves_chip_row(i18n: &I18n, field: &str, current: &str, options: &[(&str, &str)]) -> String {
+    let mut html = String::new();
+    for (value, key) in options {
+        let active = *value == current;
+        html.push_str(&format!(
+            r#"<button type="button" class="waves-chip{}" data-waves-field="{}" data-waves-value="{}" aria-pressed="{}">{}</button>"#,
+            if active { " is-active" } else { "" },
+            esc(field),
+            esc(value),
+            if active { "true" } else { "false" },
+            esc(&i18n.t(key)),
+        ));
+    }
+    html
+}
+
+fn waves_settings(store: &Store, i18n: &I18n) -> String {
+    let waves = &store.settings.waves;
+    let block = |label: &str, row: String| {
+        format!(
+            r#"<div class="home-waves-settings-block"><div class="home-waves-settings-label">{}</div><div class="waves-chip-row">{}</div></div>"#,
+            esc(&i18n.t(label)),
+            row
+        )
+    };
     format!(
-        r#"<div class="home-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div><button type="button" class="btn btn-primary" data-pick="pick-folder">{}{}</button></div><section class="home-discovery-search"><div class="search-field home-discovery-search-field">{}<input type="search" class="search-input" placeholder="{}" aria-label="{}"></div><p class="home-discovery-search-hint">{}</p><div id="discovery-results"></div></section><section class="home-waves"><div class="home-waves-card"><button type="button" class="home-waves-main" data-act="waves" aria-label="{}"><div class="home-waves-visual" aria-hidden="true"><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span></div><div class="home-waves-text"><div class="home-waves-brand">IMe Waves</div><div class="home-waves-title">{}</div><div class="home-waves-meta">{}</div></div><span class="home-waves-play" aria-hidden="true">{}</span></button><div class="home-waves-actions"><button type="button" class="btn btn-ghost" data-act="waves-settings" title="{}" aria-expanded="false">{}</button></div></div></section></div>"#,
+        r#"<div class="home-waves-settings" id="waves-settings" hidden>{}{}{}{}{}<label class="home-waves-toggle"><input type="checkbox" data-waves-field="skipKnown"{}><span>{}</span></label><p class="home-waves-settings-hint">{}</p></div>"#,
+        block(
+            "waves.genre",
+            waves_chip_row(
+                i18n,
+                "genre",
+                &waves.genre,
+                &[
+                    ("all", "waves.genre.all"),
+                    ("rock", "waves.genre.rock"),
+                    ("pop", "waves.genre.pop"),
+                    ("rap", "waves.genre.rap"),
+                    ("ruRap", "waves.genre.ruRap"),
+                    ("electronic", "waves.genre.electronic"),
+                    ("rnb", "waves.genre.rnb"),
+                    ("indie", "waves.genre.indie"),
+                    ("metal", "waves.genre.metal"),
+                    ("dance", "waves.genre.dance"),
+                    ("jazz", "waves.genre.jazz"),
+                ],
+            )
+        ),
+        block(
+            "waves.language",
+            waves_chip_row(
+                i18n,
+                "language",
+                &waves.language,
+                &[
+                    ("any", "waves.language.any"),
+                    ("ru", "waves.language.ru"),
+                    ("en", "waves.language.en"),
+                ],
+            )
+        ),
+        block(
+            "waves.mood",
+            waves_chip_row(
+                i18n,
+                "mood",
+                &waves.mood,
+                &[
+                    ("any", "waves.mood.any"),
+                    ("energetic", "waves.mood.energetic"),
+                    ("chill", "waves.mood.chill"),
+                    ("dark", "waves.mood.dark"),
+                    ("happy", "waves.mood.happy"),
+                ],
+            )
+        ),
+        block(
+            "waves.seed",
+            waves_chip_row(
+                i18n,
+                "seed",
+                &waves.seed,
+                &[
+                    ("taste", "waves.seed.taste"),
+                    ("chart", "waves.seed.chart"),
+                    ("liked", "waves.seed.liked"),
+                    ("wishlist", "waves.seed.wishlist"),
+                ],
+            )
+        ),
+        block(
+            "waves.diversity",
+            waves_chip_row(
+                i18n,
+                "diversity",
+                &waves.diversity,
+                &[
+                    ("normal", "waves.diversity.normal"),
+                    ("high", "waves.diversity.high"),
+                ],
+            )
+        ),
+        if waves.skip_known { " checked" } else { "" },
+        esc(&i18n.t("waves.skipKnown")),
+        esc(&i18n.t("waves.settingsHint")),
+    )
+}
+
+fn home_view(store: &Store, i18n: &I18n) -> String {
+    format!(
+        r#"<div class="home-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div><button type="button" class="btn btn-primary" data-pick="pick-folder">{}{}</button></div><section class="home-discovery-search"><div class="search-field home-discovery-search-field">{}<input type="search" class="search-input" placeholder="{}" aria-label="{}"></div><p class="home-discovery-search-hint">{}</p><div id="discovery-results"></div></section><section class="home-waves"><div class="home-waves-card"><button type="button" class="home-waves-main" data-act="waves" aria-label="{}"><div class="home-waves-visual" aria-hidden="true"><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span></div><div class="home-waves-text"><div class="home-waves-brand">IMe Waves</div><div class="home-waves-title">{}</div><div class="home-waves-meta">{}</div></div><span class="home-waves-play" aria-hidden="true">{}</span></button><div class="home-waves-actions"><button type="button" class="btn btn-ghost" data-act="waves-settings" title="{}" aria-expanded="false" aria-controls="waves-settings">{}</button></div></div>{}</section></div>"#,
         esc(&i18n.t("home.title")),
         esc(&i18n.t("home.welcomeHint")),
         icon("import", 16),
@@ -302,6 +410,7 @@ fn home_view(i18n: &I18n) -> String {
         icon("play", 22),
         esc(&i18n.t("waves.settings")),
         icon("settings", 16),
+        waves_settings(store, i18n),
     )
 }
 

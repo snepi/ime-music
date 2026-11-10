@@ -3,7 +3,7 @@
   let now = { title: "", artist: "", url: "", cover: "" };
   audio.volume = Number(document.body.dataset.volume || 0.8) || 0.8;
   let waves = { active: false, queue: [], index: -1, seen: new Set() };
-  const seeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal"];
+  const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
 
   const svg = (inner, size) =>
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
@@ -118,6 +118,22 @@
       playId(row.dataset.play, row.dataset.title || "", row.dataset.artist || "");
       return;
     }
+    const waveChip = event.target.closest("[data-waves-field]");
+    if (waveChip && waveChip.tagName === "BUTTON") {
+      event.preventDefault();
+      const field = waveChip.dataset.wavesField;
+      const value = waveChip.dataset.wavesValue;
+      const row = waveChip.parentElement;
+      if (row) {
+        row.querySelectorAll("[data-waves-field]").forEach((node) => {
+          const on = node === waveChip;
+          node.classList.toggle("is-active", on);
+          node.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+      }
+      post("waves-setting", { field, value });
+      return;
+    }
     const act = event.target.closest("[data-act]");
     if (!act) return;
     const name = act.dataset.act;
@@ -128,7 +144,14 @@
     if (name === "shuffle" || name === "repeat") {
       post(name).then(() => act.classList.toggle("active"));
     }
+    if (name === "waves-settings") toggleWavesSettings();
     if (name === "waves") startWaves();
+  });
+
+  document.addEventListener("change", (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || input.dataset.wavesField !== "skipKnown") return;
+    post("waves-setting", { field: "skipKnown", value: input.checked ? "1" : "0" });
   });
 
   document.addEventListener("submit", (event) => {
@@ -447,6 +470,7 @@
     waves.active = true;
     waves.queue = [];
     waves.index = -1;
+    waves.seen = new Set();
     await refillWaves();
     if (!waves.queue.length) {
       waves.active = false;
@@ -455,20 +479,73 @@
     playWavesIndex(0);
   }
 
-  async function refillWaves() {
-    const seed = seeds[waves.seen.size % seeds.length];
+  function toggleWavesSettings() {
+    const panel = document.querySelector(".home-waves-settings");
+    const button = document.querySelector('[data-act="waves-settings"]');
+    if (!panel) return;
+    const willOpen = panel.hasAttribute("hidden");
+    panel.toggleAttribute("hidden", !willOpen);
+    if (button) button.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  }
+
+  function shuffleTracks(list) {
+    for (let i = list.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const swap = list[i];
+      list[i] = list[j];
+      list[j] = swap;
+    }
+    return list;
+  }
+
+  async function loadServerWaves() {
+    const response = await fetch("/api/waves");
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.items || [])
+      .filter((item) => item.previewUrl)
+      .map((item) => ({
+        url: item.previewUrl,
+        title: item.title || "IMe Waves",
+        artist: item.artist || "",
+      }));
+  }
+
+  async function loadFallbackWaves() {
+    const genre = document.querySelector('.waves-chip.is-active[data-waves-field="genre"]');
+    const genreValue = genre ? genre.dataset.wavesValue : "all";
+    const term = !genreValue || genreValue === "all"
+      ? fallbackSeeds[Math.floor(Math.random() * fallbackSeeds.length)]
+      : genreValue;
     const response = await fetch(
-      "https://itunes.apple.com/search?entity=song&limit=20&country=ru&term=" + encodeURIComponent(seed),
+      "https://itunes.apple.com/search?entity=song&limit=40&country=ru&term=" + encodeURIComponent(term),
     );
     const data = await response.json();
-    for (const item of data.results || []) {
-      if (!item.previewUrl || waves.seen.has(item.previewUrl)) continue;
-      waves.seen.add(item.previewUrl);
-      waves.queue.push({
-        url: item.previewUrl,
-        title: item.trackName || "IMe Waves",
-        artist: item.artistName || "",
-      });
+    return shuffleTracks(
+      (data.results || [])
+        .filter((item) => item.previewUrl)
+        .map((item) => ({
+          url: item.previewUrl,
+          title: item.trackName || "IMe Waves",
+          artist: item.artistName || "",
+        })),
+    );
+  }
+
+  async function refillWaves() {
+    let batch = [];
+    try {
+      batch = await loadServerWaves();
+    } catch { /* offline */ }
+    if (!batch.length) {
+      try {
+        batch = await loadFallbackWaves();
+      } catch { /* no previews */ }
+    }
+    for (const item of batch) {
+      if (!item.url || waves.seen.has(item.url)) continue;
+      waves.seen.add(item.url);
+      waves.queue.push(item);
     }
   }
 
@@ -481,6 +558,7 @@
       return;
     }
     waves.index = index;
+    post("waves-heard", { url: item.url });
     const title = document.querySelector(".home-waves-title");
     const meta = document.querySelector(".home-waves-meta");
     if (title) title.textContent = item.title;

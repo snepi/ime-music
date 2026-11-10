@@ -145,6 +145,12 @@ pub struct Waves {
     pub diversity: String,
     pub skip_known: bool,
     pub active: bool,
+    /// Preview URLs already played. The next session puts these after fresh tracks.
+    #[serde(default)]
+    pub heard: Vec<String>,
+    /// Increments every time a queue is built so the shuffle changes between sessions.
+    #[serde(default)]
+    pub spin: u64,
 }
 
 impl Default for Waves {
@@ -157,6 +163,8 @@ impl Default for Waves {
             diversity: "normal".into(),
             skip_known: true,
             active: false,
+            heard: Vec::new(),
+            spin: 0,
         }
     }
 }
@@ -389,6 +397,19 @@ impl Store {
             self.player.playing = false;
         }
         self.player.queue.retain(|s| s != id);
+    }
+
+    pub fn remember_wave(&mut self, preview_url: &str) {
+        let url = preview_url.trim();
+        if url.is_empty() {
+            return;
+        }
+        self.settings.waves.heard.retain(|heard| heard != url);
+        self.settings.waves.heard.push(url.to_string());
+        if self.settings.waves.heard.len() > 160 {
+            let extra = self.settings.waves.heard.len() - 160;
+            self.settings.waves.heard.drain(0..extra);
+        }
     }
 
     pub fn toggle_wish(&mut self, title: &str, artist: &str, preview_url: &str, cover_url: &str) {

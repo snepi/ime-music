@@ -7,6 +7,7 @@ mod i18n;
 mod icons;
 mod model;
 mod render;
+mod waves;
 
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -80,6 +81,7 @@ fn main() {
         .route("/audio/:id", get(audio))
         .route("/api/state", get(api_state))
         .route("/api/deezer", get(deezer_proxy))
+        .route("/api/waves", get(waves_pool))
         .nest_service("/brand", ServeDir::new(static_dir.join("brand")))
         .route("/index.css", get(css))
         .route("/player.js", get(player_js))
@@ -309,6 +311,18 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 form.cover.as_deref().unwrap_or(""),
             );
         }
+        "waves-setting" => {
+            waves::apply_setting(
+                &mut store.settings.waves,
+                form.field.as_deref().unwrap_or(""),
+                form.value.as_deref().unwrap_or(""),
+            );
+        }
+        "waves-heard" => {
+            if let Some(url) = form.url.as_deref().or(form.value.as_deref()) {
+                store.remember_wave(url);
+            }
+        }
         "volume" => {
             if let Some(value) = form.value.as_deref() {
                 if let Ok(level) = value.parse::<f32>() {
@@ -492,6 +506,23 @@ async fn audio(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> im
         Ok(bytes) => (StatusCode::OK, [(header::CONTENT_TYPE, mime)], bytes).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "missing").into_response(),
     }
+}
+
+async fn waves_pool(State(state): State<Arc<AppState>>) -> Response {
+    let snapshot = {
+        let mut store = state.store.lock().expect("store");
+        store.settings.waves.spin = store.settings.waves.spin.wrapping_add(1).max(1);
+        let snapshot = store.clone();
+        save(&state, &store);
+        snapshot
+    };
+    let built = tokio::task::spawn_blocking(move || waves::build_pool(&snapshot)).await;
+    let items = built.unwrap_or_default();
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        serde_json::json!({ "ok": true, "items": items }).to_string(),
+    )
+        .into_response()
 }
 
 async fn api_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
