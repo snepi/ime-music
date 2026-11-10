@@ -1,6 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod bundle;
+#[cfg(target_os = "windows")]
+mod window;
 mod i18n;
 mod icons;
 mod model;
@@ -46,8 +48,7 @@ struct ActForm {
     ajax: Option<String>,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     #[cfg(target_os = "windows")]
     std::panic::set_hook(Box::new(|info| {
         windows_message(&format!("IMe Music не запустился:\n{info}"));
@@ -81,30 +82,33 @@ async fn main() {
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(state);
 
-    let mut listener = None;
-    let mut url = String::new();
-    for candidate in port..port.saturating_add(20) {
-        let addr = format!("127.0.0.1:{candidate}");
-        match tokio::net::TcpListener::bind(&addr).await {
-            Ok(bound) => {
-                url = format!("http://{addr}");
-                listener = Some(bound);
-                break;
-            }
-            Err(_) => continue,
-        }
-    }
-    let Some(listener) = listener else {
-        fail(&format!("Не удалось открыть порт {port}."));
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => fail(&format!("Не удалось запустить IMe Music: {err}")),
     };
-    let open_url = url.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        open_browser(&open_url);
+    let (listener, url) = runtime.block_on(async {
+        for candidate in port..port.saturating_add(20) {
+            let addr = format!("127.0.0.1:{candidate}");
+            if let Ok(bound) = tokio::net::TcpListener::bind(&addr).await {
+                return (bound, format!("http://{addr}"));
+            }
+        }
+        fail(&format!("Не удалось открыть порт {port}."))
     });
-    if let Err(err) = axum::serve(listener, app).await {
-        fail(&format!("IMe Music остановился: {err}"));
-    }
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return,
+        };
+        runtime.block_on(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+    });
+
+    #[cfg(target_os = "windows")]
+    window::open(&url);
+    #[cfg(not(target_os = "windows"))]
+    std::thread::park();
 }
 
 fn fail(message: &str) -> ! {
@@ -115,52 +119,10 @@ fn fail(message: &str) -> ! {
     std::process::exit(1);
 }
 
-fn open_browser(url: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        if !windows_open(url) {
-            windows_message(&format!("Откройте IMe Music в браузере:\n{url}"));
-        }
-        return;
-    }
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-}
-
 #[cfg(target_os = "windows")]
 fn wide(text: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect()
-}
-
-#[cfg(target_os = "windows")]
-fn windows_open(url: &str) -> bool {
-    #[link(name = "shell32")]
-    extern "system" {
-        fn ShellExecuteW(
-            hwnd: *mut core::ffi::c_void,
-            verb: *const u16,
-            file: *const u16,
-            params: *const u16,
-            dir: *const u16,
-            show: i32,
-        ) -> isize;
-    }
-    let verb = wide("open");
-    let file = wide(url);
-    let code = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            1,
-        )
-    };
-    code > 32
 }
 
 #[cfg(target_os = "windows")]

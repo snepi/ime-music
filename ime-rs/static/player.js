@@ -7,7 +7,23 @@
   const dialog = document.querySelector('.modal[role="dialog"]');
   if (dialog) dialog.focus();
 
+  const titlebar = document.querySelector(".titlebar");
+  if (titlebar) {
+    titlebar.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target.closest("button, a, input, .titlebar-btn")) return;
+      if (window.ipc && window.ipc.postMessage) window.ipc.postMessage("drag");
+    });
+  }
+
   document.addEventListener("click", (event) => {
+    const winBtn = event.target.closest("[data-win]");
+    if (winBtn && window.ipc && window.ipc.postMessage) {
+      event.preventDefault();
+      event.stopPropagation();
+      window.ipc.postMessage(winBtn.dataset.win);
+      return;
+    }
     const pick = event.target.closest("[data-pick]");
     if (pick) {
       const input = byId(pick.dataset.pick);
