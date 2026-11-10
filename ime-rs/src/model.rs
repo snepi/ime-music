@@ -46,6 +46,8 @@ pub struct Song {
     pub play_count: u32,
     pub last_played_at: Option<i64>,
     pub file_size: u64,
+    #[serde(default)]
+    pub cover_path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -347,6 +349,27 @@ impl Store {
         n
     }
 
+    /// The wishlist download knows the real title and artist. The file name is only a YouTube id.
+    pub fn apply_download_meta(&mut self, path: &Path, title: &str, artist: &str, album: &str, cover_path: &str) -> bool {
+        let path_str = path.to_string_lossy().to_string();
+        let Some(song) = self.songs.iter_mut().find(|song| song.path == path_str) else {
+            return false;
+        };
+        if !title.trim().is_empty() {
+            song.title = title.trim().to_string();
+        }
+        if !artist.trim().is_empty() {
+            song.artist = artist.trim().to_string();
+        }
+        if !album.trim().is_empty() {
+            song.album = album.trim().to_string();
+        }
+        if !cover_path.trim().is_empty() {
+            song.cover_path = cover_path.trim().to_string();
+        }
+        true
+    }
+
     pub fn add_file(&mut self, path: &Path) -> bool {
         if !is_audio(path) {
             return false;
@@ -377,6 +400,7 @@ impl Store {
             play_count: 0,
             last_played_at: None,
             file_size,
+            cover_path: String::new(),
         });
         true
     }
@@ -774,4 +798,51 @@ fn wav_duration(path: &Path) -> f64 {
 
 pub fn data_file(data_dir: &Path) -> PathBuf {
     data_dir.join("library.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wishlist_download_replaces_youtube_id_with_title_artist_and_cover() {
+        let dir = std::env::temp_dir().join("ime-meta-proof");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("downloads")).unwrap();
+        let audio = dir.join("downloads").join("dQw4w9WgXcQ.wav");
+        fs::write(
+            &audio,
+            b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00",
+        )
+        .unwrap();
+        let cover = dir.join("cover.png");
+        fs::write(
+            &cover,
+            [
+                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+                0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+                0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+                0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+            ],
+        )
+        .unwrap();
+        let mut store = Store::default();
+        assert!(store.add_file(&audio));
+        assert_eq!(store.songs[0].title, "dQw4w9WgXcQ");
+        assert!(store.songs[0].artist.is_empty());
+        assert!(store.apply_download_meta(
+            &audio,
+            "Младшая сестра",
+            "дора",
+            "Младшая сестра",
+            cover.to_str().unwrap(),
+        ));
+        assert_eq!(store.songs[0].title, "Младшая сестра");
+        assert_eq!(store.songs[0].artist, "дора");
+        assert_eq!(store.songs[0].album, "Младшая сестра");
+        assert_eq!(store.songs[0].cover_path, cover.to_string_lossy());
+        store.settings.onboarding_done = true;
+        store.save(&dir.join("library.json"));
+    }
 }

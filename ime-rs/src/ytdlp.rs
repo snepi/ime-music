@@ -1,9 +1,21 @@
 //! The Electron wishlist download: search YouTube with the user's yt-dlp, then save audio.
 //! Same program and the same arguments as electron/youtubeImportService.cjs.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
+
+fn hidden(bin: &str) -> Command {
+    let mut command = Command::new(bin);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW. Electron spawns yt-dlp with windowsHide so no console appears.
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
 
 const MISSING: &str = "yt-dlp не найден. Откройте Настройки и укажите путь, например: D:\\yt-dlp\\yt-dlp.exe (можно указать и папку D:\\yt-dlp)";
 
@@ -48,8 +60,10 @@ fn resolve_bin(configured: &str) -> Option<String> {
 }
 
 fn version_ok(bin: &str) -> bool {
-    Command::new(bin)
+    hidden(bin)
         .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
@@ -122,7 +136,7 @@ fn push_proxy(args: &mut Vec<String>, proxy: &str) {
 }
 
 fn run(bin: &str, args: &[String], cwd: Option<&Path>, timeout: Duration) -> Result<String, String> {
-    let mut command = Command::new(bin);
+    let mut command = hidden(bin);
     command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
@@ -161,6 +175,37 @@ fn run(bin: &str, args: &[String], cwd: Option<&Path>, timeout: Duration) -> Res
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+pub fn save_cover(url: &str, dir: &Path, seed: &str) -> Option<PathBuf> {
+    let url = url.trim();
+    if !url.starts_with("http") {
+        return None;
+    }
+    let response = ureq::get(url).timeout(Duration::from_secs(12)).call().ok()?;
+    let content_type = response.header("content-type").unwrap_or("").to_string();
+    let mut bytes = Vec::new();
+    response.into_reader().take(5_000_000).read_to_end(&mut bytes).ok()?;
+    if bytes.len() < 128 {
+        return None;
+    }
+    let ext = if content_type.contains("png") || url.contains(".png") {
+        "png"
+    } else if content_type.contains("webp") || url.contains(".webp") {
+        "webp"
+    } else {
+        "jpg"
+    };
+    std::fs::create_dir_all(dir).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    url.hash(&mut hasher);
+    seed.hash(&mut hasher);
+    let path = dir.join(format!("{:x}.{ext}", hasher.finish()));
+    if !path.exists() {
+        std::fs::write(&path, &bytes).ok()?;
+    }
+    Some(path)
 }
 
 fn find_download(dir: &Path, video_id: &str) -> Option<PathBuf> {

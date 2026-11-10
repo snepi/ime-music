@@ -563,6 +563,8 @@
     const body = new URLSearchParams({
       title: button.dataset.title || "",
       artist: button.dataset.artist || "",
+      album: button.dataset.album || "",
+      cover: button.dataset.cover || "",
     });
     const response = await fetch("/import-search", { method: "POST", body });
     const data = await response.json().catch(() => ({}));

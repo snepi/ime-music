@@ -544,18 +544,26 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         for (i, song) in filtered.iter().enumerate() {
             let current = store.player.current_id.as_deref() == Some(song.id.as_str());
             let playing = current && store.player.playing;
+            let cover_cell = if song.cover_path.is_empty() {
+                format!(
+                    r#"<div class="song-cover song-cover-fallback">{}</div>"#,
+                    icon("music", 16)
+                )
+            } else {
+                format!(r#"<img class="song-cover" src="/cover/{}" alt="">"#, esc(&song.id))
+            };
             let artist = if song.artist.is_empty() {
                 i18n.t("lib.unknownArtist")
             } else {
                 song.artist.clone()
             };
             html.push_str(&format!(
-                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell"><div class="song-cover song-cover-fallback">{disc}</div></div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist">{artist}</button></div><button type="button" class="song-menu-btn" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
+                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell">{disc}</div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist">{artist}</button></div><button type="button" class="song-menu-btn" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
                 cur = if current { " current" } else { "" },
                 id = esc(&song.id),
                 n = i + 1,
                 play = icon(if playing { "pause" } else { "play" }, 14),
-                disc = icon("music", 16),
+                disc = cover_cell,
                 title = esc(&song.title),
                 artist = esc(&artist),
                 menu = esc(&i18n.t("lib.trackMenu")),
@@ -722,9 +730,11 @@ fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
             )
         } else {
             format!(
-                r#"<button type="button" class="btn btn-secondary wishlist-download-btn" data-download-wish="1" data-title="{title}" data-artist="{artist}" title="{label}"><span class="btn-icon">{icon}</span>{label}</button>"#,
+                r#"<button type="button" class="btn btn-secondary wishlist-download-btn" data-download-wish="1" data-title="{title}" data-artist="{artist}" data-album="{album}" data-cover="{cover}" title="{label}"><span class="btn-icon">{icon}</span>{label}</button>"#,
                 title = esc(&item.title),
                 artist = esc(&item.artist),
+                album = esc(&item.album),
+                cover = esc(&item.cover_url),
                 label = esc(&i18n.t("wish.download")),
                 icon = icon("import", 16),
             )

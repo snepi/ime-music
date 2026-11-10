@@ -82,6 +82,7 @@ fn main() {
         .route("/import-path", post(import_path))
         .route("/import-search", post(import_search))
         .route("/audio/:id", get(audio))
+        .route("/cover/:id", get(cover_file))
         .route("/api/state", get(api_state))
         .route("/api/deezer", get(deezer_proxy))
         .route("/api/waves", get(waves_pool))
@@ -481,31 +482,57 @@ fn model_nid() -> String {
 async fn import_search(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {
     let title = form.title.unwrap_or_default();
     let artist = form.artist.unwrap_or_default();
-    let (configured, proxy, already, dest) = {
+    let album = form.album.clone().unwrap_or_default();
+    let cover_url = form.cover.clone().unwrap_or_default();
+    let (configured, proxy, already, dest, covers) = {
         let store = state.store.lock().expect("store");
         let already = store.songs.iter().any(|song| {
             song.title.eq_ignore_ascii_case(title.trim()) && song.artist.eq_ignore_ascii_case(artist.trim())
         });
-        let dest = state
+        let root = state
             .data_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
-            .join("downloads");
+            .to_path_buf();
         (
             store.settings.ytdlp_path.clone(),
             store.settings.ytdlp_proxy.clone(),
             already,
-            dest,
+            root.join("downloads"),
+            root.join("covers"),
         )
     };
     if already {
+        let cover = ytdlp::save_cover(&cover_url, &covers, &format!("{artist}-{title}"))
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut store = state.store.lock().expect("store");
+        if let Some(song) = store.songs.iter_mut().find(|song| {
+            song.title.eq_ignore_ascii_case(title.trim()) && song.artist.eq_ignore_ascii_case(artist.trim())
+        }) {
+            if song.album.trim().is_empty() && !album.trim().is_empty() {
+                song.album = album.trim().to_string();
+            }
+            if song.cover_path.is_empty() && !cover.is_empty() {
+                song.cover_path = cover;
+            }
+        }
+        save(&state, &store);
         return json_msg(true, "Трек уже есть в библиотеке");
     }
-    let fetched = tokio::task::spawn_blocking(move || ytdlp::download_search(&title, &artist, &configured, &proxy, &dest)).await;
+    let fetched = {
+        let title = title.clone();
+        let artist = artist.clone();
+        tokio::task::spawn_blocking(move || ytdlp::download_search(&title, &artist, &configured, &proxy, &dest)).await
+    };
     match fetched {
         Ok(Ok(path)) => {
+            let cover = ytdlp::save_cover(&cover_url, &covers, &format!("{artist}-{title}"))
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let mut store = state.store.lock().expect("store");
             let added = store.add_file(&path);
+            store.apply_download_meta(&path, &title, &artist, &album, &cover);
             save(&state, &store);
             json_msg(true, if added { "Трек добавлен в библиотеку" } else { "Файл уже был скачан" })
         }
@@ -529,6 +556,28 @@ async fn import_path(State(state): State<Arc<AppState>>, Form(form): Form<ActFor
         save(&state, &store);
     }
     Redirect::to("/?view=all")
+}
+
+async fn cover_file(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let path = {
+        let store = state.store.lock().expect("store");
+        store.song(&id).map(|song| song.cover_path.clone()).unwrap_or_default()
+    };
+    if path.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let kind = if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+    ([(header::CONTENT_TYPE, kind)], bytes).into_response()
 }
 
 async fn audio(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
