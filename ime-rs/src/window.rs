@@ -37,7 +37,6 @@ pub fn open(url: &str) {
         ShowWindow(hwnd, SW_SHOW);
     }
     pump_pending();
-    wait_for_server(url);
 
     let controller = match create_controller(hwnd) {
         Ok(controller) => controller,
@@ -174,21 +173,6 @@ fn client_rect(hwnd: HWND) -> RECT {
         } else {
             rect
         }
-    }
-}
-
-fn wait_for_server(url: &str) {
-    let rest = url.trim_start_matches("http://");
-    for _ in 0..100 {
-        if std::net::TcpStream::connect_timeout(
-            &rest.parse().unwrap_or_else(|_| "127.0.0.1:4173".parse().unwrap()),
-            std::time::Duration::from_millis(50),
-        )
-        .is_ok()
-        {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 

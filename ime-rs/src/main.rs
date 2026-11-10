@@ -82,33 +82,70 @@ fn main() {
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(state);
 
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(err) => fail(&format!("Не удалось запустить IMe Music: {err}")),
-    };
-    let (listener, url) = runtime.block_on(async {
-        for candidate in port..port.saturating_add(20) {
-            let addr = format!("127.0.0.1:{candidate}");
-            if let Ok(bound) = tokio::net::TcpListener::bind(&addr).await {
-                return (bound, format!("http://{addr}"));
-            }
-        }
-        fail(&format!("Не удалось открыть порт {port}."))
-    });
+    let (url_tx, url_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // Bind and accept on the same Tokio runtime. A listener created on
+        // another runtime never wakes accept(), so the window stays blank.
         let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
             Ok(runtime) => runtime,
             Err(_) => return,
         };
         runtime.block_on(async move {
+            let mut bound = None;
+            let mut url = String::new();
+            for candidate in port..port.saturating_add(20) {
+                let addr = format!("127.0.0.1:{candidate}");
+                if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
+                    url = format!("http://{addr}");
+                    bound = Some(listener);
+                    break;
+                }
+            }
+            let Some(listener) = bound else {
+                let _ = url_tx.send(String::new());
+                return;
+            };
+            let _ = url_tx.send(url);
             let _ = axum::serve(listener, app).await;
         });
     });
+    let url = url_rx.recv().unwrap_or_default();
+    if url.is_empty() {
+        fail(&format!("Не удалось открыть порт {port}."));
+    }
+    if let Err(err) = wait_for_player_page(&url) {
+        fail(&format!("Окно IMe Music не получило интерфейс.\n{err}"));
+    }
 
     #[cfg(target_os = "windows")]
     window::open(&url);
     #[cfg(not(target_os = "windows"))]
     std::thread::park();
+}
+
+fn wait_for_player_page(url: &str) -> Result<(), String> {
+    let host = url.trim_start_matches("http://");
+    let addr: std::net::SocketAddr = host
+        .parse()
+        .map_err(|_| format!("Некорректный адрес {url}"))?;
+    for _ in 0..50 {
+        if let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)) {
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+            let request = format!("GET / HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+            if std::io::Write::write_all(&mut stream, request.as_bytes()).is_ok() {
+                let mut response = String::new();
+                if std::io::Read::read_to_string(&mut stream, &mut response).is_ok()
+                    && response.contains("home-view")
+                    && response.contains("player-bar")
+                {
+                    return Ok(());
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    Err(format!("Сервер {url} не отдал экран плеера."))
 }
 
 fn fail(message: &str) -> ! {
