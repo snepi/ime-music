@@ -79,6 +79,7 @@ fn main() {
         .route("/import-path", post(import_path))
         .route("/audio/:id", get(audio))
         .route("/api/state", get(api_state))
+        .route("/api/deezer", get(deezer_proxy))
         .nest_service("/brand", ServeDir::new(static_dir.join("brand")))
         .route("/index.css", get(css))
         .route("/player.js", get(player_js))
@@ -140,7 +141,7 @@ fn wait_for_player_page(url: &str) -> Result<(), String> {
             if std::io::Write::write_all(&mut stream, request.as_bytes()).is_ok() {
                 let mut response = String::new();
                 if std::io::Read::read_to_string(&mut stream, &mut response).is_ok()
-                    && response.contains("home-view")
+                    && response.contains("id=\"root\"")
                     && response.contains("player-bar")
                 {
                     return Ok(());
@@ -204,6 +205,37 @@ fn screen_from(q: &PageQuery, store: &Store) -> Screen {
         section: q.section.clone().unwrap_or_default(),
         search: q.q.clone().unwrap_or_default(),
         modal: q.modal.clone().unwrap_or_default(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DeezerQuery {
+    path: String,
+}
+
+/// Deezer has no browser CORS header, so the desktop page asks this proxy.
+async fn deezer_proxy(Query(query): Query<DeezerQuery>) -> Response {
+    let path = query.path.trim();
+    let allowed = path.starts_with("/search/") || path.starts_with("/artist/") || path.starts_with("/track/");
+    if !allowed || path.contains("://") || path.contains("..") || path.contains('\n') {
+        return (StatusCode::BAD_REQUEST, "bad path").into_response();
+    }
+    let url = format!("https://api.deezer.com{path}");
+    let fetched = tokio::task::spawn_blocking(move || {
+        ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(12))
+            .call()
+            .map_err(|err| err.to_string())
+            .and_then(|response| response.into_string().map_err(|err| err.to_string()))
+    })
+    .await;
+    match fetched {
+        Ok(Ok(body)) => (
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+        _ => (StatusCode::BAD_GATEWAY, "deezer").into_response(),
     }
 }
 

@@ -9,6 +9,10 @@
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
   const PLAY = '<polygon points="6 4 20 12 6 20 6 4"/>';
   const PAUSE = '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>';
+  const HEART_PATH =
+    "M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z";
+  const wished = new Set();
+  let lastSearchHtml = "";
 
   const byId = (id) => document.getElementById(id);
 
@@ -32,17 +36,40 @@
       window.ipc.postMessage(winBtn.dataset.win);
       return;
     }
+    const back = event.target.closest("[data-artist-back]");
+    if (back) {
+      event.preventDefault();
+      const host = document.getElementById("discovery-results");
+      if (host) host.innerHTML = lastSearchHtml;
+      return;
+    }
+    const artistBtn = event.target.closest("[data-open-artist]");
+    if (artistBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      openArtist(artistBtn.dataset.artistId || "", artistBtn.dataset.artistName || artistBtn.textContent || "");
+      return;
+    }
     const wish = event.target.closest("[data-wish]");
     if (wish) {
       event.preventDefault();
       event.stopPropagation();
+      const key = wishKey(wish.dataset.title || "", wish.dataset.artist || "");
+      const removing = wished.has(key);
       post("wish", {
         title: wish.dataset.title || "",
         artist: wish.dataset.artist || "",
         url: wish.dataset.url || "",
         cover: wish.dataset.cover || "",
       });
-      wish.classList.toggle("liked");
+      if (removing) wished.delete(key);
+      else wished.add(key);
+      document.querySelectorAll("[data-wish]").forEach((node) => {
+        if (wishKey(node.dataset.title || "", node.dataset.artist || "") !== key) return;
+        const on = wished.has(key);
+        node.classList.toggle("liked", on);
+        node.innerHTML = heartIcon(on);
+      });
       return;
     }
     const wishPlay = event.target.closest(".wishlist-play");
@@ -187,39 +214,155 @@
     discoveryTimer = window.setTimeout(() => runDiscovery(value.trim()), 280);
   }
 
+  function wishKey(title, artist) {
+    return `${title}\n${artist}`.trim().toLowerCase();
+  }
+
+  function heartIcon(on) {
+    return svg(on ? `<path d="${HEART_PATH}" fill="currentColor" stroke="none"/>` : `<path d="${HEART_PATH}"/>`, 16);
+  }
+
+  function wishButton(track) {
+    const on = wished.has(wishKey(track.title, track.artist));
+    return `<button type="button" class="like-btn wish-heart${on ? " liked" : ""}" data-wish="1" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}" data-url="${escapeAttr(track.preview || "")}" data-cover="${escapeAttr(track.cover || "")}" aria-label="Добавить в «Хочу послушать»" title="Добавить в «Хочу послушать»">${heartIcon(on)}</button>`;
+  }
+
+  function trackCard(track) {
+    return `<li class="demo-track-card"><button type="button" class="demo-track-play" data-preview="${escapeAttr(track.preview)}" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><img src="${escapeAttr(track.cover || "")}" alt=""><span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div><div class="demo-track-actions">${wishButton(track)}</div></li>`;
+  }
+
+  function mapDeezerTrack(row) {
+    if (!row || !row.preview || !row.title) return null;
+    return {
+      id: row.id,
+      title: row.title_short || row.title,
+      artist: row.artist?.name || "",
+      artistId: row.artist?.id || "",
+      album: row.album?.title || "",
+      cover: row.album?.cover_medium || row.album?.cover || "",
+      preview: row.preview,
+    };
+  }
+
+  async function deezer(path) {
+    const response = await fetch("/api/deezer?path=" + encodeURIComponent(path));
+    if (!response.ok) throw new Error("deezer");
+    return response.json();
+  }
+
   async function runDiscovery(query) {
     const host = document.getElementById("discovery-results");
     if (!host) return;
     if (query.length < 2) {
       host.innerHTML = "";
+      lastSearchHtml = "";
       return;
     }
     host.innerHTML = '<p class="home-discovery-search-hint">Поиск…</p>';
     try {
-      const response = await fetch(
-        "https://itunes.apple.com/search?entity=song&limit=12&country=ru&term=" + encodeURIComponent(query),
-      );
-      const data = await response.json();
-      const tracks = (data.results || []).filter((item) => item.previewUrl && item.trackName);
-      if (!tracks.length) {
+      const [artistData, trackData] = await Promise.all([
+        deezer("/search/artist?q=" + encodeURIComponent(query) + "&limit=8"),
+        deezer("/search/track?q=" + encodeURIComponent(query) + "&limit=18"),
+      ]);
+      const artists = (artistData.data || []).filter((item) => item && item.id && item.name);
+      const tracks = (trackData.data || []).map(mapDeezerTrack).filter(Boolean);
+      if (!artists.length && !tracks.length) {
         host.innerHTML = '<p class="home-discovery-search-empty">Ничего не найдено</p>';
+        lastSearchHtml = host.innerHTML;
         return;
       }
-      host.innerHTML =
-        '<h3 class="home-discovery-section-title">Треки с демо</h3><ul class="home-rail">' +
-        tracks
-          .map(
-            (item) => `<li><button type="button" class="home-card" data-preview="${escapeAttr(item.previewUrl)}" data-title="${escapeAttr(item.trackName)}" data-artist="${escapeAttr(item.artistName || "")}">
-              <div class="home-card-cover">${item.artworkUrl100 ? `<img src="${escapeAttr(item.artworkUrl100)}" alt="">` : ""}</div>
-              <div class="home-card-title">${escapeHtml(item.trackName)}</div>
-              <div class="home-card-artist">${escapeHtml(item.artistName || "")}</div>
-            </button><button type="button" class="btn btn-ghost home-card-wish" data-wish="1" data-title="${escapeAttr(item.trackName)}" data-artist="${escapeAttr(item.artistName || "")}" data-url="${escapeAttr(item.previewUrl)}" data-cover="${escapeAttr(item.artworkUrl100 || "")}" aria-label="В список желаний">♥</button></li>`,
-          )
-          .join("") +
-        "</ul>";
+      const artistHtml = artists.length
+        ? `<div class="home-discovery-section"><h3 class="home-discovery-section-title">Артисты</h3><ul class="artist-chip-grid">${artists
+            .map(
+              (artist) =>
+                `<li><button type="button" class="artist-chip" data-open-artist="1" data-artist-id="${escapeAttr(artist.id)}" data-artist-name="${escapeAttr(artist.name)}">${
+                  artist.picture_medium
+                    ? `<img class="artist-chip-avatar" src="${escapeAttr(artist.picture_medium)}" alt="">`
+                    : `<span class="artist-chip-avatar artist-chip-avatar-fallback">${svg('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>', 18)}</span>`
+                }<span class="artist-chip-name">${escapeHtml(artist.name)}</span></button></li>`,
+            )
+            .join("")}</ul></div>`
+        : "";
+      const trackHtml = tracks.length
+        ? `<div class="home-discovery-section"><h3 class="home-discovery-section-title">Треки с демо</h3><ul class="demo-tracks-grid">${tracks.map(trackCard).join("")}</ul></div>`
+        : "";
+      host.innerHTML = artistHtml + trackHtml;
+      lastSearchHtml = host.innerHTML;
     } catch {
       host.innerHTML = '<p class="home-discovery-search-error">Не удалось выполнить поиск</p>';
     }
+  }
+
+  async function openArtist(id, name) {
+    const host = document.getElementById("discovery-results");
+    if (!host) return;
+    const artistName = String(name || "").trim();
+    if (!artistName && !id) return;
+    host.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
+    try {
+      let artistId = String(id || "");
+      if (!artistId) {
+        const found = await deezer("/search/artist?q=" + encodeURIComponent(artistName) + "&limit=8");
+        const want = artistName.toLowerCase();
+        const hit = (found.data || []).find((item) => String(item.name || "").toLowerCase() === want) || (found.data || [])[0];
+        artistId = hit ? String(hit.id) : "";
+      }
+      if (!artistId) throw new Error("missing");
+      const [info, top, albums, foundTracks] = await Promise.all([
+        deezer("/artist/" + encodeURIComponent(artistId)),
+        deezer("/artist/" + encodeURIComponent(artistId) + "/top?limit=25"),
+        deezer("/artist/" + encodeURIComponent(artistId) + "/albums?limit=40"),
+        deezer("/search/track?q=" + encodeURIComponent(artistName || "") + "&limit=40"),
+      ]);
+      await renderArtist(host, info, top.data || [], albums.data || [], foundTracks.data || []);
+    } catch {
+      host.innerHTML =
+        '<p class="home-discovery-search-error">Артист не найден</p><button type="button" class="btn btn-secondary" data-artist-back="1">Назад</button>';
+    }
+  }
+
+  async function renderArtist(host, info, topRows, albumRows, searchRows) {
+    const artistId = Number(info.id);
+    const artistName = String(info.name || "");
+    const want = artistName.toLowerCase();
+    const own = [];
+    const seen = new Set();
+    for (const row of [...topRows, ...searchRows]) {
+      const track = mapDeezerTrack(row);
+      if (!track || seen.has(track.preview)) continue;
+      if (Number(row.artist?.id) !== artistId) continue;
+      if (/\bfeat\.|\bft\./i.test(row.title || "")) continue;
+      seen.add(track.preview);
+      own.push(track);
+    }
+    const featureRows = [];
+    const featureIds = new Set();
+    for (const row of [...searchRows, ...topRows]) {
+      if (!row?.id || featureIds.has(row.id) || Number(row.artist?.id) === artistId) continue;
+      featureIds.add(row.id);
+      featureRows.push(row);
+    }
+    const details = await Promise.all(featureRows.slice(0, 10).map((row) => deezer("/track/" + row.id).catch(() => null)));
+    const features = [];
+    for (const detail of details) {
+      const names = (detail?.contributors || []).map((person) => String(person.name || "").toLowerCase());
+      const mentioned = names.includes(want) || String(detail?.title || "").toLowerCase().includes(want);
+      if (!mentioned) continue;
+      const track = mapDeezerTrack(detail);
+      if (!track || seen.has(track.preview)) continue;
+      seen.add(track.preview);
+      features.push(track);
+    }
+    const albums = albumRows.filter((album) => album && album.title && (album.record_type === "album" || album.record_type === "compile"));
+    const fans = Number(info.nb_fan) || 0;
+    const albumCount = Number(info.nb_album) || albums.length;
+    host.innerHTML = `<div class="artist-view"><div class="artist-view-header"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><div class="artist-view-hero"><div class="artist-view-cover">${info.picture_medium ? `<img src="${escapeAttr(info.picture_xl || info.picture_big || info.picture_medium)}" alt="">` : ""}</div><div class="artist-view-info"><h1>${escapeHtml(artistName)}</h1><p class="artist-view-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p></div></div></div><section class="artist-view-section"><h2>Треки</h2>${own.length ? `<ul class="demo-tracks-grid">${own.slice(0, 6).map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет демо-треков</p>'}</section><section class="artist-view-section"><h2>Альбомы</h2>${albums.length ? `<ul class="artist-releases-grid">${albums
+      .slice(0, 4)
+      .map((album) => {
+        const year = String(album.release_date || "").slice(0, 4);
+        return `<li><div class="artist-release-card"><div class="artist-release-cover">${album.cover_medium ? `<img src="${escapeAttr(album.cover_medium)}" alt="">` : ""}</div><div class="artist-release-meta"><div class="artist-release-title">${escapeHtml(album.title)}</div><div class="artist-release-sub">${escapeHtml(year)}</div></div></div></li>`;
+      })
+      .join("")}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-view-section"><h2>Фиты</h2>${features.length ? `<ul class="demo-tracks-grid">${features.slice(0, 6).map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет фитов</p>'}</section></div>`;
   }
 
   function filterLibrary(query) {
