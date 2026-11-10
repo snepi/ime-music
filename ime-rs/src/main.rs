@@ -1,3 +1,6 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
+mod bundle;
 mod i18n;
 mod icons;
 mod model;
@@ -45,11 +48,8 @@ struct ActForm {
 
 #[tokio::main]
 async fn main() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let static_dir = manifest.join("static");
-    let data_dir = std::env::var("IME_RS_DATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| manifest.join("data"));
+    let (static_dir, data_dir) = app_dirs();
+    bundle::ensure_static(&static_dir);
     let data_path = data_file(&data_dir);
     let store = Store::load(&data_path);
     let state = Arc::new(AppState {
@@ -77,9 +77,26 @@ async fn main() {
         .with_state(state);
 
     let addr = format!("127.0.0.1:{port}");
-    println!("IMe Music (Rust) http://{addr}");
+    let url = format!("http://{addr}");
+    println!("IMe Music (Rust) {url}");
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
+    let open_url = url.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        open_browser(&open_url);
+    });
     axum::serve(listener, app).await.expect("serve");
+}
+
+fn open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 fn screen_from(q: &PageQuery, store: &Store) -> Screen {
@@ -343,6 +360,34 @@ async fn player_js(State(state): State<Arc<AppState>>) -> Response {
 
 async fn favicon(State(state): State<Arc<AppState>>) -> Response {
     file_response(&state.static_dir.join("favicon.png"), "image/png").await
+}
+
+fn app_dirs() -> (PathBuf, PathBuf) {
+    if let (Ok(static_dir), Ok(data_dir)) = (
+        std::env::var("IME_RS_STATIC").map(PathBuf::from),
+        std::env::var("IME_RS_DATA").map(PathBuf::from),
+    ) {
+        return (static_dir, data_dir);
+    }
+    let dev_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dev_static = dev_root.join("static");
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.to_path_buf()));
+    if dev_static.join("index.css").is_file() {
+        let data_dir = std::env::var("IME_RS_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dev_root.join("data"));
+        return (dev_static, data_dir);
+    }
+    let root = exe_dir.unwrap_or_else(|| PathBuf::from("."));
+    let data_dir = std::env::var("IME_RS_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root.join("data"));
+    let static_dir = std::env::var("IME_RS_STATIC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root.join("static"));
+    (static_dir, data_dir)
 }
 
 async fn file_response(path: &std::path::Path, mime: &'static str) -> Response {
