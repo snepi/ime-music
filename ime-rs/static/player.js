@@ -72,6 +72,12 @@
       openAlbum(albumBtn.dataset.albumId || "", albumBtn.dataset.albumTitle || "");
       return;
     }
+    const platform = event.target.closest("[data-platform]");
+    if (platform) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const artistBtn = event.target.closest("[data-open-artist]");
     if (artistBtn) {
       event.preventDefault();
@@ -242,7 +248,26 @@
     navigate(res.url, await res.text());
   });
 
+  document.addEventListener("contextmenu", (event) => {
+    const artist = event.target.closest("[data-open-artist]");
+    if (!artist) return;
+    event.preventDefault();
+    document.querySelectorAll(".context-menu").forEach((node) => node.remove());
+    const name = artist.dataset.artistName || artist.textContent || "";
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    menu.style.left = event.clientX + "px";
+    menu.style.top = event.clientY + "px";
+    menu.innerHTML =
+      `<div class="context-menu-header">${escapeHtml(name)}</div>` +
+      `<button type="button" class="context-menu-item" data-open-artist="1" data-artist-name="${escapeAttr(name)}">Карточка артиста</button>`;
+    document.body.appendChild(menu);
+  });
+
   document.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest(".context-menu")) {
+      document.querySelectorAll(".context-menu").forEach((node) => node.remove());
+    }
     if (event.target.closest(".ui-select, .ui-select-menu")) return;
     document.querySelectorAll(".ui-select-menu").forEach((node) => node.setAttribute("hidden", ""));
     document.querySelectorAll(".ui-select.open").forEach((node) => node.classList.remove("open"));

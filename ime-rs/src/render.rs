@@ -681,8 +681,34 @@ fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
                 artist = esc(&item.artist),
             )
         };
+        let query_text = format!("{} {}", item.title, item.artist);
+        let query = urlencoding::encode(&query_text);
+        let links = [
+            ("Deezer", format!("https://www.deezer.com/search/{query}")),
+            ("Spotify", format!("https://open.spotify.com/search/{query}")),
+            ("Яндекс Музыка", format!("https://music.yandex.ru/search?text={query}")),
+        ]
+        .iter()
+        .map(|(label, url)| {
+            format!(
+                r#"<button type="button" class="wishlist-link-btn" data-platform="{url}">{label}</button>"#,
+                url = esc(url),
+                label = esc(label),
+            )
+        })
+        .collect::<String>();
+        let local_play = if local.is_some() {
+            format!(
+                r#"<button type="button" class="btn btn-secondary"{play} title="{label}"><span class="btn-icon">{icon}</span>{label}</button>"#,
+                play = play_attr,
+                label = esc(&i18n.t("rec.playLocal")),
+                icon = icon("play", 16),
+            )
+        } else {
+            String::new()
+        };
         html.push_str(&format!(
-            r#"<li class="wishlist-row" data-title="{title}" data-artist="{artist}" data-album="{album}" data-order="{order}"><button type="button" class="wishlist-play" data-title="{title}" data-artist="{artist}"{play}>{cover}<span class="wishlist-play-icon">{play_icon}</span></button><div class="wishlist-meta"><div class="wishlist-title">{title}{owned}</div><button type="button" class="artist-link wishlist-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button>{album_btn}</div><div class="wishlist-actions"><button type="button" class="like-btn wish-heart liked" data-wish="1" data-title="{title}" data-artist="{artist}" data-url="{url}" data-cover="{cover_url}" aria-label="{remove}" title="{remove}">{heart}</button></div></li>"#,
+            r#"<li class="wishlist-row" data-title="{title}" data-artist="{artist}" data-album="{album}" data-order="{order}"><button type="button" class="wishlist-play" data-title="{title}" data-artist="{artist}"{play}>{cover}<span class="wishlist-play-icon">{play_icon}</span></button><div class="wishlist-meta"><div class="wishlist-title">{title}{owned}</div><button type="button" class="artist-link wishlist-artist" data-open-artist="1" data-artist-name="{artist}" title="{card}">{artist}</button>{album_btn}<div class="wishlist-links">{links}</div></div><div class="wishlist-actions">{local_play}<button type="button" class="like-btn wish-heart liked" data-wish="1" data-title="{title}" data-artist="{artist}" data-album="{album}" data-url="{url}" data-cover="{cover_url}" aria-label="{remove}" title="{remove}">{heart}</button><button type="button" class="btn btn-ghost" data-wish="1" data-title="{title}" data-artist="{artist}" data-album="{album}" data-url="{url}" data-cover="{cover_url}" title="{remove}" aria-label="{remove}">{del}</button></div></li>"#,
             title = esc(&item.title),
             artist = esc(&item.artist),
             album = esc(&item.album),
@@ -692,10 +718,14 @@ fn wishlist_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
             play_icon = icon("play", 16),
             owned = owned,
             album_btn = album,
+            links = links,
+            local_play = local_play,
             url = esc(&item.preview_url),
             cover_url = esc(&item.cover_url),
             remove = esc(&i18n.t("wish.remove")),
             heart = icon("heart", 16),
+            del = icon("delete", 16),
+            card = esc(&i18n.t("artist.openCardMenu")),
         ));
     }
     html.push_str("</ul>");
