@@ -263,12 +263,19 @@
     const queryPlay = event.target.closest("[data-play-query]");
     if (queryPlay) {
       event.preventDefault();
-      playQuery(queryPlay.dataset.title || "", queryPlay.dataset.artist || "");
+      const local = librarySong(queryPlay.dataset.title || "", queryPlay.dataset.artist || "");
+      if (local) playId(local.id, local.title, local.artist);
+      else playQuery(queryPlay.dataset.title || "", queryPlay.dataset.artist || "");
       return;
     }
     const preview = event.target.closest("[data-preview]");
     if (preview) {
       event.preventDefault();
+      const local = librarySong(preview.dataset.title || "", preview.dataset.artist || "");
+      if (local) {
+        playId(local.id, local.title, local.artist);
+        return;
+      }
       waves.active = false;
       artistQueue = null;
       playUrl(preview.dataset.preview, preview.dataset.title || "", preview.dataset.artist || "");
@@ -490,10 +497,43 @@
     return `<button type="button" class="like-btn wish-heart${on ? " liked" : ""}" data-wish="1" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}" data-album="${escapeAttr(track.album || "")}" data-url="${escapeAttr(track.preview || "")}" data-cover="${escapeAttr(track.cover || "")}" aria-label="Добавить в «Хочу послушать»" title="Добавить в «Хочу послушать»">${heartIcon(on)}</button>`;
   }
 
+  const library = [];
+  function readLibrary(raw) {
+    library.length = 0;
+    try {
+      const items = JSON.parse(raw || "[]");
+      for (const item of items) library.push(item);
+    } catch { /* seed */ }
+  }
+  readLibrary(document.getElementById("library-seed")?.textContent || "[]");
+
+  function normTrack(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .replace(/\s+/g, " ");
+  }
+
+  function librarySong(title, artist) {
+    const wantTitle = normTrack(title);
+    const wantArtist = normTrack(artist);
+    if (!wantTitle) return null;
+    return (
+      library.find((song) => normTrack(song.title) === wantTitle && (!wantArtist || normTrack(song.artist) === wantArtist)) ||
+      null
+    );
+  }
+
+  function playAttrs(track) {
+    const local = librarySong(track.title, track.artist);
+    if (local) return `data-play="${escapeAttr(local.id)}"`;
+    if (track.preview) return `data-preview="${escapeAttr(track.preview)}"`;
+    return `data-play-query="1"`;
+  }
+
   function trackCard(track) {
-    const play = track.preview
-      ? `data-preview="${escapeAttr(track.preview)}"`
-      : `data-play-query="1"`;
+    const play = playAttrs(track);
     const cover = track.cover ? `<img src="${escapeAttr(track.cover)}" alt="">` : "";
     return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}</div></li>`;
   }
@@ -729,9 +769,7 @@
         const cover = track.cover
           ? `<img class="artist-track-cover" src="${escapeAttr(track.cover)}" alt="">`
           : `<span class="artist-track-cover artist-track-cover-empty"></span>`;
-        const play = track.preview
-          ? `data-preview="${escapeAttr(track.preview)}"`
-          : `data-play-query="1"`;
+        const play = playAttrs(track);
         return `<li class="artist-track-row"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}</button><button type="button" class="artist-track-name" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${escapeHtml(track.title)}</button>${wishButton(track)}</li>`;
       })
       .join("");
@@ -743,6 +781,11 @@
     waves.active = false;
     waves.artist = false;
     artistQueue = { items: artistPage.tracks, index };
+    const local = librarySong(track.title, track.artist || artistPage.name);
+    if (local) {
+      playId(local.id, local.title || track.title, local.artist || artistPage.name, true);
+      return;
+    }
     if (track.preview) playUrl(track.preview, track.title, artistPage.name);
     else playQuery(track.title, artistPage.name).then(() => {
       if (artistPage) artistQueue = { items: artistPage.tracks, index };
@@ -1171,11 +1214,11 @@
     syncPlayButton();
   }
 
-  async function playId(id, title, artist) {
+  async function playId(id, title, artist, keepQueue) {
     if (!id) return;
     waves.active = false;
     waves.artist = false;
-    artistQueue = null;
+    if (!keepQueue) artistQueue = null;
     const data = await post("play", { id });
     audio.src = "/audio/" + encodeURIComponent(id);
     try { await audio.play(); } catch { /* autoplay */ }
@@ -1335,6 +1378,12 @@
     const body = app.querySelector(".app-body");
     if (body) body.insertAdjacentElement("afterend", player);
     else app.appendChild(player);
+    const nextLibrary = doc.getElementById("library-seed");
+    const libraryNode = document.getElementById("library-seed");
+    if (nextLibrary && libraryNode) {
+      libraryNode.textContent = nextLibrary.textContent;
+      readLibrary(libraryNode.textContent);
+    }
     history.pushState({}, "", url);
     document.querySelectorAll(".ui-select").forEach(bindSelect);
     if (now.title) setNowPlaying(now.title, now.artist);

@@ -124,9 +124,11 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 <input id="pick-playlist" type="file" accept=".m3u,.m3u8,.csv,.txt,text/plain" hidden>
 <script type="application/json" id="wishlist-seed">{}</script>
 <script type="application/json" id="favorite-artists-seed">{}</script>
+<script type="application/json" id="library-seed">{}</script>
 <script src="/player.js"></script></body></html>"#,
         wishlist_seed(store),
         favorite_seed(store),
+        library_seed(store),
     ));
     html
 }
@@ -141,6 +143,19 @@ fn color_var(key: &str) -> Option<&'static str> {
         "accent" => Some("--accent"),
         _ => None,
     }
+}
+
+fn library_seed(store: &Store) -> String {
+    let mut parts = Vec::new();
+    for song in &store.songs {
+        parts.push(format!(
+            r#"{{"id":"{}","title":"{}","artist":"{}"}}"#,
+            json_escape(&song.id),
+            json_escape(&song.title),
+            json_escape(&song.artist),
+        ));
+    }
+    format!("[{}]", parts.join(","))
 }
 
 fn favorite_seed(store: &Store) -> String {
