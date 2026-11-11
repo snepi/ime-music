@@ -73,6 +73,39 @@
       document.querySelectorAll("[data-color-reset]").forEach((btn) => applyColor(btn.dataset.colorReset, btn.dataset.colorDefault));
       return;
     }
+    const libraryMix = event.target.closest("[data-library-mix]");
+    if (libraryMix) {
+      event.preventDefault();
+      const ids = (libraryMix.dataset.ids || "").split(",").filter(Boolean);
+      const items = ids.map((id) => {
+        const song = library.find((entry) => entry.id === id);
+        return { id, title: song?.title || libraryMix.dataset.title || "", artist: song?.artist || "", preview: "" };
+      });
+      if (!items.length) return;
+      listQueue = { items, index: 0 };
+      artistQueue = null;
+      waves.active = false;
+      waves.artist = false;
+      playId(items[0].id, items[0].title, items[0].artist, true);
+      return;
+    }
+    const downloadMix = event.target.closest("[data-download-mix]");
+    if (downloadMix) {
+      event.preventDefault();
+      downloadCreatedMix(downloadMix.dataset.downloadMix || "");
+      return;
+    }
+    if (event.target.closest("[data-download-all-mixes]")) {
+      event.preventDefault();
+      readCreatedMixes().forEach((mix) => downloadCreatedMix(mix.id));
+      return;
+    }
+    const deleteMix = event.target.closest("[data-delete-mix]");
+    if (deleteMix) {
+      event.preventDefault();
+      post("delete-mix", { id: deleteMix.dataset.deleteMix || "" }).then(() => navigate("/?view=archive"));
+      return;
+    }
     const archivePlay = event.target.closest("[data-archive-play]");
     if (archivePlay) {
       event.preventDefault();
@@ -1394,19 +1427,20 @@
   }
 
   async function refillWaves() {
-    if (waves.artist) return;
-    let batch = [];
-    try {
-      batch = await loadServerWaves();
-    } catch {
+    if (!waves.artist) {
+      let batch = [];
       try {
-        batch = await loadFallbackWaves();
-      } catch { /* no previews */ }
-    }
-    for (const item of batch) {
-      if (!item.url || waves.seen.has(item.url)) continue;
-      waves.seen.add(item.url);
-      waves.queue.push(item);
+        batch = await loadServerWaves();
+      } catch {
+        try {
+          batch = await loadFallbackWaves();
+        } catch { /* no previews */ }
+      }
+      for (const item of batch) {
+        if (!item.url || waves.seen.has(item.url)) continue;
+        waves.seen.add(item.url);
+        waves.queue.push(item);
+      }
     }
     if (waves.active) scheduleArchive();
   }
@@ -1808,8 +1842,32 @@
     return "";
   }
 
+  function readCreatedMixes() {
+    try {
+      return JSON.parse(document.getElementById("created-mixes-seed")?.textContent || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  function downloadCreatedMix(id) {
+    const mix = readCreatedMixes().find((item) => item.id === id);
+    if (!mix) return;
+    notify(`Скачивание микса: ${mix.title}`, "info");
+    for (const track of mix.tracks || []) {
+      const body = new URLSearchParams({
+        title: track.title || "",
+        artist: track.artist || "",
+        id: mix.id,
+        name: mix.title || "",
+      });
+      fetch("/api/archive/fetch", { method: "POST", body }).catch(() => {});
+    }
+  }
+
   function scheduleArchive() {
     if (!waves.active) return;
+    // Main IMe Waves and the artist wave share this prefetch and the archive limits.
     const ahead = Math.min(20, Math.max(2, Number(document.body.dataset.archiveAhead || 3)));
     const from = waves.index < 0 ? 0 : waves.index;
     for (const item of waves.queue.slice(from, from + ahead)) {

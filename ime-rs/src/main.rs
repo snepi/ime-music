@@ -368,6 +368,18 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 form.cover.as_deref().unwrap_or(""),
             );
         }
+        "create-mixes" => match store.create_external_mixes() {
+            Ok(()) => message = "Миксы собраны".into(),
+            Err(text) => message = text.into(),
+        },
+        "delete-mix" => {
+            if let Some(id) = form.id.as_deref() {
+                for path in store.delete_mix_files(id) {
+                    let _ = std::fs::remove_file(path);
+                }
+                message = "Микс удалён из архива".into();
+            }
+        }
         "archive-to-library" => {
             if let Some(id) = form.id.as_deref() {
                 let previous = store
@@ -733,6 +745,14 @@ fn apply_field(store: &mut Store, field: &str, value: &str) {
                 }
             }
         }
+        "archive_mix_keep" => {
+            if let Ok(count) = value.parse::<u32>() {
+                store.settings.archive_mix_keep = count.clamp(4, 20);
+                for path in store.trim_mix_albums() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
         "ffmpeg_path" => store.settings.ffmpeg_path = value.trim().into(),
         "preset" => store.apply_preset(value),
         "crossfade" => {
@@ -1080,6 +1100,8 @@ async fn archive_fetch(State(state): State<Arc<AppState>>, Form(form): Form<ActF
     let state = Arc::clone(&state);
     let title_job = title.clone();
     let artist_job = artist.clone();
+    let mix_id = form.id.unwrap_or_default();
+    let mix_title = form.name.unwrap_or_default();
     tokio::spawn(async move {
         let (configured, proxy, dest, covers) = {
             let store = state.store.lock().expect("store");
@@ -1102,7 +1124,9 @@ async fn archive_fetch(State(state): State<Arc<AppState>>, Form(form): Form<ActF
                 .unwrap_or_default();
             let mut store = state.store.lock().expect("store");
             store.push_archive(&title, &artist, &path, &cover_path);
-            let doomed = store.trim_archive();
+            store.tag_latest_archive(&title, &artist, &mix_id, &mix_title);
+            let mut doomed = store.trim_archive();
+            doomed.extend(store.trim_mix_albums());
             save(&state, &store);
             drop(store);
             for path in doomed {

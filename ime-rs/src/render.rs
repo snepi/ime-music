@@ -546,10 +546,31 @@ fn archive_view(store: &Store, _screen: &Screen) -> String {
             disc = crate::icons::icon("disc", 18),
         ));
     }
+    let mix_keep = store.settings.archive_mix_keep.clamp(4, 20);
+    let mut seen = Vec::new();
+    let mut mix_cards = String::new();
+    for item in &store.archive {
+        if item.mix_id.is_empty() || seen.iter().any(|id: &String| id == &item.mix_id) {
+            continue;
+        }
+        seen.push(item.mix_id.clone());
+        let count = store.archive.iter().filter(|row| row.mix_id == item.mix_id).count();
+        mix_cards.push_str(&format!(
+            r#"<li class="archive-mix-card"><div><strong>{title}</strong><span>{count} треков</span></div><button type="button" class="btn btn-ghost" data-delete-mix="{id}">Удалить</button></li>"#,
+            title = esc(&item.mix_title),
+            count = count,
+            id = esc(&item.mix_id),
+        ));
+    }
+    if mix_cards.is_empty() {
+        mix_cards.push_str(r#"<li class="archive-mix-empty">Скачанных миксов пока нет.</li>"#);
+    }
     format!(
-        r#"<div class="archive-view"><div class="view-header"><div class="view-info"><h1>Архив</h1><p>Полные файлы волны. Они не лежат в библиотеке, пока вы сами их туда не перенесёте.</p></div></div><div class="archive-settings"><label class="archive-field"><span class="field-label" for="archive-ahead">Сколько следующих треков качать</span><input id="archive-ahead" class="field-input" type="number" min="2" max="20" step="1" value="{ahead}" data-archive-setting="archive_ahead"><span class="field-hint">От 2 до 20. Столько ближайших треков волна качает вперёд.</span></label><label class="archive-field"><span class="field-label" for="archive-keep">Сколько треков хранить</span><input id="archive-keep" class="field-input" type="number" min="10" max="250" step="1" value="{keep}" data-archive-setting="archive_keep"><span class="field-hint">От 10 до 250. Следующий сверх лимита заменяет самый старый.</span></label></div><ul class="song-list archive-list">{rows}</ul></div>"#,
+        r#"<div class="archive-view"><div class="view-header"><div class="view-info"><h1>Архив</h1><p>Полные файлы волны и скачанные миксы. Они не лежат в библиотеке, пока вы сами их туда не перенесёте.</p></div></div><div class="archive-settings"><label class="archive-field"><span class="field-label" for="archive-ahead">Сколько следующих треков качать</span><input id="archive-ahead" class="field-input" type="number" min="2" max="20" step="1" value="{ahead}" data-archive-setting="archive_ahead"><span class="field-hint">От 2 до 20. Столько ближайших треков волна качает вперёд.</span></label><label class="archive-field"><span class="field-label" for="archive-keep">Сколько треков хранить</span><input id="archive-keep" class="field-input" type="number" min="10" max="250" step="1" value="{keep}" data-archive-setting="archive_keep"><span class="field-hint">От 10 до 250. Следующий сверх лимита заменяет самый старый.</span></label><label class="archive-field"><span class="field-label" for="archive-mix-keep">Сколько миксов хранить</span><input id="archive-mix-keep" class="field-input" type="number" min="4" max="20" step="1" value="{mix_keep}" data-archive-setting="archive_mix_keep"><span class="field-hint">От 4 до 20 скачанных микс-альбомов.</span></label></div><section class="archive-mixes"><h2>Скачанные миксы</h2><ul class="archive-mix-list">{mix_cards}</ul></section><ul class="song-list archive-list">{rows}</ul></div>"#,
         ahead = ahead,
         keep = keep,
+        mix_keep = mix_keep,
+        mix_cards = mix_cards,
         rows = rows,
     )
 }
@@ -666,8 +687,8 @@ fn waves_settings(store: &Store, i18n: &I18n) -> String {
 }
 
 fn home_view(store: &Store, i18n: &I18n) -> String {
-    format!(
-        r#"<div class="home-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div><button type="button" class="btn btn-primary" data-pick="pick-folder">{}{}</button></div><section class="home-discovery-search"><div class="search-field home-discovery-search-field">{}<input type="search" class="search-input" placeholder="{}" aria-label="{}"></div><p class="home-discovery-search-hint">{}</p><div id="discovery-results"></div></section><section class="home-waves"><div class="home-waves-card"><button type="button" class="home-waves-main" data-act="waves" aria-label="{}"><div class="home-waves-visual" aria-hidden="true"><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span></div><div class="home-waves-text"><div class="home-waves-brand">IMe Waves</div><div class="home-waves-title">{}</div><div class="home-waves-meta">{}</div></div><span class="home-waves-play" aria-hidden="true">{}</span></button><div class="home-waves-actions"><button type="button" class="btn btn-ghost" data-act="waves-settings" title="{}" aria-expanded="false" aria-controls="waves-settings">{}</button></div></div>{}</section></div>"#,
+    let mut html = format!(
+        r#"<div class="home-view"><div class="view-header"><div class="view-info"><h1>{}</h1><p>{}</p></div><button type="button" class="btn btn-primary" data-pick="pick-folder">{}{}</button></div><section class="home-discovery-search"><div class="search-field home-discovery-search-field">{}<input type="search" class="search-input" placeholder="{}" aria-label="{}"></div><p class="home-discovery-search-hint">{}</p><div id="discovery-results"></div></section><section class="home-waves"><div class="home-waves-card"><button type="button" class="home-waves-main" data-act="waves" aria-label="{}"><div class="home-waves-visual" aria-hidden="true"><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span><span class="home-waves-bar"></span></div><div class="home-waves-text"><div class="home-waves-brand">IMe Waves</div><div class="home-waves-title">{}</div><div class="home-waves-meta">{}</div></div><span class="home-waves-play" aria-hidden="true">{}</span></button><div class="home-waves-actions"><button type="button" class="btn btn-ghost" data-act="waves-settings" title="{}" aria-expanded="false" aria-controls="waves-settings">{}</button></div></div>{}</section>"#,
         esc(&i18n.t("home.title")),
         esc(&i18n.t("home.welcomeHint")),
         icon("import", 16),
@@ -683,6 +704,93 @@ fn home_view(store: &Store, i18n: &I18n) -> String {
         esc(&i18n.t("waves.settings")),
         icon("settings", 16),
         waves_settings(store, i18n),
+    );
+    html.push_str(&home_continue(store));
+    html.push_str(&home_library_mixes(store));
+    html.push_str(&home_created_mixes(store));
+    html.push_str("</div>");
+    html
+}
+
+fn home_continue(store: &Store) -> String {
+    let Some(song) = store.continue_song() else {
+        return r#"<section class="home-continue"><h2 class="home-section-title">Продолжить</h2><p class="home-section-empty">Здесь появится то, что вы слушали в последний раз.</p></section>"#.into();
+    };
+    let cover = if song.cover_path.is_empty() {
+        icon("disc", 22)
+    } else {
+        format!(r#"<img src="/cover/{}" alt="">"#, esc(&song.id))
+    };
+    format!(
+        r#"<section class="home-continue"><h2 class="home-section-title">Продолжить</h2><div class="home-continue-card"><button type="button" class="home-continue-main" data-play="{id}" data-title="{title}" data-artist="{artist}"><span class="home-continue-cover">{cover}</span><span class="home-continue-text"><span class="home-continue-label">Последнее</span><span class="home-continue-title">{title}</span><span class="home-continue-meta">{artist}</span></span></button><button type="button" class="home-continue-play" data-play="{id}" data-title="{title}" data-artist="{artist}" aria-label="Слушать">{play}</button></div></section>"#,
+        id = esc(&song.id),
+        title = esc(&song.title),
+        artist = esc(&song.artist),
+        cover = cover,
+        play = icon("play", 20),
+    )
+}
+
+fn home_library_mixes(store: &Store) -> String {
+    let mixes = store.library_mixes();
+    let mut cards = String::new();
+    if mixes.is_empty() {
+        cards.push_str(r#"<p class="home-section-empty">Добавьте треки в библиотеку — миксы соберутся из них.</p>"#);
+    }
+    for mix in mixes {
+        let ids = mix.song_ids.iter().cloned().collect::<Vec<_>>().join(",");
+        cards.push_str(&format!(
+            r#"<li><button type="button" class="home-card" data-library-mix="1" data-ids="{ids}" data-title="{title}"><span class="home-card-cover">{icon}<span class="home-card-play">{play}</span></span><span class="home-card-title">{title}</span><span class="home-card-artist">{count} треков</span></button></li>"#,
+            ids = esc(&ids),
+            title = esc(&mix.title),
+            icon = icon("disc", 22),
+            play = icon("play", 14),
+            count = mix.song_ids.len(),
+        ));
+    }
+    format!(
+        r#"<section class="home-section"><h2 class="home-section-title">Смиксовали для вас</h2><p class="home-section-hint">Из вашей библиотеки. Набор сам меняется каждые 5 часов.</p><ul class="home-rail">{cards}</ul></section>"#,
+        cards = cards,
+    )
+}
+
+fn home_created_mixes(store: &Store) -> String {
+    if store.created_mixes.is_empty() {
+        return r#"<section class="home-section"><h2 class="home-section-title">Миксы не из библиотеки</h2><p class="home-section-hint">Треки скачаются как в IMe Waves и попадут в архив.</p><form method="post" action="/act"><input type="hidden" name="action" value="create-mixes"><input type="hidden" name="back" value="/?view=home"><button type="submit" class="btn btn-primary">Создать миксы</button></form></section>"#.into();
+    }
+    let wait = store.mix_refresh_wait_ms();
+    let refresh = if wait <= 0 {
+        r#"<form method="post" action="/act"><input type="hidden" name="action" value="create-mixes"><input type="hidden" name="back" value="/?view=home"><button type="submit" class="btn btn-secondary">Обновить миксы</button></form>"#.to_string()
+    } else {
+        format!(r#"<button type="button" class="btn btn-secondary" disabled>Обновить через {} ч</button>"#, ((wait as f64) / 3_600_000.0).ceil() as i64)
+    };
+    let mut cards = String::new();
+    let mut seed = String::from("[");
+    for (index, mix) in store.created_mixes.iter().enumerate() {
+        if index > 0 {
+            seed.push(',');
+        }
+        let tracks = mix
+            .tracks
+            .iter()
+            .map(|track| format!(r#"{{"title":"{}","artist":"{}"}}"#, json_escape(&track.title), json_escape(&track.artist)))
+            .collect::<Vec<_>>()
+            .join(",");
+        seed.push_str(&format!(r#"{{"id":"{}","title":"{}","tracks":[{}]}}"#, json_escape(&mix.id), json_escape(&mix.title), tracks));
+        cards.push_str(&format!(
+            r#"<li class="home-mix-card"><div class="home-card-cover">{icon}</div><div class="home-card-title">{title}</div><div class="home-card-artist">{count} треков</div><button type="button" class="btn btn-secondary" data-download-mix="{id}">Скачать</button></li>"#,
+            icon = icon("disc", 22),
+            title = esc(&mix.title),
+            count = mix.tracks.len(),
+            id = esc(&mix.id),
+        ));
+    }
+    seed.push(']');
+    format!(
+        r#"<section class="home-section"><div class="home-section-head"><h2 class="home-section-title">Миксы не из библиотеки</h2>{refresh}</div><p class="home-section-hint">Их можно скачать по одному или все сразу. Обновление доступно раз в 3 часа. Файлы лягут в архив.</p><ul class="home-rail home-mix-rail">{cards}</ul><button type="button" class="btn btn-primary" data-download-all-mixes="1">Скачать все</button><script type="application/json" id="created-mixes-seed">{seed}</script></section>"#,
+        refresh = refresh,
+        cards = cards,
+        seed = seed,
     )
 }
 
@@ -1954,7 +2062,7 @@ fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="updates">{}</button><button type="button" class="btn btn-ghost" data-tool="releases">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="export-backup">{}</button><button type="button" class="btn btn-primary" data-tool="import-backup">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary" data-tool="playlist-url">{}</button><button type="button" class="btn btn-ghost" data-tool="playlist-file">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary" data-tool="phone">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary" data-tool="meta">{}</button><div style="margin-top:12px"><button type="button" class="btn btn-ghost" data-tool="rebuild-autos">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="find-dupes">{}</button><button type="button" class="btn btn-primary" data-tool="merge-dupes">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
-        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.1")])),
+        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.2")])),
         esc(&i18n.t("tools.updateCheck")),
         esc(&i18n.t("tools.updateOpenPage")),
         esc(&i18n.t("tools.backup")),

@@ -224,6 +224,13 @@ pub struct Settings {
     /// How many archived tracks to keep. The next download drops the oldest. 10–250.
     #[serde(default = "default_archive_keep")]
     pub archive_keep: u32,
+    /// How many downloaded mix albums the archive keeps. 4–20.
+    #[serde(default = "default_mix_keep")]
+    pub archive_mix_keep: u32,
+}
+
+fn default_mix_keep() -> u32 {
+    8
 }
 
 fn default_archive_ahead() -> u32 {
@@ -279,6 +286,7 @@ impl Default for Settings {
             wallpaper_path: String::new(),
             archive_ahead: default_archive_ahead(),
             archive_keep: default_archive_keep(),
+            archive_mix_keep: default_mix_keep(),
         }
     }
 }
@@ -292,6 +300,29 @@ pub struct ArchiveItem {
     #[serde(default)]
     pub cover_path: String,
     pub added_at: i64,
+    #[serde(default)]
+    pub mix_id: String,
+    #[serde(default)]
+    pub mix_title: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MixTrack {
+    pub title: String,
+    pub artist: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreatedMix {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub tracks: Vec<MixTrack>,
+}
+
+pub struct LibraryMix {
+    pub title: String,
+    pub song_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -324,6 +355,8 @@ pub struct Store {
     pub player: Player,
     #[serde(default)]
     pub archive: Vec<ArchiveItem>,
+    #[serde(default)]
+    pub created_mixes: Vec<CreatedMix>,
 }
 
 impl Default for Store {
@@ -335,6 +368,7 @@ impl Default for Store {
             settings: Settings::default(),
             player: Player::default(),
             archive: Vec::new(),
+            created_mixes: Vec::new(),
         }
     }
 }
@@ -447,7 +481,55 @@ impl Store {
             path: path.to_string_lossy().into_owned(),
             cover_path: cover_path.trim().to_string(),
             added_at: now_ms(),
+            mix_id: String::new(),
+            mix_title: String::new(),
         });
+    }
+
+    pub fn tag_latest_archive(&mut self, title: &str, artist: &str, mix_id: &str, mix_title: &str) {
+        if mix_id.is_empty() {
+            return;
+        }
+        if let Some(item) = self.archive.iter_mut().rev().find(|item| same_label(&item.title, title) && same_label(&item.artist, artist)) {
+            item.mix_id = mix_id.to_string();
+            item.mix_title = mix_title.to_string();
+        }
+    }
+
+    /// Drop the oldest downloaded mix albums past the keep limit. Returns file paths.
+    pub fn trim_mix_albums(&mut self) -> Vec<String> {
+        let keep = self.settings.archive_mix_keep.clamp(4, 20) as usize;
+        let mut groups: Vec<(String, i64)> = Vec::new();
+        for item in &self.archive {
+            if item.mix_id.is_empty() {
+                continue;
+            }
+            if let Some(group) = groups.iter_mut().find(|(id, _)| id == &item.mix_id) {
+                group.1 = group.1.min(item.added_at);
+            } else {
+                groups.push((item.mix_id.clone(), item.added_at));
+            }
+        }
+        groups.sort_by_key(|(_, at)| *at);
+        let mut doomed = Vec::new();
+        while groups.len() > keep {
+            let (id, _) = groups.remove(0);
+            doomed.extend(self.delete_mix_files(&id));
+        }
+        doomed
+    }
+
+    pub fn delete_mix_files(&mut self, mix_id: &str) -> Vec<String> {
+        let mut doomed = Vec::new();
+        self.archive.retain(|item| {
+            if item.mix_id == mix_id {
+                doomed.push(item.path.clone());
+                false
+            } else {
+                true
+            }
+        });
+        doomed
     }
 
     /// Drop the oldest files once the archive is past its limit. Returns paths to delete.
@@ -1049,6 +1131,171 @@ impl Store {
         changed
     }
 }
+
+const FIVE_HOURS_MS: i64 = 5 * 60 * 60 * 1000;
+const THREE_HOURS_MS: i64 = 3 * 60 * 60 * 1000;
+
+struct MixKind {
+    title: &'static str,
+    words: &'static [&'static str],
+}
+
+const LIBRARY_KINDS: &[MixKind] = &[
+    MixKind { title: "Смиксовали ваши треки в стиле рок", words: &["рок", "rock", "metal", "метал", "punk", "панк"] },
+    MixKind { title: "Смиксовали ваши треки в жанре рэп", words: &["рэп", "rap", "hip", "хип"] },
+    MixKind { title: "Смиксовали ваши треки в стиле поп", words: &["поп", "pop"] },
+    MixKind { title: "Смиксовали ваши треки в стиле электро", words: &["electro", "электро", "edm", "techno", "техно"] },
+    MixKind { title: "Смиксовали ваши треки в стиле джаз", words: &["джаз", "jazz", "blues", "блюз"] },
+    MixKind { title: "Смиксовали ваши треки в стиле инди", words: &["инди", "indie", "alternative"] },
+    MixKind { title: "Смиксовали ваши русские треки", words: &["рус"] },
+    MixKind { title: "Смиксовали ваши зарубежные треки", words: &["лат"] },
+    MixKind { title: "Смиксовали ваши любимые треки", words: &["лайк"] },
+    MixKind { title: "Смиксовали то, что вы часто слушаете", words: &["часто"] },
+    MixKind { title: "Смиксовали ваши новые треки", words: &["новые"] },
+    MixKind { title: "Смиксовали ваши спокойные треки", words: &["ballad", "acoustic", "piano", "спокой"] },
+    MixKind { title: "Смиксовали ваши танцевальные треки", words: &["dance", "house", "disco", "танц"] },
+    MixKind { title: "Смиксовали ваши саундтреки", words: &["ost", "soundtrack", "саундтрек", "score"] },
+    MixKind { title: "Смиксовали ваши треки в стиле соул", words: &["soul", "соул", "funk", "фанк"] },
+];
+
+fn song_blob(song: &Song) -> String {
+    format!("{} {} {}", song.title, song.artist, song.album).to_lowercase()
+}
+
+fn song_matches_kind(song: &Song, words: &[&str]) -> bool {
+    match words {
+        ["рус"] => song.title.chars().any(|ch| ('а'..='я').contains(&ch) || ch == 'ё'),
+        ["лат"] => song.title.chars().any(|ch| ch.is_ascii_alphabetic()) && !song.title.chars().any(|ch| ('а'..='я').contains(&ch)),
+        ["лайк"] => song.liked,
+        ["часто"] => song.play_count > 0,
+        ["новые"] => true,
+        _ => {
+            let blob = song_blob(song);
+            words.iter().any(|word| blob.contains(word))
+        }
+    }
+}
+
+impl Store {
+    pub fn continue_song(&self) -> Option<&Song> {
+        if let Some(id) = self.player.current_id.as_deref() {
+            if let Some(song) = self.song(id) {
+                return Some(song);
+            }
+        }
+        self.songs
+            .iter()
+            .filter(|song| song.last_played_at.is_some())
+            .max_by_key(|song| song.last_played_at.unwrap_or(0))
+    }
+
+    pub fn library_mixes(&self) -> Vec<LibraryMix> {
+        let now = now_ms();
+        if self.songs.is_empty() {
+            return Vec::new();
+        }
+        let step = (now / FIVE_HOURS_MS).max(0) as usize;
+        let want = 2 + (step % 3);
+        let mut mixes = Vec::new();
+        for offset in 0..LIBRARY_KINDS.len() {
+            if mixes.len() >= want {
+                break;
+            }
+            let kind = &LIBRARY_KINDS[(step + offset) % LIBRARY_KINDS.len()];
+            let mut songs: Vec<&Song> = self.songs.iter().filter(|song| song_matches_kind(song, kind.words)).collect();
+            if kind.words == ["новые"] {
+                songs.sort_by_key(|song| std::cmp::Reverse(song.added_at));
+            } else if kind.words == ["часто"] {
+                songs.sort_by_key(|song| std::cmp::Reverse(song.play_count));
+            }
+            if songs.len() < 2 && kind.words != ["лайк"] && kind.words != ["часто"] {
+                continue;
+            }
+            if songs.is_empty() {
+                continue;
+            }
+            let ids: Vec<String> = songs.into_iter().take(20).map(|song| song.id.clone()).collect();
+            if mixes.iter().any(|mix: &LibraryMix| mix.song_ids == ids) {
+                continue;
+            }
+            mixes.push(LibraryMix { title: kind.title.to_string(), song_ids: ids });
+        }
+        if mixes.is_empty() {
+            let ids: Vec<String> = self.songs.iter().take(20).map(|song| song.id.clone()).collect();
+            mixes.push(LibraryMix { title: "Смиксовали ваши треки".into(), song_ids: ids });
+        }
+        mixes
+    }
+
+    pub fn create_external_mixes(&mut self) -> Result<(), &'static str> {
+        let now = now_ms();
+        if let Some(existing) = self.created_mixes.first() {
+            if now.saturating_sub(existing.created_at) < THREE_HOURS_MS {
+                return Err("Миксы можно обновить раз в 3 часа");
+            }
+        }
+        let step = (now / THREE_HOURS_MS).max(0) as usize;
+        let want = 2 + (step % 3);
+        let mut mixes = Vec::new();
+        for offset in 0..EXTERNAL_MIXES.len() {
+            if mixes.len() >= want {
+                break;
+            }
+            let kind = &EXTERNAL_MIXES[(step.wrapping_mul(2) + offset) % EXTERNAL_MIXES.len()];
+            let tracks = kind
+                .tracks
+                .iter()
+                .filter(|(title, artist)| !self.songs.iter().any(|song| same_label(&song.title, title) && same_label(&song.artist, artist)))
+                .take(20)
+                .map(|(title, artist)| MixTrack { title: (*title).to_string(), artist: (*artist).to_string() })
+                .collect::<Vec<_>>();
+            if tracks.is_empty() {
+                continue;
+            }
+            mixes.push(CreatedMix {
+                id: format!("mix-{}-{}", step, offset),
+                title: kind.title.to_string(),
+                created_at: now,
+                tracks,
+            });
+        }
+        if mixes.is_empty() {
+            return Err("Не удалось собрать миксы");
+        }
+        self.created_mixes = mixes;
+        Ok(())
+    }
+
+    pub fn mix_refresh_wait_ms(&self) -> i64 {
+        let Some(mix) = self.created_mixes.first() else {
+            return 0;
+        };
+        (THREE_HOURS_MS - now_ms().saturating_sub(mix.created_at)).max(0)
+    }
+}
+
+struct ExternalKind {
+    title: &'static str,
+    tracks: &'static [(&'static str, &'static str)],
+}
+
+const EXTERNAL_MIXES: &[ExternalKind] = &[
+    ExternalKind { title: "Микс в стиле рок", tracks: &[("Bohemian Rhapsody", "Queen"), ("Smells Like Teen Spirit", "Nirvana"), ("Back in Black", "AC/DC"), ("Wonderwall", "Oasis"), ("Enter Sandman", "Metallica")] },
+    ExternalKind { title: "Микс в жанре рэп", tracks: &[("Lose Yourself", "Eminem"), ("HUMBLE.", "Kendrick Lamar"), ("Sicko Mode", "Travis Scott"), ("God's Plan", "Drake"), ("In Da Club", "50 Cent")] },
+    ExternalKind { title: "Микс в стиле поп", tracks: &[("Blinding Lights", "The Weeknd"), ("Levitating", "Dua Lipa"), ("Anti-Hero", "Taylor Swift"), ("As It Was", "Harry Styles"), ("Flowers", "Miley Cyrus")] },
+    ExternalKind { title: "Микс в стиле электро", tracks: &[("One More Time", "Daft Punk"), ("Levels", "Avicii"), ("Titanium", "David Guetta"), ("Strobe", "deadmau5"), ("Opus", "Eric Prydz")] },
+    ExternalKind { title: "Микс в стиле джаз", tracks: &[("Take Five", "Dave Brubeck"), ("So What", "Miles Davis"), ("Feeling Good", "Nina Simone"), ("Fly Me to the Moon", "Frank Sinatra"), ("What a Wonderful World", "Louis Armstrong")] },
+    ExternalKind { title: "Микс в стиле инди", tracks: &[("Do I Wanna Know?", "Arctic Monkeys"), ("Somebody Else", "The 1975"), ("Electric Feel", "MGMT"), ("R U Mine?", "Arctic Monkeys"), ("Fluorescent Adolescent", "Arctic Monkeys")] },
+    ExternalKind { title: "Микс в стиле соул", tracks: &[("Respect", "Aretha Franklin"), ("Superstition", "Stevie Wonder"), ("I Want You Back", "The Jackson 5"), ("Ain't No Sunshine", "Bill Withers"), ("Lovely Day", "Bill Withers")] },
+    ExternalKind { title: "Микс в стиле метал", tracks: &[("Master of Puppets", "Metallica"), ("Chop Suey!", "System of a Down"), ("Du Hast", "Rammstein"), ("Toxicity", "System of a Down"), ("The Trooper", "Iron Maiden")] },
+    ExternalKind { title: "Микс в стиле фолк", tracks: &[("The Sound of Silence", "Simon & Garfunkel"), ("Fast Car", "Tracy Chapman"), ("Heart of Gold", "Neil Young"), ("Both Sides Now", "Joni Mitchell"), ("Big Yellow Taxi", "Joni Mitchell")] },
+    ExternalKind { title: "Микс в стиле латина", tracks: &[("Despacito", "Luis Fonsi"), ("Livin' la Vida Loca", "Ricky Martin"), ("Bailando", "Enrique Iglesias"), ("Provenza", "Karol G"), ("Tití Me Preguntó", "Bad Bunny")] },
+    ExternalKind { title: "Микс в стиле k-pop", tracks: &[("Dynamite", "BTS"), ("How You Like That", "BLACKPINK"), ("Butter", "BTS"), ("Pink Venom", "BLACKPINK"), ("Cupid", "FIFTY FIFTY")] },
+    ExternalKind { title: "Микс в стиле классика", tracks: &[("Für Elise", "Ludwig van Beethoven"), ("Clair de Lune", "Claude Debussy"), ("The Four Seasons", "Antonio Vivaldi"), ("Nocturne Op. 9 No. 2", "Frédéric Chopin"), ("Moonlight Sonata", "Ludwig van Beethoven")] },
+    ExternalKind { title: "Микс из саундтреков", tracks: &[("Cornfield Chase", "Hans Zimmer"), ("Time", "Hans Zimmer"), ("Now We Are Free", "Lisa Gerrard"), ("Married Life", "Michael Giacchino"), ("Comptine d'un autre été", "Yann Tiersen")] },
+    ExternalKind { title: "Микс в стиле лоуфай", tracks: &[("Snowman", "WYS"), ("Coffee", "beabadoobee"), ("Sunset Lover", "Petit Biscuit"), ("Night Owl", "Galimatias"), ("Weightless", "Marconi Union")] },
+    ExternalKind { title: "Микс в стиле диско", tracks: &[("Stayin' Alive", "Bee Gees"), ("Le Freak", "Chic"), ("I Will Survive", "Gloria Gaynor"), ("Don't Stop 'Til You Get Enough", "Michael Jackson"), ("September", "Earth, Wind & Fire")] },
+];
 
 fn same_label(left: &str, right: &str) -> bool {
     fn norm(value: &str) -> String {
