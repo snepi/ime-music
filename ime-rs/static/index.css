@@ -2173,6 +2173,12 @@ select:focus-visible {
   min-height: auto;
 }
 
+.main-content > .artist-page.artist-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .artist-hero {
   position: relative;
   display: grid;
