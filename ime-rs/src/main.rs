@@ -732,6 +732,9 @@ fn apply_field(store: &mut Store, field: &str, value: &str) {
             }
         }
         "lastfm" => store.settings.lastfm = on,
+        "preview_mode" | "preview_page" | "palette" => {
+            store.settings.ui.insert(field.to_string(), value.trim().to_string());
+        }
         _ => {
             if let Some(key) = field.strip_prefix("ui.") {
                 if key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_') && key.len() < 80 {

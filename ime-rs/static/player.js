@@ -86,6 +86,12 @@
       hotkeyBind.textContent = "Нажмите клавишу…";
       return;
     }
+    const groupToggle = event.target.closest(".theme-group-toggle");
+    if (groupToggle) {
+      event.preventDefault();
+      groupToggle.closest(".theme-group")?.classList.toggle("is-collapsed");
+      return;
+    }
     const themeAct = event.target.closest("[data-theme-act]");
     if (themeAct) {
       event.preventDefault();
@@ -516,7 +522,7 @@
     if (drag && drag.kind === "seek") return;
     paintProgress();
     const fade = Number(document.body.dataset.crossfade || 0);
-    if (fade > 0 && audio.duration && audio.duration - audio.currentTime < fade) {
+    if (document.body.dataset.gapless !== "1" && fade > 0 && audio.duration && audio.duration - audio.currentTime < fade) {
       const left = Math.max(0, audio.duration - audio.currentTime);
       audio.volume = Math.max(0.05, (left / fade) * Number(document.body.dataset.volume || 0.8));
     }
@@ -1966,6 +1972,7 @@
       if (incoming && current) current.textContent = incoming.textContent;
     }
     history.pushState({}, "", url);
+    adoptDocument(doc);
     document.querySelectorAll(".ui-select").forEach(bindSelect);
     if (now.title) setNowPlaying(now.title, now.artist);
     syncPlayButton();
@@ -2118,12 +2125,67 @@
     box.appendChild(node);
     window.setTimeout(() => node.remove(), 3200);
   }
+  function adoptDocument(doc) {
+    const html = document.documentElement;
+    const nextHtml = doc.documentElement;
+    if (nextHtml) {
+      html.lang = nextHtml.lang || html.lang;
+      if (nextHtml.dataset.theme) html.dataset.theme = nextHtml.dataset.theme;
+    }
+    document.head.querySelectorAll("style[data-appearance]").forEach((node) => node.remove());
+    doc.head.querySelectorAll("style[data-appearance]").forEach((style) => {
+      const node = document.createElement("style");
+      node.dataset.appearance = style.dataset.appearance || "1";
+      node.textContent = style.textContent;
+      document.head.appendChild(node);
+    });
+    const volume = document.body.dataset.volume;
+    for (const key of Object.keys(document.body.dataset)) delete document.body.dataset[key];
+    Object.assign(document.body.dataset, doc.body?.dataset || {});
+    if (volume) document.body.dataset.volume = volume;
+    const seed = doc.getElementById("hotkeys-seed");
+    const live = document.getElementById("hotkeys-seed");
+    if (seed && live) {
+      live.textContent = seed.textContent;
+      try { hotkeys = JSON.parse(seed.textContent || "{}"); } catch { /* seed */ }
+    }
+    const nextPlayer = doc.querySelector(".player-bar-wrap");
+    const player = document.querySelector(".player-bar-wrap");
+    if (nextPlayer && player) player.className = nextPlayer.className;
+    const nextApp = doc.querySelector(".app");
+    const app = document.querySelector(".app");
+    if (nextApp && app) app.className = nextApp.className;
+    tuneEq();
+    if (document.body.dataset.normalize === "1") audio.volume = Math.min(audio.volume, 0.82);
+  }
+
+  function showWallpaper(src) {
+    document.body.dataset.wallpaper = "on";
+    const app = document.querySelector(".app");
+    if (!app) return;
+    let layer = app.querySelector(".app-wallpaper");
+    if (!layer) {
+      layer = document.createElement("div");
+      layer.className = "app-wallpaper";
+      app.prepend(layer);
+    }
+    layer.innerHTML = `<img class="app-wallpaper-photo" alt="" src="${src}">`;
+  }
+
   function applySettingLive(field, value) {
     const root = document.documentElement;
-    if (field === "ui.layout.uiScale") root.style.setProperty("--ui-zoom", `${value}%`);
-    if (field === "ui.layout.sidebarWidth") root.style.setProperty("--sidebar-width", `${value}px`);
-    if (field === "ui.layout.playerHeight") root.style.setProperty("--player-height", `${value}px`);
-    if (field === "ui.layout.borderRadius") root.style.setProperty("--radius", `${value}px`);
+    const set = (name, css) => root.style.setProperty(name, css);
+    if (field === "ui.layout.uiScale") set("--ui-zoom", `${value}%`);
+    if (field === "ui.layout.fontSize") set("--ui-font", `${value}px`);
+    if (field === "ui.layout.sidebarWidth") set("--sidebar-width", `${value}px`);
+    if (field === "ui.layout.playerHeight") set("--player-height", `${value}px`);
+    if (field === "ui.layout.borderRadius") set("--radius", `${value}px`);
+    if (field === "ui.player.coverSize") set("--player-cover-size", `${value}px`);
+    if (field === "ui.library.coverSize") set("--list-cover-size", `${value}px`);
+    if (field === "ui.covers.radius") set("--cover-radius", `${value}px`);
+    if (field === "ui.covers.objectFit") set("--cover-fit", value);
+    if (field === "ui.components.contentMaxWidth") set("--content-max", `${value}px`);
+    if (field === "ui.components.titleSize") set("--title-size", `${value}px`);
     if (field === "crossfade") document.body.dataset.crossfade = value;
     if (field === "eq_bass") document.body.dataset.eqBass = value;
     if (field === "eq_mid") document.body.dataset.eqMid = value;
@@ -2134,7 +2196,13 @@
   function runThemeAct(name) {
     if (name === "expand") document.querySelectorAll(".theme-group").forEach((node) => node.classList.remove("is-collapsed"));
     if (name === "collapse") document.querySelectorAll(".theme-group").forEach((node) => node.classList.add("is-collapsed"));
-    if (name === "apply" || name === "save") toast("Сохранено", "success");
+    if (name === "apply" || name === "save") {
+      document.querySelectorAll("[data-color-key]").forEach((row) => {
+        const hex = row.querySelector(".theme-color-hex")?.value || row.querySelector('input[type="color"]')?.value;
+        if (hex) applyColor(row.dataset.colorKey, hex, true);
+      });
+      toast("Тема применена", "success");
+    }
     if (name === "cancel" || name === "reset") {
       document.querySelectorAll("[data-color-reset]").forEach((button) => applyColor(button.dataset.colorReset, button.dataset.colorDefault));
       if (name === "reset") post("preset", { value: "default" }).then(() => navigate(location.pathname + location.search));
@@ -2167,8 +2235,20 @@
     }
     if (name === "import") document.getElementById("pick-preset")?.click();
     if (name === "palette") {
-      const accent = document.body.dataset.theme === "light" ? "#3b82f6" : "#8eb6ff";
-      applyColor("accent", accent);
+      const img = document.querySelector(".app-wallpaper img");
+      if (!img || !img.complete) {
+        toast("Сначала выберите изображение фона", "info");
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = 8;
+      canvas.height = 8;
+      const context = canvas.getContext("2d");
+      context.drawImage(img, 0, 0, 8, 8);
+      const pixel = context.getImageData(3, 3, 1, 1).data;
+      const hex = "#" + [...pixel.slice(0, 3)].map((part) => part.toString(16).padStart(2, "0")).join("");
+      applyColor("accent", hex, true);
+      applyColor("progress", hex, true);
       toast("Палитра обновлена", "success");
     }
   }
@@ -2176,6 +2256,7 @@
   let eqNodes = null;
   function tuneEq() {
     if (document.body.dataset.eq !== "1") return;
+    try {
     if (!eqNodes) {
       const context = new AudioContext();
       const bass = context.createBiquadFilter();
@@ -2199,9 +2280,10 @@
     eqNodes.mid.gain.value = Number(document.body.dataset.eqMid || 0);
     eqNodes.treble.gain.value = Number(document.body.dataset.eqTreble || 0);
     eqNodes.context.resume().catch(() => {});
+    } catch { /* equalizer is unavailable in this window */ }
   }
 
-  function applyColor(key, hex) {
+  function applyColor(key, hex, force) {
     if (!key || !hex) return;
     const row = document.querySelector(`[data-color-key="${cssEscape(key)}"]`);
     if (row) {
@@ -2212,13 +2294,23 @@
       if (field) field.value = hex;
       if (preview) preview.style.background = hex;
     }
+    const live = document.getElementById("live-apply");
+    if (live && !live.checked && !force) return;
     const cssVar = {
       bgMain: "--bg-main",
+      bgSidebar: "--bg-sidebar",
       bgElevated: "--bg-elevated",
       textPrimary: "--text-primary",
       textSecondary: "--text-secondary",
       textMuted: "--text-muted",
       accent: "--accent",
+      accentHover: "--accent-hover",
+      button: "--button-accent",
+      progress: "--progress",
+      like: "--like",
+      danger: "--danger",
+      success: "--success",
+      warning: "--warning",
     }[key];
     if (cssVar) document.documentElement.style.setProperty(cssVar, hex);
     post("set-color", { field: key, value: hex });
@@ -2318,9 +2410,19 @@
       return;
     }
     if (input.id === "pick-wallpaper" && input.files[0]) {
+      const file = input.files[0];
+      const preview = URL.createObjectURL(file);
+      showWallpaper(preview);
       const body = new FormData();
-      body.append("file", input.files[0]);
-      fetch("/wallpaper", { method: "POST", body }).then(() => navigate("/?settings=appearance&section=wallpaper"));
+      body.append("file", file);
+      fetch("/wallpaper", { method: "POST", body })
+        .then((res) => {
+          if (!res.ok) throw new Error("upload");
+          return navigate("/?view=home");
+        })
+        .then(() => toast("Фон установлен", "success"))
+        .catch(() => toast("Фон не сохранился", "error"));
+      input.value = "";
       return;
     }
     if (input.id === "pick-preset" && input.files[0]) {

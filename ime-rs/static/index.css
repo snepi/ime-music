@@ -5019,6 +5019,33 @@ html {
   flex-direction: row-reverse;
 }
 
+body {
+  font-size: var(--ui-font, 14px);
+}
+
+.view-info h1 {
+  font-size: var(--title-size, 28px);
+}
+
+.main-content {
+  max-width: none;
+}
+
+.home-view,
+.all-view,
+.playlist-view {
+  max-width: var(--content-max, none);
+}
+
+[data-show-search="0"] .home-discovery-search,
+[data-show-search="0"] .library-toolbar .search-field {
+  display: none;
+}
+
+[data-show-queue="0"] .queue-toggle {
+  display: none;
+}
+
 [data-player-art="0"] .player-cover,
 [data-player-art="0"] .player-cover-fallback,
 [data-player-title="0"] .player-track-title,

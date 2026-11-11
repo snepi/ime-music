@@ -66,7 +66,7 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         store.settings.accent.as_ref(),
     ) {
         html.push_str(&format!(
-            r#"<style>:root,[data-theme="dark"]{{--bg-main:{bg};--bg-sidebar:{side};--accent:{accent};--accent-hover:{accent};--button-accent:{accent};--progress:{accent};}}</style>"#,
+            r#"<style data-appearance="preset">:root,[data-theme="dark"]{{--bg-main:{bg};--bg-sidebar:{side};--accent:{accent};--accent-hover:{accent};--button-accent:{accent};--progress:{accent};}}</style>"#,
             bg = esc(bg),
             side = esc(side),
             accent = esc(accent)
@@ -74,7 +74,7 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     }
     html.push_str(&appearance_style(store));
     if !store.settings.colors.is_empty() {
-        let mut css = String::from("<style>:root{");
+        let mut css = String::from(r#"<style data-appearance="colors">:root{"#);
         for (key, value) in &store.settings.colors {
             let Some(var_name) = color_var(key) else { continue };
             if value.starts_with('#') || value.starts_with("rgb") {
@@ -186,7 +186,7 @@ fn flag(on: bool) -> &'static str {
 fn body_attrs(store: &Store) -> String {
     let wallpaper = store.settings.wallpaper_mode != "none" && !store.settings.wallpaper_path.is_empty();
     format!(
-        r#" data-volume="{volume}" data-current="{current}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}""#,
+        r#" data-volume="{volume}" data-current="{current}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-show-search="{search}" data-show-queue="{queue_btn}" data-gapless="{gapless}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}""#,
         volume = store.settings.volume,
         current = esc(store.player.current_id.as_deref().unwrap_or("")),
         density = esc(ui_str(store, "layout.density", "standard")),
@@ -213,6 +213,9 @@ fn body_attrs(store: &Store) -> String {
         list_art = flag(ui_on(store, "layout.showArtworkInList", true) && ui_on(store, "covers.show", true)),
         list_index = flag(ui_on(store, "layout.showTrackNumbers", true)),
         anim = flag(ui_on(store, "animations.enabled", true)),
+        search = flag(store.settings.show_search),
+        queue_btn = flag(store.settings.show_queue),
+        gapless = flag(store.settings.playback.gapless_enabled),
         crossfade = store.settings.playback.crossfade_seconds,
         eq = flag(store.settings.playback.eq_enabled),
         normalize = flag(store.settings.playback.normalize_volume),
@@ -224,11 +227,18 @@ fn body_attrs(store: &Store) -> String {
 
 fn appearance_style(store: &Store) -> String {
     format!(
-        r#"<style>:root{{--ui-zoom:{scale}%;--sidebar-width:{side}px;--player-height:{player}px;--radius:{radius}px;}}</style>"#,
+        r#"<style data-appearance="vars">:root{{--ui-zoom:{scale}%;--ui-font:{font}px;--sidebar-width:{side}px;--player-height:{player}px;--radius:{radius}px;--player-cover-size:{cover}px;--list-cover-size:{list}px;--cover-radius:{cover_radius}px;--cover-fit:{fit};--content-max:{content}px;--title-size:{title}px;}}</style>"#,
         scale = esc(ui_str(store, "layout.uiScale", "100")),
+        font = esc(ui_str(store, "layout.fontSize", "14")),
         side = esc(ui_str(store, "layout.sidebarWidth", "260")),
         player = esc(ui_str(store, "layout.playerHeight", "96")),
         radius = esc(ui_str(store, "layout.borderRadius", "10")),
+        cover = esc(ui_str(store, "player.coverSize", "56")),
+        list = esc(ui_str(store, "library.coverSize", "40")),
+        cover_radius = esc(ui_str(store, "covers.radius", "8")),
+        fit = esc(ui_str(store, "covers.objectFit", "cover")),
+        content = esc(ui_str(store, "components.contentMaxWidth", "1200")),
+        title = esc(ui_str(store, "components.titleSize", "28")),
     )
 }
 
@@ -1434,7 +1444,7 @@ fn theme_editor(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         rows = rows,
         win = select_field("pv-mode", &i18n.t("settings.preview.window"), "standard", sv(&[("small", &i18n.t("settings.preview.small")), ("standard", &i18n.t("settings.preview.standard")), ("wide", &i18n.t("settings.preview.wide"))]), "preview_mode", screen),
         page = select_field("pv-page", &i18n.t("settings.preview.page"), "library", sv(&[("library", &i18n.t("settings.preview.library")), ("playlist", &i18n.t("settings.preview.playlist")), ("metadata", &i18n.t("settings.preview.metadata"))]), "preview_page", screen),
-        preview = theme_preview(i18n),
+        preview = theme_preview(store, i18n),
         actions = format!(
             r#"<button type="button" class="btn btn-secondary" data-theme-act="add">{}</button><button type="button" class="btn btn-secondary" data-theme-act="duplicate">{}</button><button type="button" class="btn btn-ghost" data-theme-act="rename">{}</button><button type="button" class="btn btn-danger" data-theme-act="delete">{}</button><button type="button" class="btn btn-ghost" data-theme-act="export">{}</button><button type="button" class="btn btn-ghost" data-theme-act="import">{}</button><button type="button" class="btn btn-secondary" data-theme-act="reset">{}</button>"#,
             esc(&i18n.t("settings.theme.add")),
@@ -1474,9 +1484,11 @@ fn theme_editor(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     )
 }
 
-fn theme_preview(i18n: &I18n) -> String {
+fn theme_preview(store: &Store, i18n: &I18n) -> String {
+    let mode = ui_str(store, "preview_mode", "standard");
+    let mode = if matches!(mode, "small" | "standard" | "wide") { mode } else { "standard" };
     format!(
-        r#"<div class="theme-preview theme-preview-standard" style="--pv-bg:#111315;--pv-sidebar:#181b1f;--pv-panel:#20242a;--pv-text:#f2f4f7;--pv-muted:#9da5af;--pv-accent:#6ea8fe;--pv-border:rgba(255,255,255,0.08);--pv-hover:#2a3037;--pv-active:#303842;--pv-progress:#6ea8fe;--pv-titlebar:#0d0f11;--pv-danger:#ef6b73;--pv-play-bg:#f2f4f7;--pv-play-fg:#111315"><div class="tp-titlebar">IMe Music</div><div class="tp-body"><aside class="tp-sidebar"><div class="tp-nav active">{}</div><div class="tp-nav">{}</div><div class="tp-nav">{}</div></aside><section class="tp-main"><h3>{}</h3><ul class="tp-list"><li><span class="tp-cover"></span><span><strong>Track One</strong><small>Artist</small></span></li><li class="active"><span class="tp-cover"></span><span><strong>Track Two</strong><small>Artist</small></span></li><li><span class="tp-cover"></span><span><strong>Track Three</strong><small>Artist</small></span></li></ul><div class="tp-menu"><div>{}</div><div>{}</div><div class="danger">{}</div></div></section></div><div class="tp-player"><span class="tp-cover sm"></span><div class="tp-player-meta"><strong>Now Playing</strong><small>Artist</small></div><button type="button" class="tp-play" aria-label="Play"></button><div class="tp-progress"><div class="tp-progress-fill"></div></div><div class="tp-volume"><div class="tp-volume-fill"></div></div></div></div>"#,
+        r#"<div class="theme-preview theme-preview-{mode}" style="--pv-bg:#111315;--pv-sidebar:#181b1f;--pv-panel:#20242a;--pv-text:#f2f4f7;--pv-muted:#9da5af;--pv-accent:#6ea8fe;--pv-border:rgba(255,255,255,0.08);--pv-hover:#2a3037;--pv-active:#303842;--pv-progress:#6ea8fe;--pv-titlebar:#0d0f11;--pv-danger:#ef6b73;--pv-play-bg:#f2f4f7;--pv-play-fg:#111315"><div class="tp-titlebar">IMe Music</div><div class="tp-body"><aside class="tp-sidebar"><div class="tp-nav active">{}</div><div class="tp-nav">{}</div><div class="tp-nav">{}</div></aside><section class="tp-main"><h3>{}</h3><ul class="tp-list"><li><span class="tp-cover"></span><span><strong>Track One</strong><small>Artist</small></span></li><li class="active"><span class="tp-cover"></span><span><strong>Track Two</strong><small>Artist</small></span></li><li><span class="tp-cover"></span><span><strong>Track Three</strong><small>Artist</small></span></li></ul><div class="tp-menu"><div>{}</div><div>{}</div><div class="danger">{}</div></div></section></div><div class="tp-player"><span class="tp-cover sm"></span><div class="tp-player-meta"><strong>Now Playing</strong><small>Artist</small></div><button type="button" class="tp-play" aria-label="Play"></button><div class="tp-progress"><div class="tp-progress-fill"></div></div><div class="tp-volume"><div class="tp-volume-fill"></div></div></div></div>"#,
         esc(&i18n.t("settings.preview.library")),
         esc(&i18n.t("settings.preview.favorites")),
         esc(&i18n.t("settings.preview.playlist")),
