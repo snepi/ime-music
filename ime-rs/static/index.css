@@ -2330,12 +2330,12 @@ select:focus-visible {
 
 .artist-track-row {
   display: grid;
-  grid-template-columns: 32px 46px minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
   align-items: center;
-  min-height: 58px;
+  min-height: 56px;
   padding: 4px 8px;
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 .artist-track-row:hover,
@@ -2343,13 +2343,67 @@ select:focus-visible {
   background: var(--bg-hover);
 }
 
-.artist-track-glyph {
-  width: 28px;
-  height: 28px;
+.artist-track-main {
   display: flex;
   align-items: center;
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.artist-track-cover-wrap {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.artist-track-glyph {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
   justify-content: center;
-  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+}
+
+.artist-track-row.is-current .artist-track-glyph,
+.artist-track-row:hover .artist-track-glyph {
+  display: flex;
+}
+
+.artist-track-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.artist-track-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.artist-track-artist {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .home-waves-settings-actions {
@@ -2390,34 +2444,9 @@ select:focus-visible {
   text-align: right;
 }
 
-.artist-track-play,
-.artist-track-name {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  text-align: left;
-  padding: 0;
-}
-
-.artist-track-name {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.artist-track-name:hover {
-  color: var(--accent);
-}
-
 .artist-track-cover {
-  width: 46px;
-  height: 46px;
-  border-radius: 8px;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   display: block;
   background: var(--bg-elevated);

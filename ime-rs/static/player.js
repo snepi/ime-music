@@ -861,16 +861,18 @@
     return note;
   }
 
+  function artistTrackMarkup(track, index, play) {
+    const cover = track.cover
+      ? `<img class="artist-track-cover" src="${escapeAttr(track.cover)}" alt="">`
+      : `<span class="artist-track-cover artist-track-cover-empty"></span>`;
+    const artist = track.artist
+      ? `<span class="artist-track-artist">${escapeHtml(track.artist)}</span>`
+      : "";
+    return `<li class="artist-track-row" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-main" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-cover-wrap">${cover}<span class="artist-track-glyph"></span></span><span class="artist-track-text"><span class="artist-track-title">${escapeHtml(track.title)}</span>${artist}</span></button>${wishButton(track)}</li>`;
+  }
+
   function featureList(items) {
-    return items
-      .map((track, index) => {
-        const cover = track.cover
-          ? `<img class="artist-track-cover" src="${escapeAttr(track.cover)}" alt="">`
-          : `<span class="artist-track-cover artist-track-cover-empty"></span>`;
-        const play = playAttrs(track);
-        return `<li class="artist-track-row"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}</button><button type="button" class="artist-track-name" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${escapeHtml(track.title)}</button>${wishButton(track)}</li>`;
-      })
-      .join("");
+    return items.map((track, index) => artistTrackMarkup(track, index, playAttrs(track))).join("");
   }
 
   function playArtistFrom(index) {
@@ -892,14 +894,7 @@
   }
 
   function artistTrackRows(tracks) {
-    return tracks
-      .map((track, index) => {
-        const cover = track.cover
-          ? `<img class="artist-track-cover" src="${escapeAttr(track.cover)}" alt="">`
-          : `<span class="artist-track-cover artist-track-cover-empty"></span>`;
-        return `<li class="artist-track-row"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-play" data-artist-track="${index}" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}</button><button type="button" class="artist-track-name" data-artist-track="${index}">${escapeHtml(track.title)}</button>${wishButton(track)}</li>`;
-      })
-      .join("");
+    return tracks.map((track, index) => artistTrackMarkup(track, index, `data-artist-track="${index}"`)).join("");
   }
 
   async function deezerPages(path, cap) {
@@ -1561,12 +1556,7 @@
       const on = button ? rowMatchesNow(button) : false;
       row.classList.toggle("is-current", on);
       row.classList.toggle("is-playing", on && playing);
-      let glyph = row.querySelector(".artist-track-glyph");
-      if (!glyph && button) {
-        glyph = document.createElement("span");
-        glyph.className = "artist-track-glyph";
-        button.after(glyph);
-      }
+      const glyph = row.querySelector(".artist-track-glyph");
       if (glyph) glyph.innerHTML = on ? svg(playing ? PAUSE : PLAY, 16) : "";
     });
     document.querySelectorAll(".wishlist-row, .rec-track").forEach((row) => {
