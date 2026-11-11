@@ -5047,25 +5047,42 @@ body {
 }
 
 .archive-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-main);
-  min-height: 100%;
+  overflow: hidden;
+}
+
+.archive-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+  padding: 0 24px 12px;
+}
+
+.archive-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 240px;
+  max-width: 100%;
+}
+
+.archive-field .field-hint {
+  margin: 0;
 }
 
 .archive-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
 }
 
 .archive-list .song-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 12px;
-  background: var(--bg-elevated);
-  border-radius: 12px;
+  grid-template-columns: 40px 44px minmax(0, 1fr) auto;
 }
 
 .archive-list .song-text {
@@ -5073,6 +5090,25 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
+}
+
+.archive-list .song-name {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.archive-list .song-artist {
+  display: block;
+  color: var(--text-secondary);
+}
+
+.archive-move {
+  justify-self: end;
 }
 
 [data-player-art="0"] .player-cover,
