@@ -365,12 +365,16 @@
     if (!(form instanceof HTMLFormElement)) return;
     event.preventDefault();
     const data = new FormData(form);
-    if (data.get("action") === "like") {
+      if (data.get("action") === "like") {
       const body = new URLSearchParams(data);
       body.set("ajax", "1");
       fetch("/act", { method: "POST", body });
       const btn = form.querySelector(".like-btn");
       if (btn) btn.classList.toggle("liked");
+      const song = library.find((item) => item.id === String(data.get("id") || ""));
+      if (song) song.liked = !song.liked;
+      writeJsonSeed("library-seed", library);
+      refreshRecommendationsIfOpen();
       return;
     }
     const method = (form.getAttribute("method") || "get").toLowerCase();
@@ -754,6 +758,8 @@
       favorites.unshift({ name: page.name, deezerId: String(page.id || ""), picture: page.picture || "" });
     }
     if (!on && index >= 0) favorites.splice(index, 1);
+    writeJsonSeed("favorite-artists-seed", favorites);
+    refreshRecommendationsIfOpen();
     button.classList.toggle("is-on", on);
     button.setAttribute("aria-pressed", on ? "true" : "false");
     button.innerHTML = heartIcon(on);
@@ -1352,6 +1358,15 @@
     }
   }
 
+  function writeJsonSeed(id, value) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = JSON.stringify(value);
+  }
+
+  function refreshRecommendationsIfOpen() {
+    if (document.getElementById("recommendations-root")) loadRecommendations(recFilter);
+  }
+
   function rankedArtists(songs) {
     const counts = new Map();
     for (const song of songs) {
@@ -1386,6 +1401,16 @@
     return (data.data || []).find((item) => item && normTrack(item.name) === want) || null;
   }
 
+  function pushCatalogTrack(bucket, seen, row, artistName, strict) {
+    if (strict && artistName && normTrack(row?.artist?.name) !== normTrack(artistName)) return;
+    const track = mapDeezerTrack(row);
+    if (!track || !track.preview) return;
+    const key = `${normTrack(track.title)}\n${normTrack(track.artist)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    bucket.push(track);
+  }
+
   async function catalogForArtists(names) {
     const tracks = [];
     const albums = [];
@@ -1395,27 +1420,210 @@
       const artist = await resolveArtist(name);
       if (!artist) continue;
       const [top, listed] = await Promise.all([
-        deezer("/artist/" + artist.id + "/top?limit=10"),
-        deezer("/artist/" + artist.id + "/albums?limit=12"),
+        deezer("/artist/" + artist.id + "/top?limit=100"),
+        deezer("/artist/" + artist.id + "/albums?limit=50"),
       ]);
-      for (const row of top.data || []) {
-        if (normTrack(row.artist?.name) !== normTrack(artist.name)) continue;
-        const track = mapDeezerTrack(row);
-        if (!track || !track.preview || seenTracks.has(track.preview)) continue;
-        seenTracks.add(track.preview);
-        tracks.push(track);
+      const own = [];
+      for (const row of top.data || []) pushCatalogTrack(own, seenTracks, row, artist.name, true);
+      tracks.push(...own);
+      if (own.length < 24) {
+        const radio = await deezer("/artist/" + artist.id + "/radio?limit=40");
+        const extra = [];
+        for (const row of radio.data || []) pushCatalogTrack(extra, seenTracks, row, artist.name, false);
+        tracks.push(...extra);
       }
       for (const album of listed.data || []) {
-        if (!album?.id || seenAlbums.has(album.id)) continue;
+        if (!album?.id || seenAlbums.has(String(album.id))) continue;
         const by = album.artist?.name || artist.name;
         if (normTrack(by) !== normTrack(artist.name)) continue;
         if (album.record_type === "single") continue;
-        seenAlbums.add(album.id);
+        seenAlbums.add(String(album.id));
         if (!album.artist?.name) album.artist = { name: artist.name, id: artist.id };
         albums.push(album);
       }
     }
-    return { tracks: tracks.slice(0, 12), albums: albums.slice(0, 8) };
+    return { tracks, albums };
+  }
+
+  function trackKey(track) {
+    return `${normTrack(track.title)}\n${normTrack(track.artist)}`;
+  }
+
+  function shuffleInPlace(items) {
+    for (let index = items.length - 1; index > 0; index -= 1) {
+      const swap = Math.floor(Math.random() * (index + 1));
+      const item = items[index];
+      items[index] = items[swap];
+      items[swap] = item;
+    }
+    return items;
+  }
+
+  function storedKeys(name) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(name) || "[]");
+      return new Set(Array.isArray(saved) ? saved : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function pickFreshTracks(pool, previous, count, priorityArtists) {
+    const unique = [];
+    const seen = new Set();
+    for (const track of pool) {
+      if (!track?.title) continue;
+      const key = trackKey(track);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(track);
+    }
+    const priority = new Set((priorityArtists || []).map((name) => normTrack(name)));
+    const fresh = unique.filter((track) => !previous.has(trackKey(track)));
+    const used = unique.filter((track) => previous.has(trackKey(track)));
+    const boosted = fresh.filter((track) => priority.has(normTrack(track.artist)));
+    const rest = fresh.filter((track) => !priority.has(normTrack(track.artist)));
+    shuffleInPlace(boosted);
+    shuffleInPlace(rest);
+    shuffleInPlace(used);
+    return [...boosted, ...rest, ...used].slice(0, count);
+  }
+
+  function rememberTracks(name, tracks) {
+    try {
+      localStorage.setItem(name, JSON.stringify(tracks.map(trackKey)));
+    } catch { /* storage */ }
+  }
+
+  function newArtists(storageName, artists) {
+    const current = artists.map((name) => normTrack(name)).filter(Boolean);
+    let previous = [];
+    try {
+      previous = JSON.parse(localStorage.getItem(storageName) || "[]");
+      if (!Array.isArray(previous)) previous = [];
+    } catch {
+      previous = [];
+    }
+    try {
+      localStorage.setItem(storageName, JSON.stringify(current));
+    } catch { /* storage */ }
+    const known = new Set(previous);
+    return current.filter((name) => !known.has(name));
+  }
+
+  const REC_TRACKS = 8;
+  const ALBUM_ROW = 8;
+  const EIGHT_HOURS = 8 * 60 * 60 * 1000;
+  const SIXTEEN_HOURS = 16 * 60 * 60 * 1000;
+
+  function albumRowSize(poolLength) {
+    let size = Math.min(ALBUM_ROW, poolLength);
+    while (size > 2 && poolLength - size < Math.ceil(size / 2)) size -= 1;
+    if (poolLength >= 2 && size < 2) size = Math.min(2, poolLength);
+    return size;
+  }
+
+  function albumSnapshot(album) {
+    return {
+      id: String(album.id),
+      title: album.title || "",
+      cover_medium: album.cover_medium || album.cover || "",
+      release_date: album.release_date || "",
+      artist: { name: album.artist?.name || "", id: album.artist?.id || "" },
+    };
+  }
+
+  function replaceAlbumHalf(slots, order, parity, hops) {
+    const next = slots.slice();
+    for (let hop = 0; hop < hops; hop += 1) {
+      const indexes = [];
+      for (let index = parity; index < next.length; index += 2) indexes.push(index);
+      if (!indexes.length) break;
+      const held = new Set(next.filter((_, index) => index % 2 !== parity).map((album) => album.id));
+      const current = new Set(indexes.map((index) => next[index]?.id).filter(Boolean));
+      let cursor = 0;
+      const found = order.findIndex((album) => album.id === next[indexes[0]]?.id);
+      if (found >= 0) cursor = (found + 1) % order.length;
+      const picked = [];
+      let guard = 0;
+      const allowOverlap = order.length <= indexes.length;
+      while (picked.length < indexes.length && guard < order.length * 2) {
+        const album = order[cursor % order.length];
+        cursor += 1;
+        guard += 1;
+        if (!album || picked.some((item) => item.id === album.id)) continue;
+        if (!allowOverlap && (held.has(album.id) || current.has(album.id))) continue;
+        picked.push(album);
+      }
+      if (picked.length < indexes.length) {
+        guard = 0;
+        while (picked.length < indexes.length && guard < order.length * 2) {
+          const album = order[cursor % order.length];
+          cursor += 1;
+          guard += 1;
+          if (!album || picked.some((item) => item.id === album.id)) continue;
+          picked.push(album);
+        }
+      }
+      indexes.forEach((index, offset) => {
+        if (picked[offset]) next[index] = picked[offset];
+      });
+    }
+    return next;
+  }
+
+  function rotateAlbumRow(pool, mode, now) {
+    const incoming = [];
+    const seen = new Set();
+    for (const album of pool) {
+      const snap = album?.id ? albumSnapshot(album) : null;
+      if (!snap || seen.has(snap.id)) continue;
+      seen.add(snap.id);
+      incoming.push(snap);
+    }
+    if (!incoming.length) return [];
+    const storageName = "ime-rec-albums:" + mode;
+    let state = null;
+    try {
+      state = JSON.parse(localStorage.getItem(storageName) || "null");
+    } catch {
+      state = null;
+    }
+    const byId = new Map(incoming.map((album) => [album.id, album]));
+    let order = Array.isArray(state?.order)
+      ? state.order.map((album) => byId.get(String(album.id))).filter(Boolean)
+      : [];
+    const known = new Set(order.map((album) => album.id));
+    for (const album of incoming) if (!known.has(album.id)) order.push(album);
+    if (!order.length) order = incoming;
+    const rowSize = albumRowSize(order.length);
+    const step8 = Math.floor(now / EIGHT_HOURS);
+    const step16 = Math.floor(now / SIXTEEN_HOURS);
+    let slots = Array.isArray(state?.slots)
+      ? state.slots.map((album) => byId.get(String(album.id))).filter(Boolean)
+      : [];
+    if (!slots.length) {
+      slots = order.slice(0, rowSize);
+      state = { step8, step16 };
+    } else {
+      const kept = slots.filter(Boolean).slice(0, rowSize);
+      const have = new Set(kept.map((album) => album.id));
+      slots = kept;
+      for (const album of order) {
+        if (slots.length >= rowSize) break;
+        if (have.has(album.id)) continue;
+        slots.push(album);
+        have.add(album.id);
+      }
+      const hops8 = Math.max(0, step8 - (Number.isFinite(state.step8) ? state.step8 : step8));
+      const hops16 = Math.max(0, step16 - (Number.isFinite(state.step16) ? state.step16 : step16));
+      if (hops8) slots = replaceAlbumHalf(slots, order, 0, hops8);
+      if (hops16) slots = replaceAlbumHalf(slots, order, 1, hops16);
+    }
+    try {
+      localStorage.setItem(storageName, JSON.stringify({ step8, step16, slots, order }));
+    } catch { /* storage */ }
+    return slots;
   }
 
   function recAlbumCard(album) {
@@ -1442,22 +1650,26 @@
         ? "Список «Хочу послушать» пуст"
         : "В библиотеке пока нет артистов";
     try {
-      const chart = await deezer("/chart/0/tracks?limit=12");
-      const chartTracks = (chart.data || []).map((row) => mapDeezerTrack(row)).filter(Boolean);
+      const chart = await deezer("/chart/0/tracks?limit=100");
+      const chartPool = (chart.data || []).map((row) => mapDeezerTrack(row)).filter(Boolean);
+      const chartKey = "ime-rec-tracks:chart";
+      const chartTracks = pickFreshTracks(chartPool, storedKeys(chartKey), REC_TRACKS);
+      rememberTracks(chartKey, chartTracks);
       const catalog = mode === "chart"
-        ? await catalogForArtists([...new Set(chartTracks.map((track) => track.artist).filter(Boolean))].slice(0, 3))
+        ? await catalogForArtists([...new Set(chartPool.map((track) => track.artist).filter(Boolean))].slice(0, 3))
         : await catalogForArtists(source.artists);
-      const wanted = new Set(source.tracks.map((track) => `${normTrack(track.title)}\n${normTrack(track.artist)}`));
-      const taste = [...catalog.tracks].sort((a, b) => {
-        const aHit = wanted.has(`${normTrack(a.title)}\n${normTrack(a.artist)}`) ? 0 : 1;
-        const bHit = wanted.has(`${normTrack(b.title)}\n${normTrack(b.artist)}`) ? 0 : 1;
-        return aHit - bHit;
-      });
+      const tasteKey = "ime-rec-tracks:" + mode;
+      const added = newArtists("ime-rec-artists:" + mode, source.artists);
+      const taste = mode === "chart"
+        ? []
+        : pickFreshTracks(catalog.tracks, storedKeys(tasteKey), REC_TRACKS, added);
+      if (mode !== "chart") rememberTracks(tasteKey, taste);
+      const albums = rotateAlbumRow(catalog.albums, mode, Date.now());
       const sections = [];
       if (mode !== "chart") {
         sections.push({ title: tasteTitle, hint: source.artists.length ? source.artists.slice(0, 4).join(", ") : emptyHint, tracks: taste });
       }
-      sections.push({ title: "Альбомы", albums: catalog.albums });
+      sections.push({ title: "Альбомы", albums });
       sections.push({ title: "Чарт", hint: "Топ Deezer", tracks: chartTracks });
       root.innerHTML = sections.map((section) => {
         if (section.albums) {
@@ -1716,6 +1928,11 @@
     if (nextLibrary && libraryNode) {
       libraryNode.textContent = nextLibrary.textContent;
       readLibrary(libraryNode.textContent);
+    }
+    for (const id of ["favorite-artists-seed", "wishlist-seed"]) {
+      const incoming = doc.getElementById(id);
+      const current = document.getElementById(id);
+      if (incoming && current) current.textContent = incoming.textContent;
     }
     history.pushState({}, "", url);
     document.querySelectorAll(".ui-select").forEach(bindSelect);
