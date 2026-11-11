@@ -107,6 +107,8 @@ fn main() {
         .route("/", get(index))
         .route("/act", post(act))
         .route("/import", post(import_files))
+        .route("/wallpaper", post(upload_wallpaper))
+        .route("/wallpaper-image", get(wallpaper_image))
         .route("/import-path", post(import_path))
         .route("/import-search", post(import_search))
         .route("/import-status", get(import_status))
@@ -436,9 +438,75 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             store.settings.show_search = true;
         }
         "reset-behavior" => store.settings.behavior = model::Behavior::default(),
-        "reset-wallpaper" => {}
+        "reset-wallpaper" => {
+            store.settings.wallpaper_mode = "none".into();
+            store.settings.wallpaper_path.clear();
+        }
+        "reset-hotkeys" => store.settings.hotkeys.clear(),
+        "reset-ui" => {
+            let prefix = form.value.clone().unwrap_or_default();
+            if !prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_') {
+                store.settings.ui.retain(|key, _| !key.starts_with(&prefix));
+            }
+        }
+        "reset-all" => {
+            let ytdlp_path = store.settings.ytdlp_path.clone();
+            let ytdlp_proxy = store.settings.ytdlp_proxy.clone();
+            let wishlist = store.settings.wishlist.clone();
+            let favorites = store.settings.favorite_artists.clone();
+            let heard = store.settings.waves.heard.clone();
+            let spin = store.settings.waves.spin;
+            store.settings = model::Settings::default();
+            store.settings.ytdlp_path = ytdlp_path;
+            store.settings.ytdlp_proxy = ytdlp_proxy;
+            store.settings.wishlist = wishlist;
+            store.settings.favorite_artists = favorites;
+            store.settings.waves.heard = heard;
+            store.settings.waves.spin = spin;
+            store.settings.onboarding_done = true;
+        }
         "reset-preset" | "reset-section" => store.apply_preset("default"),
-        "wallpaper" => {}
+        "wallpaper" => {
+            let mode = form.value.clone().unwrap_or_default();
+            if matches!(
+                mode.as_str(),
+                "none" | "full" | "stretch" | "crop" | "fit" | "contain" | "window" | "content" | "fitBlur"
+            ) {
+                store.settings.wallpaper_mode = mode;
+            }
+        }
+        "save-preset" => {
+            let name = form.name.clone().unwrap_or_else(|| "Своя".into());
+            let name = name.trim();
+            if !name.is_empty() && name.len() < 40 {
+                let id = slug_id(name);
+                let bg = store.settings.bg_main.clone().unwrap_or_else(|| "#111315".into());
+                let side = store.settings.bg_sidebar.clone().unwrap_or_else(|| "#181b1f".into());
+                let accent = store.settings.accent.clone().unwrap_or_else(|| "#6ea8fe".into());
+                store.settings.ui.insert(format!("themeSnap.{id}"), format!("{bg},{side},{accent}"));
+                let mut entries: Vec<(String, String)> = theme_entries(&store.settings.ui);
+                if !entries.iter().any(|(item, _)| item == &id) {
+                    entries.push((id, name.to_string()));
+                } else if let Some(item) = entries.iter_mut().find(|(item, _)| item == &id) {
+                    item.1 = name.to_string();
+                }
+                store.settings.ui.insert("themeList".into(), encode_themes(&entries));
+                message = "Тема сохранена".into();
+            }
+        }
+        "delete-preset" => {
+            if let Some(id) = form.value.clone() {
+                store.settings.ui.remove(&format!("themeSnap.{id}"));
+                let entries: Vec<(String, String)> = theme_entries(&store.settings.ui)
+                    .into_iter()
+                    .filter(|(item, _)| item != &id)
+                    .collect();
+                store.settings.ui.insert("themeList".into(), encode_themes(&entries));
+                if store.settings.preset_id == id {
+                    store.apply_preset("default");
+                }
+            }
+        }
         "import-path" => {
             if let Some(path) = form.path.or(form.value) {
                 store.import_path(std::path::Path::new(&path));
@@ -561,6 +629,38 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
     Redirect::to(target.to_string().leak()).into_response()
 }
 
+fn slug_id(name: &str) -> String {
+    let mut id = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            id.push(ch.to_ascii_lowercase());
+        } else if ch.is_alphanumeric() {
+            id.push(ch);
+        } else if !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    let id = id.trim_matches('-').to_string();
+    if id.is_empty() { "custom".into() } else { id }
+}
+
+fn theme_entries(ui: &std::collections::BTreeMap<String, String>) -> Vec<(String, String)> {
+    ui.get("themeList")
+        .map(|raw| {
+            raw.lines()
+                .filter_map(|line| {
+                    let (id, name) = line.split_once('|')?;
+                    if id.is_empty() { None } else { Some((id.to_string(), name.to_string())) }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn encode_themes(entries: &[(String, String)]) -> String {
+    entries.iter().map(|(id, name)| format!("{id}|{name}")).collect::<Vec<_>>().join("\n")
+}
+
 fn apply_field(store: &mut Store, field: &str, value: &str) {
     let on = value == "1" || value == "true" || value == "on";
     match field {
@@ -594,8 +694,59 @@ fn apply_field(store: &mut Store, field: &str, value: &str) {
         "listenbrainz" => store.settings.listenbrainz = on,
         "ytdlp_path" => store.settings.ytdlp_path = value.trim().into(),
         "ytdlp_proxy" => store.settings.ytdlp_proxy = value.trim().into(),
+        "ffmpeg_path" => store.settings.ffmpeg_path = value.trim().into(),
         "preset" => store.apply_preset(value),
-        _ => {}
+        "crossfade" => {
+            if let Ok(seconds) = value.parse::<i32>() {
+                store.settings.playback.crossfade_seconds = seconds.clamp(0, 12);
+            }
+        }
+        "normalize" => store.settings.playback.normalize_volume = on,
+        "eq_preset" => {
+            if matches!(value, "flat" | "bassBoost" | "vocal" | "custom") {
+                store.settings.playback.eq_preset = value.into();
+                let (bass, mid, treble) = match value {
+                    "bassBoost" => (6, 0, 0),
+                    "vocal" => (-2, 4, 2),
+                    "flat" => (0, 0, 0),
+                    _ => (store.settings.playback.eq_bass, store.settings.playback.eq_mid, store.settings.playback.eq_treble),
+                };
+                if value != "custom" {
+                    store.settings.playback.eq_bass = bass;
+                    store.settings.playback.eq_mid = mid;
+                    store.settings.playback.eq_treble = treble;
+                    store.settings.playback.eq_enabled = true;
+                }
+            }
+        }
+        "eq_bass" | "eq_mid" | "eq_treble" => {
+            if let Ok(band) = value.parse::<i32>() {
+                let band = band.clamp(-12, 12);
+                store.settings.playback.eq_preset = "custom".into();
+                match field {
+                    "eq_bass" => store.settings.playback.eq_bass = band,
+                    "eq_mid" => store.settings.playback.eq_mid = band,
+                    "eq_treble" => store.settings.playback.eq_treble = band,
+                    _ => {}
+                }
+            }
+        }
+        "lastfm" => store.settings.lastfm = on,
+        _ => {
+            if let Some(key) = field.strip_prefix("ui.") {
+                if key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_') && key.len() < 80 {
+                    store.settings.ui.insert(key.to_string(), value.trim().to_string());
+                }
+            } else if let Some(action) = field.strip_prefix("hotkey.") {
+                if action.chars().all(|ch| ch.is_ascii_alphanumeric()) && value.len() < 40 {
+                    if value.is_empty() {
+                        store.settings.hotkeys.remove(action);
+                    } else {
+                        store.settings.hotkeys.insert(action.to_string(), value.to_string());
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -626,6 +777,42 @@ async fn import_files(State(state): State<Arc<AppState>>, mut multipart: Multipa
     }
     save(&state, &store);
     Redirect::to("/?view=all")
+}
+
+async fn upload_wallpaper(State(state): State<Arc<AppState>>, mut multipart: Multipart) -> Redirect {
+    let dir = state.data_path.parent().unwrap().join("wallpaper");
+    let _ = std::fs::create_dir_all(&dir);
+    let dest = dir.join("background");
+    if let Ok(Some(field)) = multipart.next_field().await {
+        if let Ok(bytes) = field.bytes().await {
+            if (16..12 * 1024 * 1024).contains(&bytes.len()) && std::fs::write(&dest, &bytes).is_ok() {
+                let mut store = state.store.lock().expect("store");
+                store.settings.wallpaper_path = dest.to_string_lossy().into_owned();
+                if store.settings.wallpaper_mode.is_empty() || store.settings.wallpaper_mode == "none" {
+                    store.settings.wallpaper_mode = "fitBlur".into();
+                }
+                save(&state, &store);
+            }
+        }
+    }
+    Redirect::to("/?settings=appearance&section=wallpaper")
+}
+
+async fn wallpaper_image(State(state): State<Arc<AppState>>) -> Response {
+    let path = state.store.lock().expect("store").settings.wallpaper_path.clone();
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let kind = if bytes.starts_with(b"\x89PNG") {
+                "image/png"
+            } else if bytes.starts_with(b"GIF8") {
+                "image/gif"
+            } else {
+                "image/jpeg"
+            };
+            ([(header::CONTENT_TYPE, kind)], bytes).into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 fn model_nid() -> String {

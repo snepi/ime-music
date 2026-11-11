@@ -5011,6 +5011,51 @@ select:focus-visible {
   pointer-events: none;
 }
 
+html {
+  zoom: var(--ui-zoom, 100%);
+}
+
+[data-sidebar-pos="right"] .app-body {
+  flex-direction: row-reverse;
+}
+
+[data-player-art="0"] .player-cover,
+[data-player-art="0"] .player-cover-fallback,
+[data-player-title="0"] .player-track-title,
+[data-player-artist="0"] .player-track-artist,
+[data-player-prev="0"] [data-act="prev"],
+[data-player-next="0"] [data-act="next"],
+[data-player-play="0"] .play-pause,
+[data-player-volume="0"] .player-volume,
+[data-player-progress="0"] .player-progress,
+[data-player-time="0"] .player-time,
+[data-player-queue="0"] .queue-toggle,
+[data-player-like="0"] .player-bar .wish-heart,
+[data-list-art="0"] .song-cover-cell,
+[data-list-index="0"] .song-index {
+  display: none;
+}
+
+[data-density="compact"] .song-row {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+[data-density="spacious"] .song-row {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+[data-animations="0"] .modal,
+[data-animations="0"] .song-row,
+[data-animations="0"] .settings-tab {
+  transition: none;
+}
+
+.theme-group.is-collapsed .theme-color-row {
+  display: none;
+}
+
 .player-variant-compact .player-bar {
   height: calc(var(--player-height) * 0.85);
 }

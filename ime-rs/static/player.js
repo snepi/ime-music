@@ -79,6 +79,19 @@
       runTool(tool.dataset.tool);
       return;
     }
+    const hotkeyBind = event.target.closest("[data-hotkey]");
+    if (hotkeyBind) {
+      event.preventDefault();
+      listeningHotkey = hotkeyBind;
+      hotkeyBind.textContent = "Нажмите клавишу…";
+      return;
+    }
+    const themeAct = event.target.closest("[data-theme-act]");
+    if (themeAct) {
+      event.preventDefault();
+      runThemeAct(themeAct.dataset.themeAct);
+      return;
+    }
     const menuBtn = event.target.closest("[data-menu]");
     if (menuBtn) {
       event.preventDefault();
@@ -393,6 +406,19 @@
   document.addEventListener("input", (event) => {
     const input = event.target;
     if (!(input instanceof HTMLInputElement)) return;
+    if (input.dataset.setField) {
+      const label = input.closest("label")?.querySelector("[data-range-label]");
+      if (label) label.textContent = `${label.dataset.rangeLabel}: ${input.value}${input.dataset.setUnit || ""}`;
+      applySettingLive(input.dataset.setField, input.value);
+      return;
+    }
+    if (input.matches("[data-theme-search]")) {
+      const query = input.value.trim().toLowerCase();
+      document.querySelectorAll(".theme-color-row").forEach((row) => {
+        row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+      });
+      return;
+    }
     if (input.closest(".home-discovery-search")) {
       scheduleDiscovery(input.value);
       return;
@@ -489,6 +515,11 @@
   audio.addEventListener("timeupdate", () => {
     if (drag && drag.kind === "seek") return;
     paintProgress();
+    const fade = Number(document.body.dataset.crossfade || 0);
+    if (fade > 0 && audio.duration && audio.duration - audio.currentTime < fade) {
+      const left = Math.max(0, audio.duration - audio.currentTime);
+      audio.volume = Math.max(0.05, (left / fade) * Number(document.body.dataset.volume || 0.8));
+    }
   });
   audio.addEventListener("play", () => syncPlayButton());
   audio.addEventListener("pause", () => syncPlayButton());
@@ -1966,12 +1997,75 @@
     return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
   }
 
+  let hotkeys = {};
+  try {
+    hotkeys = JSON.parse(document.getElementById("hotkeys-seed")?.textContent || "{}");
+  } catch { /* seed */ }
+  let listeningHotkey = null;
+
+  function hotkeyName(code) {
+    if (!code) return "Не назначена";
+    return code.replace(/^Key/, "").replace(/^Digit/, "").replace(/^Arrow/, "");
+  }
+
+  function runHotkey(action) {
+    const current = document.body.dataset.current || "";
+    if (action === "playPause") toggle();
+    if (action === "next") playNext();
+    if (action === "previous") playPrev();
+    if (action === "volumeUp" || action === "volumeDown") {
+      const step = action === "volumeUp" ? 0.05 : -0.05;
+      audio.volume = Math.min(1, Math.max(0, audio.volume + step));
+      paintVolume(audio.volume);
+      paintMuteIcon();
+      post("volume", { value: String(audio.volume) });
+    }
+    if (action === "mute") toggleMute();
+    if (action === "like" && current) post("like", { id: current });
+    if (action === "addToQueue" && current) post("queue-add", { id: current }).then((data) => toast(data.message, "info"));
+    if (action === "search") document.querySelector(".search-input, .home-discovery-search input")?.focus();
+    if (action === "settings") navigate("/?settings=appearance&section=general");
+    if (action === "queue") toggleQueue();
+    if (action === "toggleTheme") {
+      const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      post("set", { field: "theme", value: next });
+    }
+    if (action === "editMetadata" && current) editCurrent(current);
+  }
+
+  function editCurrent(id) {
+    const row = document.querySelector(`[data-play="${cssEscape(id)}"]`);
+    const title = window.prompt("Название", row?.dataset.title || "");
+    if (title == null) return;
+    const artist = window.prompt("Артист", row?.dataset.artist || "") || "";
+    const album = window.prompt("Альбом", row?.dataset.album || "") || "";
+    post("update-meta", { id, title, artist, album }).then(() => navigate(location.pathname + location.search));
+  }
+
   document.addEventListener("keydown", (event) => {
-    if (event.code !== "Space") return;
+    if (listeningHotkey) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        listeningHotkey.textContent = hotkeyName(hotkeys[listeningHotkey.dataset.hotkey] || "");
+        listeningHotkey = null;
+        return;
+      }
+      const action = listeningHotkey.dataset.hotkey;
+      hotkeys[action] = event.code;
+      listeningHotkey.textContent = hotkeyName(event.code);
+      post("set", { field: "hotkey." + action, value: event.code });
+      listeningHotkey = null;
+      return;
+    }
     const tag = event.target && event.target.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (event.code === "Space" && document.body.dataset.space === "0") return;
+    const action = Object.keys(hotkeys).find((key) => hotkeys[key] && hotkeys[key] === event.code);
+    if (!action) return;
     event.preventDefault();
-    toggle();
+    runHotkey(action);
   });
 
   function barRatio(el, clientX) {
@@ -2024,6 +2118,89 @@
     box.appendChild(node);
     window.setTimeout(() => node.remove(), 3200);
   }
+  function applySettingLive(field, value) {
+    const root = document.documentElement;
+    if (field === "ui.layout.uiScale") root.style.setProperty("--ui-zoom", `${value}%`);
+    if (field === "ui.layout.sidebarWidth") root.style.setProperty("--sidebar-width", `${value}px`);
+    if (field === "ui.layout.playerHeight") root.style.setProperty("--player-height", `${value}px`);
+    if (field === "ui.layout.borderRadius") root.style.setProperty("--radius", `${value}px`);
+    if (field === "crossfade") document.body.dataset.crossfade = value;
+    if (field === "eq_bass") document.body.dataset.eqBass = value;
+    if (field === "eq_mid") document.body.dataset.eqMid = value;
+    if (field === "eq_treble") document.body.dataset.eqTreble = value;
+    tuneEq();
+  }
+
+  function runThemeAct(name) {
+    if (name === "expand") document.querySelectorAll(".theme-group").forEach((node) => node.classList.remove("is-collapsed"));
+    if (name === "collapse") document.querySelectorAll(".theme-group").forEach((node) => node.classList.add("is-collapsed"));
+    if (name === "apply" || name === "save") toast("Сохранено", "success");
+    if (name === "cancel" || name === "reset") {
+      document.querySelectorAll("[data-color-reset]").forEach((button) => applyColor(button.dataset.colorReset, button.dataset.colorDefault));
+      if (name === "reset") post("preset", { value: "default" }).then(() => navigate(location.pathname + location.search));
+    }
+    if (name === "add" || name === "duplicate" || name === "rename") {
+      const title = window.prompt("Название темы", name === "duplicate" ? "Копия" : "");
+      if (!title) return;
+      post("save-preset", { name: title }).then(() => navigate(location.pathname + location.search));
+    }
+    if (name === "delete") {
+      const active = document.querySelector(".ui-select-option.active");
+      const id = active?.closest("form")?.querySelector('[name="value"]')?.value || "";
+      if (!id || id === "default") {
+        toast("Встроенную тему нельзя удалить", "info");
+        return;
+      }
+      post("delete-preset", { value: id }).then(() => navigate(location.pathname + location.search));
+    }
+    if (name === "export") {
+      const colors = {};
+      document.querySelectorAll("[data-color-key]").forEach((row) => {
+        colors[row.dataset.colorKey] = row.querySelector(".theme-color-hex")?.value || "";
+      });
+      const blob = new Blob([JSON.stringify({ name: "IMe", colors }, null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "ime-theme.json";
+      link.click();
+      URL.revokeObjectURL(link.href);
+    }
+    if (name === "import") document.getElementById("pick-preset")?.click();
+    if (name === "palette") {
+      const accent = document.body.dataset.theme === "light" ? "#3b82f6" : "#8eb6ff";
+      applyColor("accent", accent);
+      toast("Палитра обновлена", "success");
+    }
+  }
+
+  let eqNodes = null;
+  function tuneEq() {
+    if (document.body.dataset.eq !== "1") return;
+    if (!eqNodes) {
+      const context = new AudioContext();
+      const bass = context.createBiquadFilter();
+      bass.type = "lowshelf";
+      bass.frequency.value = 140;
+      const mid = context.createBiquadFilter();
+      mid.type = "peaking";
+      mid.frequency.value = 1000;
+      mid.Q.value = 0.9;
+      const treble = context.createBiquadFilter();
+      treble.type = "highshelf";
+      treble.frequency.value = 4500;
+      const source = context.createMediaElementSource(audio);
+      source.connect(bass);
+      bass.connect(mid);
+      mid.connect(treble);
+      treble.connect(context.destination);
+      eqNodes = { context, bass, mid, treble };
+    }
+    eqNodes.bass.gain.value = Number(document.body.dataset.eqBass || 0);
+    eqNodes.mid.gain.value = Number(document.body.dataset.eqMid || 0);
+    eqNodes.treble.gain.value = Number(document.body.dataset.eqTreble || 0);
+    eqNodes.context.resume().catch(() => {});
+  }
+
   function applyColor(key, hex) {
     if (!key || !hex) return;
     const row = document.querySelector(`[data-color-key="${cssEscape(key)}"]`);
@@ -2128,6 +2305,39 @@
       input.value = "";
       return;
     }
+    if (input.dataset.setField) {
+      post("set", { field: input.dataset.setField, value: input.value });
+      return;
+    }
+    if (input.id === "only-dirty") {
+      document.querySelectorAll(".theme-color-row").forEach((row) => {
+        const current = row.querySelector(".theme-color-hex")?.value || "";
+        const fallback = row.querySelector("[data-color-default]")?.dataset.colorDefault || "";
+        row.hidden = input.checked && current.toLowerCase() === fallback.toLowerCase();
+      });
+      return;
+    }
+    if (input.id === "pick-wallpaper" && input.files[0]) {
+      const body = new FormData();
+      body.append("file", input.files[0]);
+      fetch("/wallpaper", { method: "POST", body }).then(() => navigate("/?settings=appearance&section=wallpaper"));
+      return;
+    }
+    if (input.id === "pick-preset" && input.files[0]) {
+      input.files[0].text().then(async (text) => {
+        const data = JSON.parse(text);
+        const colors = data.colors || data;
+        if (colors && typeof colors === "object") {
+          for (const [key, value] of Object.entries(colors)) {
+            if (typeof value === "string" && value.startsWith("#")) await post("set-color", { field: key, value });
+          }
+        }
+        if (data.name) await post("save-preset", { name: data.name });
+        navigate(location.pathname + location.search);
+      }).catch(() => toast("Не удалось прочитать тему", "error"));
+      input.value = "";
+      return;
+    }
     if (input.id === "pick-playlist" && input.files[0]) {
       const text = await input.files[0].text();
       const data = await fetch("/api/playlist", {
@@ -2166,7 +2376,10 @@
       post("update-meta", { id, title, artist, album }).then(() => navigate(location.pathname + location.search));
     }
     if (act === "reveal") post("reveal", { id }).then((data) => toast(data.message || "Файл", "info"));
-    if (act === "delete") post("delete-song", { id }).then(() => navigate(location.pathname + location.search));
+    if (act === "delete") {
+      if (document.body.dataset.confirmDelete === "1" && !window.confirm("Удалить трек из библиотеки?")) return;
+      post("delete-song", { id }).then(() => navigate(location.pathname + location.search));
+    }
   });
   async function openTrackMenu(button) {
     document.querySelectorAll(".context-menu").forEach((node) => node.remove());
@@ -2300,5 +2513,18 @@
 
   paintMuteIcon();
   syncPlayButton();
+  tuneEq();
+  if (document.body.dataset.normalize === "1") audio.volume = Math.min(audio.volume, 0.82);
+  if (document.body.dataset.focusSearch === "1") document.querySelector(".search-input")?.focus();
+  if (document.body.dataset.autoResume === "1" && document.body.dataset.current) {
+    const id = document.body.dataset.current;
+    const row = document.querySelector(`[data-play="${cssEscape(id)}"]`);
+    playId(id, row?.dataset.title || "", row?.dataset.artist || "");
+  }
+  document.addEventListener("dblclick", (event) => {
+    const row = event.target.closest(".song-row");
+    if (!row || document.body.dataset.doubleClick !== "editMetadata") return;
+    editCurrent(row.dataset.play);
+  });
   if (document.getElementById("recommendations-root")) loadRecommendations("all");
 })();

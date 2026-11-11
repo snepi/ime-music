@@ -210,6 +210,14 @@ pub struct Settings {
     pub last_view: String,
     #[serde(default)]
     pub favorite_artists: Vec<FavoriteArtist>,
+    #[serde(default)]
+    pub hotkeys: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub ui: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub wallpaper_mode: String,
+    #[serde(default)]
+    pub wallpaper_path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -251,6 +259,10 @@ impl Default for Settings {
             ytdlp_proxy: String::new(),
             last_view: "home".into(),
             favorite_artists: Vec::new(),
+            hotkeys: std::collections::BTreeMap::new(),
+            ui: std::collections::BTreeMap::new(),
+            wallpaper_mode: "none".into(),
+            wallpaper_path: String::new(),
         }
     }
 }
@@ -653,6 +665,15 @@ impl Store {
 
     pub fn apply_preset(&mut self, id: &str) {
         self.settings.preset_id = id.to_string();
+        if let Some(snap) = self.settings.ui.get(&format!("themeSnap.{id}")).cloned() {
+            let parts: Vec<&str> = snap.split(',').collect();
+            if parts.len() >= 3 {
+                self.settings.bg_main = non_empty(parts[0]);
+                self.settings.bg_sidebar = non_empty(parts[1]);
+                self.settings.accent = non_empty(parts[2]);
+                return;
+            }
+        }
         let (bg, side, accent) = match id {
             "graphite" => ("#121417", "#1a1d22", "#9aa4b2"),
             "midnight" => ("#0b1020", "#11182b", "#7aa2ff"),

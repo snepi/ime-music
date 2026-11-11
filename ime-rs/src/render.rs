@@ -72,6 +72,7 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
             accent = esc(accent)
         ));
     }
+    html.push_str(&appearance_style(store));
     if !store.settings.colors.is_empty() {
         let mut css = String::from("<style>:root{");
         for (key, value) in &store.settings.colors {
@@ -87,14 +88,13 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         html.push_str(&css);
     }
     html.push_str("</head><body");
-    html.push_str(&format!(
-        r#" data-volume="{}" data-current="{}">"#,
-        store.settings.volume,
-        esc(store.player.current_id.as_deref().unwrap_or(""))
-    ));
-    html.push_str(r#"<div id="root"><div class=""#);
+    html.push_str(&body_attrs(store));
+    html.push_str(r#"><div id="root"><div class=""#);
     html.push_str(&app_class);
     html.push_str(r#"">"#);
+    if store.settings.wallpaper_mode != "none" && !store.settings.wallpaper_path.is_empty() {
+        html.push_str(r#"<div class="app-wallpaper"><img class="app-wallpaper-photo" src="/wallpaper-image" alt=""></div>"#);
+    }
     html.push_str(&titlebar(i18n, screen));
     html.push_str(r#"<div class="app-body">"#);
     if show_sidebar {
@@ -122,10 +122,14 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 <input id="pick-folder" data-upload="1" type="file" webkitdirectory directory multiple hidden>
 <input id="pick-backup" type="file" accept="application/json,.json" hidden>
 <input id="pick-playlist" type="file" accept=".m3u,.m3u8,.csv,.txt,text/plain" hidden>
+<input id="pick-wallpaper" type="file" accept="image/*" hidden>
+<input id="pick-preset" type="file" accept="application/json,.json" hidden>
+<script type="application/json" id="hotkeys-seed">{}</script>
 <script type="application/json" id="wishlist-seed">{}</script>
 <script type="application/json" id="favorite-artists-seed">{}</script>
 <script type="application/json" id="library-seed">{}</script>
 <script src="/player.js"></script></body></html>"#,
+        hotkeys_seed(store),
         wishlist_seed(store),
         favorite_seed(store),
         library_seed(store),
@@ -136,13 +140,132 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 fn color_var(key: &str) -> Option<&'static str> {
     match key {
         "bgMain" => Some("--bg-main"),
+        "bgSidebar" => Some("--bg-sidebar"),
         "bgElevated" => Some("--bg-elevated"),
+        "bgPanel" => Some("--bg-panel"),
+        "bgHover" => Some("--bg-hover"),
+        "bgActive" => Some("--bg-active"),
         "textPrimary" => Some("--text-primary"),
         "textSecondary" => Some("--text-secondary"),
         "textMuted" => Some("--text-muted"),
         "accent" => Some("--accent"),
+        "accentHover" => Some("--accent-hover"),
+        "button" => Some("--button-accent"),
+        "progress" => Some("--progress"),
+        "like" => Some("--like"),
+        "danger" => Some("--danger"),
+        "success" => Some("--success"),
+        "warning" => Some("--warning"),
+        "border" => Some("--border"),
         _ => None,
     }
+}
+
+fn ui_str<'a>(store: &'a Store, key: &str, default: &'a str) -> &'a str {
+    store
+        .settings
+        .ui
+        .get(key)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+}
+
+fn ui_on(store: &Store, key: &str, default: bool) -> bool {
+    match store.settings.ui.get(key).map(String::as_str) {
+        Some("1") | Some("true") => true,
+        Some("0") | Some("false") => false,
+        _ => default,
+    }
+}
+
+fn flag(on: bool) -> &'static str {
+    if on { "1" } else { "0" }
+}
+
+fn body_attrs(store: &Store) -> String {
+    let wallpaper = store.settings.wallpaper_mode != "none" && !store.settings.wallpaper_path.is_empty();
+    format!(
+        r#" data-volume="{volume}" data-current="{current}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}""#,
+        volume = store.settings.volume,
+        current = esc(store.player.current_id.as_deref().unwrap_or("")),
+        density = esc(ui_str(store, "layout.density", "standard")),
+        side = esc(ui_str(store, "layout.sidebarPosition", "left")),
+        motion = flag(ui_on(store, "animations.reducedMotion", false)),
+        wallpaper = if wallpaper { "on" } else { "off" },
+        confirm_delete = flag(store.settings.behavior.confirm_delete),
+        confirm_queue = flag(store.settings.behavior.confirm_clear_queue),
+        space = flag(store.settings.behavior.space_toggles_playback),
+        focus = flag(store.settings.behavior.focus_search_on_open),
+        resume = flag(store.settings.behavior.auto_resume_on_launch),
+        dbl = esc(ui_str(store, "library.doubleClick", "playNow")),
+        art = flag(ui_on(store, "player.showArtwork", true)),
+        title = flag(ui_on(store, "player.showTitle", true)),
+        artist = flag(ui_on(store, "player.showArtist", true)),
+        prev = flag(ui_on(store, "player.showPrevNext", true)),
+        next = flag(ui_on(store, "player.showPrevNext", true)),
+        play = flag(ui_on(store, "player.showPlayPause", true)),
+        vol = flag(ui_on(store, "player.showVolume", true)),
+        progress = flag(ui_on(store, "player.showProgress", true)),
+        time = flag(ui_on(store, "player.showTime", true)),
+        queue = flag(ui_on(store, "player.showQueueButton", true)),
+        like = flag(ui_on(store, "player.showLike", true)),
+        list_art = flag(ui_on(store, "layout.showArtworkInList", true) && ui_on(store, "covers.show", true)),
+        list_index = flag(ui_on(store, "layout.showTrackNumbers", true)),
+        anim = flag(ui_on(store, "animations.enabled", true)),
+        crossfade = store.settings.playback.crossfade_seconds,
+        eq = flag(store.settings.playback.eq_enabled),
+        normalize = flag(store.settings.playback.normalize_volume),
+        bass = store.settings.playback.eq_bass,
+        mid = store.settings.playback.eq_mid,
+        treble = store.settings.playback.eq_treble,
+    )
+}
+
+fn appearance_style(store: &Store) -> String {
+    format!(
+        r#"<style>:root{{--ui-zoom:{scale}%;--sidebar-width:{side}px;--player-height:{player}px;--radius:{radius}px;}}</style>"#,
+        scale = esc(ui_str(store, "layout.uiScale", "100")),
+        side = esc(ui_str(store, "layout.sidebarWidth", "260")),
+        player = esc(ui_str(store, "layout.playerHeight", "96")),
+        radius = esc(ui_str(store, "layout.borderRadius", "10")),
+    )
+}
+
+fn hotkey_defaults() -> &'static [(&'static str, &'static str, &'static str)] {
+    &[
+        ("playPause", "Space", "settings.hotkeys.playPause"),
+        ("next", "MediaTrackNext", "settings.hotkeys.next"),
+        ("previous", "MediaTrackPrevious", "settings.hotkeys.previous"),
+        ("volumeUp", "ArrowUp", "settings.hotkeys.volumeUp"),
+        ("volumeDown", "ArrowDown", "settings.hotkeys.volumeDown"),
+        ("mute", "KeyM", "settings.hotkeys.mute"),
+        ("like", "KeyL", "settings.hotkeys.like"),
+        ("addToQueue", "", "settings.hotkeys.addToQueue"),
+        ("search", "KeyF", "settings.hotkeys.search"),
+        ("settings", "Comma", "settings.hotkeys.settings"),
+        ("queue", "KeyQ", "settings.hotkeys.queue"),
+        ("toggleTheme", "KeyT", "settings.hotkeys.toggleTheme"),
+        ("editMetadata", "KeyI", "settings.hotkeys.editMetadata"),
+    ]
+}
+
+fn hotkey_value(store: &Store, action: &str, default: &str) -> String {
+    store.settings.hotkeys.get(action).cloned().unwrap_or_else(|| default.to_string())
+}
+
+fn hotkeys_seed(store: &Store) -> String {
+    let parts: Vec<String> = hotkey_defaults()
+        .iter()
+        .map(|(action, default, _)| {
+            format!(
+                r#""{}":"{}""#,
+                action,
+                json_escape(&hotkey_value(store, action, default))
+            )
+        })
+        .collect();
+    format!("{{{}}}", parts.join(","))
 }
 
 fn library_seed(store: &Store) -> String {
@@ -1017,7 +1140,7 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         String::new()
     };
     format!(
-        r#"<div class="player-bar-wrap player-variant-standard"><div class="player-bar"><div class="player-track-info">{track}</div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">00:00</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div><div class="progress-thumb" style="left:0%"></div></div><span class="player-time">00:00</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" aria-label="{lyrics}" title="{lyrics}" disabled>{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
+        r#"<div class="player-bar-wrap player-variant-{variant}"><div class="player-bar"><div class="player-track-info">{track}</div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">00:00</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div><div class="progress-thumb" style="left:0%"></div></div><span class="player-time">00:00</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" aria-label="{lyrics}" title="{lyrics}" disabled>{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
         shuffle = if store.settings.playback.shuffle { " active" } else { "" },
         shuffle_l = esc(&i18n.t("player.shuffle")),
         shuffle_i = icon("shuffle", 16),
@@ -1045,6 +1168,10 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         mini_i = icon("pictureInPicture", 18),
         track = track,
         queue_badge = queue_badge,
+        variant = {
+            let value = ui_str(store, "player.variant", "standard");
+            if matches!(value, "compact" | "standard" | "expanded") { value } else { "standard" }
+        },
     )
 }
 
@@ -1123,9 +1250,9 @@ fn settings_modal(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         body.push_str(&playback_panel(store, i18n, screen));
         body.push_str("</div>");
     } else if screen.settings == "hotkeys" {
-        body.push_str(r#"<div class="settings-panel-scroll"><div class="settings-panel"><div class="settings-section"><p class="field-hint">"#);
-        body.push_str(&esc(&i18n.t("settings.hotkeys")));
-        body.push_str("</p></div></div></div>");
+        body.push_str(r#"<div class="settings-panel-scroll">"#);
+        body.push_str(&hotkeys_panel(store, i18n, screen));
+        body.push_str("</div>");
     } else {
         body.push_str(r#"<div class="settings-panel-scroll">"#);
         body.push_str(&tools_panel(store, i18n, screen));
@@ -1146,10 +1273,20 @@ fn settings_modal(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 
 fn appearance_panel(store: &Store, i18n: &I18n, screen: &Screen, section: &str) -> String {
     match section {
-        "theme-editor" => theme_editor(i18n, screen),
-        "wallpaper" => wallpaper_panel(i18n, screen),
-        "presets" => presets_panel(i18n, screen),
+        "theme-editor" => theme_editor(store, i18n, screen),
+        "wallpaper" => wallpaper_panel(store, i18n, screen),
+        "presets" => presets_panel(store, i18n, screen),
         "general" => general_panel(store, i18n, screen),
+        "colors" => colors_panel(store, i18n, screen),
+        "layout" => layout_panel(store, i18n, screen),
+        "player" => player_settings_panel(store, i18n, screen),
+        "library" => library_settings_panel(store, i18n, screen),
+        "navigation" => behavior_panel(store, i18n, screen),
+        "covers" => covers_panel(store, i18n, screen),
+        "animations" => animations_panel(store, i18n, screen),
+        "dynamic" => dynamic_panel(store, i18n, screen),
+        "components" => components_panel(store, i18n, screen),
+        "extras" => extras_panel(i18n, screen),
         _ => format!(
             r#"<div class="settings-panel">{}<div class="settings-section"><p class="field-hint">{}</p></div></div>"#,
             reset_row(i18n, screen, "reset-section", &i18n.t("settings.resetSection")),
@@ -1258,7 +1395,7 @@ fn toggle_row(screen: &Screen, field: &str, id: &str, checked: bool, label: &str
     )
 }
 
-fn theme_editor(i18n: &I18n, screen: &Screen) -> String {
+fn theme_editor(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let colors = [
         ("bgMain", "#111315", "theme.color.bgMain.label", "theme.color.bgMain.desc"),
         ("bgElevated", "#252a31", "theme.color.bgElevated.label", "theme.color.bgElevated.desc"),
@@ -1278,7 +1415,7 @@ fn theme_editor(i18n: &I18n, screen: &Screen) -> String {
         ));
     }
     format!(
-        r#"<div class="theme-editor"><div class="theme-editor-toolbar">{select}<div class="settings-actions-row">{actions}</div><p class="field-hint">{hint}</p></div><div class="theme-editor-controls">{live}{dirty}<input class="field-input" placeholder="{search_ph}"><button type="button" class="btn btn-ghost">{expand}</button><button type="button" class="btn btn-ghost">{collapse}</button>{palette}</div><div class="theme-editor-grid"><div class="theme-editor-groups"><section class="theme-group"><header class="theme-group-header"><button type="button" class="theme-group-toggle"><strong>{}</strong><span>{}</span></button><div class="theme-group-actions"><button type="button" class="btn btn-ghost" data-color-reset-all="1">{}</button><button type="button" class="btn btn-ghost">{}</button></div></header>{rows}</section></div><aside class="theme-editor-preview-pane"><div class="settings-actions-row">{win}{page}</div>{preview}<div class="settings-actions-row"><button type="button" class="btn btn-primary">{}</button><button type="button" class="btn btn-secondary">{}</button><button type="button" class="btn btn-ghost">{}</button></div></aside></div></div>"#,
+        r#"<div class="theme-editor"><div class="theme-editor-toolbar">{select}<div class="settings-actions-row">{actions}</div><p class="field-hint">{hint}</p></div><div class="theme-editor-controls">{live}{dirty}<input class="field-input" data-theme-search placeholder="{search_ph}"><button type="button" class="btn btn-ghost" data-theme-act="expand">{expand}</button><button type="button" class="btn btn-ghost" data-theme-act="collapse">{collapse}</button>{palette}</div><div class="theme-editor-grid"><div class="theme-editor-groups"><section class="theme-group"><header class="theme-group-header"><button type="button" class="theme-group-toggle"><strong>{}</strong><span>{}</span></button><div class="theme-group-actions"><button type="button" class="btn btn-ghost" data-color-reset-all="1">{}</button><button type="button" class="btn btn-ghost">{}</button></div></header>{rows}</section></div><aside class="theme-editor-preview-pane"><div class="settings-actions-row">{win}{page}</div>{preview}<div class="settings-actions-row"><button type="button" class="btn btn-primary" data-theme-act="apply">{}</button><button type="button" class="btn btn-secondary" data-theme-act="save">{}</button><button type="button" class="btn btn-ghost" data-theme-act="cancel">{}</button></div></aside></div></div>"#,
         esc(&i18n.t("theme.group.common.title")),
         esc(&i18n.t("theme.group.common.desc")),
         esc(&i18n.t("settings.theme.resetGroup")),
@@ -1289,17 +1426,8 @@ fn theme_editor(i18n: &I18n, screen: &Screen) -> String {
         select = select_field(
             "theme-select",
             &i18n.t("settings.theme.selectLabel"),
-            "default",
-            sv(&[
-                ("default", "Default ✓"),
-                ("graphite", "Graphite"),
-                ("midnight", "Midnight"),
-                ("ocean", "Ocean"),
-                ("forest", "Forest"),
-                ("rose", "Rose"),
-                ("amber", "Amber"),
-                ("violet", "Violet"),
-            ]),
+            &store.settings.preset_id,
+            theme_options(store),
             "preset",
             screen
         ),
@@ -1308,7 +1436,7 @@ fn theme_editor(i18n: &I18n, screen: &Screen) -> String {
         page = select_field("pv-page", &i18n.t("settings.preview.page"), "library", sv(&[("library", &i18n.t("settings.preview.library")), ("playlist", &i18n.t("settings.preview.playlist")), ("metadata", &i18n.t("settings.preview.metadata"))]), "preview_page", screen),
         preview = theme_preview(i18n),
         actions = format!(
-            r#"<button type="button" class="btn btn-secondary">{}</button><button type="button" class="btn btn-secondary">{}</button><button type="button" class="btn btn-ghost">{}</button><button type="button" class="btn btn-danger">{}</button><button type="button" class="btn btn-ghost">{}</button><button type="button" class="btn btn-ghost">{}</button><button type="button" class="btn btn-secondary">{}</button>"#,
+            r#"<button type="button" class="btn btn-secondary" data-theme-act="add">{}</button><button type="button" class="btn btn-secondary" data-theme-act="duplicate">{}</button><button type="button" class="btn btn-ghost" data-theme-act="rename">{}</button><button type="button" class="btn btn-danger" data-theme-act="delete">{}</button><button type="button" class="btn btn-ghost" data-theme-act="export">{}</button><button type="button" class="btn btn-ghost" data-theme-act="import">{}</button><button type="button" class="btn btn-secondary" data-theme-act="reset">{}</button>"#,
             esc(&i18n.t("settings.theme.add")),
             esc(&i18n.t("settings.theme.duplicate")),
             esc(&i18n.t("settings.theme.rename")),
@@ -1359,13 +1487,21 @@ fn theme_preview(i18n: &I18n) -> String {
     )
 }
 
-fn wallpaper_panel(i18n: &I18n, screen: &Screen) -> String {
+fn wallpaper_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mode = if store.settings.wallpaper_mode.is_empty() { "none" } else { store.settings.wallpaper_mode.as_str() };
+    let none_class = if mode == "none" { "wp-segment-btn active" } else { "wp-segment-btn" };
+    let blur_class = if mode == "fitBlur" { "wp-segment-btn active" } else { "wp-segment-btn" };
+    let stage = if store.settings.wallpaper_path.is_empty() { "wp-stage is-off" } else { "wp-stage" };
+    let canvas = if store.settings.wallpaper_path.is_empty() {
+        format!(r#"<div class="wp-stage-empty">{}</div>"#, esc(&i18n.t("settings.wallpaper.noImage")))
+    } else {
+        r#"<img class="app-wallpaper-photo" src="/wallpaper-image" alt="">"#.to_string()
+    };
     format!(
-        r#"<div class="settings-panel wallpaper-mei">{reset}<div class="wp-mode-row"><span class="field-label">{}</span><div class="wp-segment"><button type="button" class="wp-segment-btn active">{}</button><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="wallpaper"><input type="hidden" name="value" value="fitBlur"><input type="hidden" name="back" value="{back}"><button type="submit" class="wp-segment-btn">{}</button></form></div></div><div class="wp-stage is-off"><div class="wp-stage-canvas"><div class="wp-stage-empty">{}</div></div><div class="wp-stage-footer"><div class="wp-stage-meta"><strong>{}</strong><span>{}: {}</span></div><div class="wp-stage-actions"><button type="button" class="btn btn-primary" data-pick="pick-wallpaper">{}</button><button type="button" class="btn btn-danger" aria-label="{}" title="{}">⌫</button></div></div></div></div>"#,
+        r#"<div class="settings-panel wallpaper-mei">{reset}<div class="wp-mode-row"><span class="field-label">{}</span><div class="wp-segment"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="wallpaper"><input type="hidden" name="value" value="none"><input type="hidden" name="back" value="{back}"><button type="submit" class="{none_class}">{}</button></form><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="wallpaper"><input type="hidden" name="value" value="fitBlur"><input type="hidden" name="back" value="{back}"><button type="submit" class="{blur_class}">{}</button></form></div></div><div class="{stage}"><div class="wp-stage-canvas">{canvas}</div><div class="wp-stage-footer"><div class="wp-stage-meta"><strong>{}</strong><span>{}: {}</span></div><div class="wp-stage-actions"><button type="button" class="btn btn-primary" data-pick="pick-wallpaper">{}</button><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="reset-wallpaper"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-danger" aria-label="{}" title="{}">⌫</button></form></div></div></div></div>"#,
         esc(&i18n.t("settings.wallpaper.mode")),
         esc(&i18n.t("settings.wallpaper.none")),
         esc(&i18n.t("settings.wallpaper.fitBlur")),
-        esc(&i18n.t("settings.wallpaper.noImage")),
         esc(&i18n.t("settings.wallpaper.noneSelected")),
         esc(&i18n.t("settings.wallpaper.mode")),
         esc(&i18n.t("settings.wallpaper.none")),
@@ -1374,10 +1510,14 @@ fn wallpaper_panel(i18n: &I18n, screen: &Screen) -> String {
         esc(&i18n.t("settings.wallpaper.deleteReset")),
         reset = reset_row(i18n, screen, "reset-wallpaper", &i18n.t("settings.wallpaper.resetWallpaper")),
         back = esc(&screen.path()),
+        none_class = none_class,
+        blur_class = blur_class,
+        stage = stage,
+        canvas = canvas,
     )
 }
 
-fn presets_panel(i18n: &I18n, screen: &Screen) -> String {
+fn presets_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let presets = [
         ("default", "Default", "#111315", "#6ea8fe"),
         ("graphite", "Graphite", "#121417", "#9aa4b2"),
@@ -1391,21 +1531,284 @@ fn presets_panel(i18n: &I18n, screen: &Screen) -> String {
     ];
     let mut grid = String::new();
     for (id, name, bg, accent) in presets {
-        grid.push_str(&format!(
-            r#"<div class="preset-card"><div class="preset-swatches" style="background:linear-gradient(135deg,{bg},{accent})"></div><strong>{name}</strong><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="preset"><input type="hidden" name="value" value="{id}"><input type="hidden" name="back" value="{}"><button type="submit" class="btn btn-secondary">{}</button></form></div>"#,
-            esc(&screen.path()),
-            esc(&i18n.t("settings.presets.apply"))
-        ));
+        grid.push_str(&preset_card(id, name, bg, accent, screen, i18n, false));
+    }
+    for (id, name) in theme_options(store).into_iter().skip(9) {
+        let snap = store.settings.ui.get(&format!("themeSnap.{id}")).map(String::as_str).unwrap_or("#111315,#181b1f,#6ea8fe");
+        let mut parts = snap.split(',');
+        let bg = parts.next().unwrap_or("#111315");
+        let accent = parts.nth(1).unwrap_or("#6ea8fe");
+        grid.push_str(&preset_card(&id, &name, bg, accent, screen, i18n, true));
     }
     format!(
-        r#"<div class="settings-panel">{reset}<div class="settings-section settings-actions-row"><button type="button" class="btn btn-secondary">{}</button></div><div class="field-label">{}</div><div class="preset-grid">{grid}</div><div class="settings-section"><div class="field-label">{}</div><div class="field-row"><input class="field-input" placeholder="{}"><button type="button" class="btn btn-primary">{}</button></div></div></div>"#,
-        esc(&i18n.t("settings.presets.importJson")),
+        r#"<div class="settings-panel">{reset}<div class="settings-section settings-actions-row"><button type="button" class="btn btn-secondary" data-theme-act="import">{import}</button></div><div class="field-label">{}</div><div class="preset-grid">{grid}</div><div class="settings-section"><div class="field-label">{}</div><form method="post" action="/act" class="field-row"><input type="hidden" name="action" value="save-preset"><input type="hidden" name="back" value="{back}"><input class="field-input" name="name" placeholder="{}"><button type="submit" class="btn btn-primary">{}</button></form></div></div>"#,
         esc(&i18n.t("settings.presets.builtin")),
         esc(&i18n.t("settings.presets.saveCurrent")),
         esc(&i18n.t("settings.presets.namePlaceholder")),
         esc(&i18n.t("common.save")),
         reset = reset_row(i18n, screen, "reset-preset", &i18n.t("settings.presets.resetDefault")),
+        import = esc(&i18n.t("settings.presets.importJson")),
+        back = esc(&screen.path()),
         grid = grid,
+    )
+}
+
+fn theme_options(store: &Store) -> Vec<(String, String)> {
+    let mut options = vec![
+        ("default".into(), "Default".into()),
+        ("graphite".into(), "Graphite".into()),
+        ("midnight".into(), "Midnight".into()),
+        ("ocean".into(), "Ocean".into()),
+        ("forest".into(), "Forest".into()),
+        ("rose".into(), "Rose".into()),
+        ("amber".into(), "Amber".into()),
+        ("violet".into(), "Violet".into()),
+        ("high-contrast".into(), "High Contrast".into()),
+    ];
+    if let Some(raw) = store.settings.ui.get("themeList") {
+        for line in raw.lines() {
+            if let Some((id, name)) = line.split_once('|') {
+                if !id.is_empty() && !options.iter().any(|(item, _)| item == id) {
+                    options.push((id.to_string(), name.to_string()));
+                }
+            }
+        }
+    }
+    options
+}
+
+fn preset_card(id: &str, name: &str, bg: &str, accent: &str, screen: &Screen, i18n: &I18n, custom: bool) -> String {
+    let remove = if custom {
+        format!(
+            r#"<form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="delete-preset"><input type="hidden" name="value" value="{id}"><input type="hidden" name="back" value="{}"><button type="submit" class="btn btn-ghost">{}</button></form>"#,
+            esc(&screen.path()),
+            esc(&i18n.t("settings.theme.delete"))
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<div class="preset-card"><div class="preset-swatches" style="background:linear-gradient(135deg,{bg},{accent})"></div><strong>{name}</strong><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="preset"><input type="hidden" name="value" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-secondary">{}</button></form>{remove}</div>"#,
+        esc(&i18n.t("settings.presets.apply")),
+        back = esc(&screen.path()),
+    )
+}
+
+fn slider_field(label: &str, field: &str, value: &str, min: &str, max: &str, step: &str, unit: &str) -> String {
+    format!(
+        r#"<div class="settings-section"><label class="eq-slider"><span class="field-label" data-range-label="{label}">{label}: {value}{unit}</span><input type="range" min="{min}" max="{max}" step="{step}" value="{value}" data-set-field="{field}" data-set-unit="{unit}"></label></div>"#,
+        label = esc(label),
+        value = esc(value),
+        unit = esc(unit),
+        field = esc(field),
+    )
+}
+
+fn color_field(store: &Store, key: &str, label: &str, fallback: &str) -> String {
+    let value = store.settings.colors.get(key).map(String::as_str).unwrap_or(fallback);
+    let value = if value.starts_with('#') && value.len() >= 7 { &value[..7] } else { fallback };
+    format!(
+        r#"<div class="settings-section theme-color-row" data-color-key="{key}"><div class="theme-color-meta"><div class="theme-color-title">{label}</div></div><div class="theme-color-controls"><span class="theme-color-preview" style="background:{value}"></span><input type="color" class="ui-color-swatch" value="{value}" aria-label="{label}"><input class="field-input theme-color-hex" value="{value}" spellcheck="false"><button type="button" class="btn btn-ghost" data-color-reset="{key}" data-color-default="{fallback}">↺</button></div></div>"#,
+        label = esc(label),
+    )
+}
+
+fn ui_reset(i18n: &I18n, screen: &Screen, prefix: &str) -> String {
+    format!(
+        r#"<div class="settings-section settings-actions-row settings-section-reset"><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="reset-ui"><input type="hidden" name="value" value="{prefix}"><input type="hidden" name="back" value="{}"><button type="submit" class="btn btn-secondary">{}</button></form></div>"#,
+        esc(&screen.path()),
+        esc(&i18n.t("settings.resetSection"))
+    )
+}
+
+fn colors_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let keys = [
+        ("accent", "settings.colors.accent", "#6ea8fe"),
+        ("accentHover", "settings.colors.accentHover", "#82b5ff"),
+        ("button", "settings.colors.button", "#6ea8fe"),
+        ("progress", "settings.colors.progress", "#6ea8fe"),
+        ("like", "settings.colors.like", "#ef6b73"),
+        ("danger", "settings.colors.danger", "#ef6b73"),
+        ("warning", "settings.colors.warning", "#e6a23c"),
+        ("success", "settings.colors.success", "#5ec992"),
+        ("bgMain", "settings.colors.bgMain", "#111315"),
+        ("bgSidebar", "settings.colors.bgSidebar", "#181b1f"),
+        ("bgElevated", "settings.colors.bgElevated", "#252a31"),
+        ("textPrimary", "settings.colors.textPrimary", "#f2f4f7"),
+        ("textSecondary", "settings.colors.textSecondary", "#9da5af"),
+        ("textMuted", "settings.colors.textMuted", "#6f7883"),
+    ];
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&reset_row(i18n, screen, "reset-section", &i18n.t("settings.resetSection")));
+    for (key, label, fallback) in keys {
+        html.push_str(&color_field(store, key, &i18n.t(label), fallback));
+    }
+    html.push_str("</div>");
+    html
+}
+
+fn layout_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&ui_reset(i18n, screen, "layout."));
+    html.push_str(&slider_field(&i18n.t("settings.layout.uiScale"), "ui.layout.uiScale", ui_str(store, "layout.uiScale", "100"), "80", "140", "5", "%"));
+    html.push_str(&slider_field(&i18n.t("settings.layout.fontSize"), "ui.layout.fontSize", ui_str(store, "layout.fontSize", "14"), "11", "20", "1", "px"));
+    html.push_str(&select_field("density", &i18n.t("settings.layout.density"), ui_str(store, "layout.density", "standard"), sv(&[("compact", &i18n.t("settings.layout.density.compact")), ("standard", &i18n.t("settings.layout.density.standard")), ("spacious", &i18n.t("settings.layout.density.spacious"))]), "ui.layout.density", screen));
+    html.push_str(&slider_field(&i18n.t("settings.layout.borderRadius"), "ui.layout.borderRadius", ui_str(store, "layout.borderRadius", "10"), "0", "20", "1", "px"));
+    html.push_str(&slider_field(&i18n.t("settings.layout.borderWidth"), "ui.layout.borderWidth", ui_str(store, "layout.borderWidth", "1"), "0", "3", "0.5", "px"));
+    html.push_str(&slider_field(&i18n.t("settings.layout.iconSize"), "ui.layout.iconSize", ui_str(store, "layout.iconSize", "18"), "14", "24", "1", "px"));
+    html.push_str(&slider_field(&i18n.t("settings.layout.sidebarWidth"), "ui.layout.sidebarWidth", ui_str(store, "layout.sidebarWidth", "260"), "180", "360", "10", "px"));
+    html.push_str(&slider_field(&i18n.t("settings.layout.playerHeight"), "ui.layout.playerHeight", ui_str(store, "layout.playerHeight", "96"), "72", "140", "4", "px"));
+    html.push_str(&select_field("sidebar-pos", &i18n.t("settings.layout.sidebarPosition"), ui_str(store, "layout.sidebarPosition", "left"), sv(&[("left", &i18n.t("settings.layout.sidebarPosition.left")), ("right", &i18n.t("settings.layout.sidebarPosition.right"))]), "ui.layout.sidebarPosition", screen));
+    html.push_str(&toggle_row(screen, "ui.layout.showTrackNumbers", "show-numbers", ui_on(store, "layout.showTrackNumbers", true), &i18n.t("settings.layout.showTrackNumbers")));
+    html.push_str(&toggle_row(screen, "ui.layout.showArtworkInList", "show-list-art", ui_on(store, "layout.showArtworkInList", true), &i18n.t("settings.layout.showArtworkInList")));
+    html.push_str(&toggle_row(screen, "ui.layout.showHoverActions", "show-hover", ui_on(store, "layout.showHoverActions", true), &i18n.t("settings.layout.showHoverActions")));
+    html.push_str("</div>");
+    html
+}
+
+fn player_settings_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&ui_reset(i18n, screen, "player."));
+    html.push_str(&select_field("player-variant", &i18n.t("settings.player.variant"), ui_str(store, "player.variant", "standard"), sv(&[("compact", &i18n.t("settings.player.variant.compact")), ("standard", &i18n.t("settings.player.variant.standard")), ("expanded", &i18n.t("settings.player.variant.expanded"))]), "ui.player.variant", screen));
+    html.push_str(&slider_field(&i18n.t("settings.player.coverSize"), "ui.player.coverSize", ui_str(store, "player.coverSize", "56"), "40", "96", "4", "px"));
+    for (field, key, default) in [
+        ("ui.player.showArtwork", "settings.player.showArtwork", true),
+        ("ui.player.showTitle", "settings.player.showTitle", true),
+        ("ui.player.showArtist", "settings.player.showArtist", true),
+        ("ui.player.showPrevNext", "settings.player.showPrevNext", true),
+        ("ui.player.showPlayPause", "settings.player.showPlayPause", true),
+        ("ui.player.showVolume", "settings.player.showVolume", true),
+        ("ui.player.showProgress", "settings.player.showProgress", true),
+        ("ui.player.showTime", "settings.player.showTime", true),
+        ("ui.player.showRemainingTime", "settings.player.showRemainingTime", false),
+        ("ui.player.showSeconds", "settings.player.showSeconds", true),
+        ("ui.player.showQueueButton", "settings.player.showQueueButton", true),
+        ("ui.player.showLike", "settings.player.showLike", true),
+    ] {
+        let stored = field.trim_start_matches("ui.");
+        html.push_str(&toggle_row(screen, field, field, ui_on(store, stored, default), &i18n.t(key)));
+    }
+    html.push_str("</div>");
+    html
+}
+
+fn library_settings_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&ui_reset(i18n, screen, "library."));
+    html.push_str(&slider_field(&i18n.t("settings.library.coverSize"), "ui.library.coverSize", ui_str(store, "library.coverSize", "40"), "28", "72", "4", "px"));
+    html.push_str(&toggle_row(screen, "ui.library.showSecondaryText", "lib-secondary", ui_on(store, "library.showSecondaryText", true), &i18n.t("settings.library.showSecondaryText")));
+    html.push_str(&select_field("double-click", &i18n.t("settings.library.doubleClick"), ui_str(store, "library.doubleClick", "playNow"), sv(&[("playNow", &i18n.t("settings.library.doubleClick.playNow")), ("togglePlay", &i18n.t("settings.library.doubleClick.togglePlay")), ("editMetadata", &i18n.t("settings.library.doubleClick.editMetadata"))]), "ui.library.doubleClick", screen));
+    html.push_str(&format!(r#"<div class="settings-section"><div class="field-label">{}</div><p class="field-hint">{}</p>"#, esc(&i18n.t("settings.library.columnsTitle")), esc(&i18n.t("settings.library.columnsHint"))));
+    for (id, key) in [
+        ("index", "settings.library.column.index"),
+        ("cover", "settings.library.column.cover"),
+        ("title", "settings.library.column.title"),
+        ("artist", "settings.library.column.artist"),
+        ("album", "settings.library.column.album"),
+        ("duration", "settings.library.column.duration"),
+    ] {
+        let field = format!("ui.library.column.{id}");
+        let stored = format!("library.column.{id}");
+        let default = id == "title" || id == "artist" || id == "album" || id == "duration" || id == "cover" || id == "index";
+        html.push_str(&toggle_row(screen, &field, &field, ui_on(store, &stored, default), &i18n.t(key)));
+    }
+    html.push_str("</div></div>");
+    html
+}
+
+fn covers_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&ui_reset(i18n, screen, "covers."));
+    html.push_str(&toggle_row(screen, "ui.covers.show", "covers-show", ui_on(store, "covers.show", true), &i18n.t("settings.covers.show")));
+    html.push_str(&select_field("cover-fit", &i18n.t("settings.covers.objectFit"), ui_str(store, "covers.objectFit", "cover"), sv(&[("cover", &i18n.t("settings.covers.objectFit.cover")), ("contain", &i18n.t("settings.covers.objectFit.contain")), ("fill", &i18n.t("settings.covers.objectFit.fill"))]), "ui.covers.objectFit", screen));
+    html.push_str(&slider_field(&i18n.t("settings.covers.radius"), "ui.covers.radius", ui_str(store, "covers.radius", "8"), "0", "24", "1", "px"));
+    html.push_str(&toggle_row(screen, "ui.covers.blurBackground", "covers-blur", ui_on(store, "covers.blurBackground", false), &i18n.t("settings.covers.blurBackground")));
+    html.push_str(&slider_field(&i18n.t("settings.covers.blurAmount"), "ui.covers.blurAmount", ui_str(store, "covers.blurAmount", "24"), "0", "48", "1", "px"));
+    html.push_str("</div>");
+    html
+}
+
+fn animations_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&ui_reset(i18n, screen, "animations."));
+    html.push_str(&toggle_row(screen, "ui.animations.enabled", "anim-on", ui_on(store, "animations.enabled", true), &i18n.t("settings.anim.enabled")));
+    html.push_str(&slider_field(&i18n.t("settings.anim.speed"), "ui.animations.speed", ui_str(store, "animations.speed", "100"), "50", "200", "10", "%"));
+    html.push_str(&toggle_row(screen, "ui.animations.reducedMotion", "anim-reduced", ui_on(store, "animations.reducedMotion", false), &i18n.t("settings.anim.reducedMotion")));
+    html.push_str(&toggle_row(screen, "ui.animations.modalTransitions", "anim-modal", ui_on(store, "animations.modalTransitions", true), &i18n.t("settings.anim.modalTransitions")));
+    html.push_str(&toggle_row(screen, "ui.animations.listAppear", "anim-list", ui_on(store, "animations.listAppear", false), &i18n.t("settings.anim.listAppear")));
+    html.push_str("</div>");
+    html
+}
+
+fn dynamic_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&ui_reset(i18n, screen, "dynamic."));
+    html.push_str(&toggle_row(screen, "ui.dynamic.enabled", "dyn-on", ui_on(store, "dynamic.enabled", false), &i18n.t("settings.dynamic.fromCover")));
+    html.push_str(&select_field("dyn-level", &i18n.t("settings.dynamic.level"), ui_str(store, "dynamic.level", "accent"), sv(&[("off", &i18n.t("settings.dynamic.level.off")), ("accent", &i18n.t("settings.dynamic.level.accent")), ("full", &i18n.t("settings.dynamic.level.full"))]), "ui.dynamic.level", screen));
+    html.push_str(&slider_field(&i18n.t("settings.dynamic.strength"), "ui.dynamic.strength", ui_str(store, "dynamic.strength", "60"), "0", "100", "5", "%"));
+    html.push_str(&toggle_row(screen, "ui.dynamic.autoUpdate", "dyn-auto", ui_on(store, "dynamic.autoUpdate", true), &i18n.t("settings.dynamic.autoUpdate")));
+    html.push_str(r#"<div class="settings-section"><button type="button" class="btn btn-secondary" data-theme-act="palette">"#);
+    html.push_str(&esc(&i18n.t("settings.dynamic.fromCurrentCover")));
+    html.push_str("</button></div></div>");
+    html
+}
+
+fn components_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut html = String::from(r#"<div class="settings-panel">"#);
+    html.push_str(&ui_reset(i18n, screen, "components."));
+    html.push_str(&format!(r#"<div class="field-label">{}</div>"#, esc(&i18n.t("settings.components.pages"))));
+    html.push_str(&slider_field(&i18n.t("settings.components.contentMaxWidth"), "ui.components.contentMaxWidth", ui_str(store, "components.contentMaxWidth", "1200"), "720", "1600", "20", "px"));
+    html.push_str(&slider_field(&i18n.t("settings.components.pagePadding"), "ui.components.pagePadding", ui_str(store, "components.pagePadding", "24"), "8", "48", "2", "px"));
+    html.push_str(&slider_field(&i18n.t("settings.components.titleSize"), "ui.components.titleSize", ui_str(store, "components.titleSize", "28"), "18", "48", "1", "px"));
+    html.push_str(&toggle_row(screen, "ui.components.showTrackCount", "comp-count", ui_on(store, "components.showTrackCount", true), &i18n.t("settings.components.showTrackCount")));
+    html.push_str(&toggle_row(screen, "ui.components.showSort", "comp-sort", ui_on(store, "components.showSort", true), &i18n.t("settings.components.showSort")));
+    html.push_str(&format!(r#"<div class="field-label">{}</div>"#, esc(&i18n.t("settings.components.sidebar"))));
+    html.push_str(&toggle_row(screen, "ui.components.showSectionLabels", "comp-labels", ui_on(store, "components.showSectionLabels", true), &i18n.t("settings.components.showSectionLabels")));
+    html.push_str("</div>");
+    html
+}
+
+fn extras_panel(i18n: &I18n, screen: &Screen) -> String {
+    format!(
+        r#"<div class="settings-panel"><div class="settings-section"><p class="field-hint">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="reset-all"><input type="hidden" name="back" value="{}"><button type="submit" class="btn btn-danger">{}</button></form></div></div>"#,
+        esc(&i18n.tf("settings.extras.resetHint", &[("theme", "dark"), ("count", "13")])),
+        esc(&screen.path()),
+        esc(&i18n.t("settings.extras.resetAll"))
+    )
+}
+
+fn hotkey_label(code: &str, i18n: &I18n) -> String {
+    if code.is_empty() {
+        return i18n.t("settings.hotkeys.unassigned");
+    }
+    code.trim_start_matches("Key").trim_start_matches("Digit").trim_start_matches("Arrow").to_string()
+}
+
+fn hotkeys_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for (action, default, _) in hotkey_defaults() {
+        let code = hotkey_value(store, action, default);
+        if !code.is_empty() {
+            *counts.entry(code).or_default() += 1;
+        }
+    }
+    let mut rows = String::new();
+    for (action, default, label) in hotkey_defaults() {
+        let code = hotkey_value(store, action, default);
+        let conflict = counts.get(&code).copied().unwrap_or(0) > 1;
+        rows.push_str(&format!(
+            r#"<li class="hotkey-row{conflict}"><span>{label}</span><div class="hotkey-actions"><button type="button" class="hotkey-bind" data-hotkey="{action}" data-hotkey-default="{default}">{shown}</button><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="hotkey.{action}"><input type="hidden" name="value" value="{default}"><input type="hidden" name="back" value="{back}"><button type="submit" class="btn btn-ghost">{def}</button></form></div>{warn}</li>"#,
+            conflict = if conflict { " conflict" } else { "" },
+            label = esc(&i18n.t(label)),
+            shown = esc(&hotkey_label(&code, i18n)),
+            def = esc(&i18n.t("settings.hotkeys.default")),
+            back = esc(&screen.path()),
+            warn = if conflict { format!(r#"<span class="hotkey-conflict">{}</span>"#, esc(&i18n.t("settings.hotkeys.conflict"))) } else { String::new() },
+        ));
+    }
+    format!(
+        r#"<div class="settings-panel">{reset}<ul class="hotkey-list">{rows}</ul></div>"#,
+        reset = reset_row(i18n, screen, "reset-hotkeys", &i18n.t("settings.hotkeys.resetAll")),
     )
 }
 
@@ -1453,17 +1856,40 @@ fn playback_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         i18n.t("playback.off")
     };
     format!(
-        r#"<div class="settings-panel" style="margin-top:16px"><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-toggles">{}{}<label class="eq-slider"><span class="field-label">{}: {}</span><input type="range" min="0" max="12" step="1" value="{}"></label>{}{}{}</div></div></div>"#,
-        esc(&i18n.t("playback.title")),
-        esc(&i18n.t("playback.hint")),
-        toggle_row(screen, "shuffle", "pb-shuffle", p.shuffle, &i18n.t("playback.shuffle")),
-        select_field("repeat-mode", &i18n.t("playback.repeat"), &p.repeat, sv(&[("off", &i18n.t("playback.repeatOff")), ("one", &i18n.t("playback.repeatOne")), ("all", &i18n.t("playback.repeatAll"))]), "repeat", screen),
-        esc(&i18n.t("playback.crossfade")),
-        esc(&cross),
-        p.crossfade_seconds,
-        toggle_row(screen, "gapless", "pb-gapless", p.gapless_enabled, &i18n.t("playback.gapless")),
-        toggle_row(screen, "eq", "pb-eq", p.eq_enabled, &i18n.t("playback.eq")),
-        toggle_row(screen, "tray", "pb-tray", p.close_to_tray, &i18n.t("playback.tray")),
+        r#"<div class="settings-panel" style="margin-top:16px"><div class="settings-section"><h3 style="margin-bottom:8px">{title}</h3><p class="field-hint" style="margin-bottom:12px">{hint}</p><div class="settings-toggles">{shuffle}{repeat}{normalize}<label class="eq-slider"><span class="field-label" data-range-label="{cross_label}">{cross_label}: {cross}</span><input type="range" min="0" max="12" step="1" value="{seconds}" data-set-field="crossfade" data-set-unit=" {sec}"></label>{gapless}{eq}{bands}{tray}</div></div></div>"#,
+        title = esc(&i18n.t("playback.title")),
+        hint = esc(&i18n.t("playback.hint")),
+        shuffle = toggle_row(screen, "shuffle", "pb-shuffle", p.shuffle, &i18n.t("playback.shuffle")),
+        repeat = select_field("repeat-mode", &i18n.t("playback.repeat"), &p.repeat, sv(&[("off", &i18n.t("playback.repeatOff")), ("one", &i18n.t("playback.repeatOne")), ("all", &i18n.t("playback.repeatAll"))]), "repeat", screen),
+        normalize = toggle_row(screen, "normalize", "pb-normalize", p.normalize_volume, &i18n.t("playback.normalize")),
+        cross_label = esc(&i18n.t("playback.crossfade")),
+        cross = esc(&cross),
+        seconds = p.crossfade_seconds,
+        sec = esc(&i18n.t("playback.sec")),
+        gapless = toggle_row(screen, "gapless", "pb-gapless", p.gapless_enabled, &i18n.t("playback.gapless")),
+        eq = toggle_row(screen, "eq", "pb-eq", p.eq_enabled, &i18n.t("playback.eq")),
+        bands = eq_controls(store, i18n, screen),
+        tray = toggle_row(screen, "tray", "pb-tray", p.close_to_tray, &i18n.t("playback.tray")),
+    )
+}
+
+fn eq_controls(store: &Store, i18n: &I18n, _screen: &Screen) -> String {
+    if !store.settings.playback.eq_enabled {
+        return String::new();
+    }
+    let p = &store.settings.playback;
+    format!(
+        r#"{}{}{}{}"#,
+        select_field("eq-preset", &i18n.t("playback.eqPreset"), &p.eq_preset, sv(&[("flat", "Flat"), ("bassBoost", "Bass"), ("vocal", "Vocal"), ("custom", &i18n.t("playback.eqCustom"))]), "eq_preset", _screen),
+        band_slider(&i18n.t("playback.eqBass"), "eq_bass", p.eq_bass),
+        band_slider(&i18n.t("playback.eqMid"), "eq_mid", p.eq_mid),
+        band_slider(&i18n.t("playback.eqTreble"), "eq_treble", p.eq_treble),
+    )
+}
+
+fn band_slider(label: &str, field: &str, value: i32) -> String {
+    format!(
+        r#"<label class="eq-slider"><span class="field-label" data-range-label="{label}">{label}: {value} dB</span><input type="range" min="-12" max="12" step="1" value="{value}" data-set-field="{field}" data-set-unit=" dB"></label>"#
     )
 }
 
