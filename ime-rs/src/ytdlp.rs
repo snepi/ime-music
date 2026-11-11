@@ -65,6 +65,94 @@ pub fn download_search(
     })
 }
 
+#[derive(Clone, Debug)]
+pub struct ListedHit {
+    pub id: String,
+    pub title: String,
+    pub duration: f64,
+    pub channel: String,
+}
+
+/// The same YouTube search the download uses, returned as a list the listener can play and pick from.
+pub fn list_search(title: &str, artist: &str, configured: &str, proxy: &str) -> Result<Vec<ListedHit>, String> {
+    let bin = resolve_bin(configured).ok_or_else(|| MISSING.to_string())?;
+    let mut hits = Vec::new();
+    let mut last_error = String::new();
+    for query in search_queries(title, artist) {
+        match search_hits(&bin, &query, proxy) {
+            Ok(found) => {
+                for hit in found {
+                    if hits.iter().any(|item: &ListedHit| item.id == hit.id) {
+                        continue;
+                    }
+                    hits.push(ListedHit {
+                        id: hit.id,
+                        title: hit.title,
+                        duration: hit.duration,
+                        channel: hit.channel,
+                    });
+                }
+                if hits.len() >= 8 {
+                    break;
+                }
+            }
+            Err(err) => last_error = err,
+        }
+    }
+    if hits.is_empty() {
+        return Err(if last_error.is_empty() {
+            "Не удалось найти видео на YouTube".into()
+        } else {
+            last_error
+        });
+    }
+    Ok(hits)
+}
+
+/// Download one chosen video with the same yt-dlp audio path as a wishlist download.
+pub fn download_id(video_id: &str, label: &str, configured: &str, proxy: &str, dest_dir: &Path) -> Result<PathBuf, String> {
+    let video_id = video_id.trim();
+    if video_id.len() < 6 || !video_id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        return Err("Некорректное видео".into());
+    }
+    let bin = resolve_bin(configured).ok_or_else(|| MISSING.to_string())?;
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    download_audio(&bin, &url, video_id, proxy, dest_dir, label, &mut |_, _| {})
+}
+
+/// A direct audio URL so a search hit can be heard before it replaces the file.
+pub fn preview_url(video_id: &str, configured: &str, proxy: &str) -> Result<String, String> {
+    let video_id = video_id.trim();
+    if video_id.is_empty() {
+        return Err("Некорректное видео".into());
+    }
+    let bin = resolve_bin(configured).ok_or_else(|| MISSING.to_string())?;
+    let mut args = vec![
+        "--no-playlist".into(),
+        "--ignore-config".into(),
+        "-g".into(),
+        "-f".into(),
+        "bestaudio[protocol!*=m3u8]/bestaudio/best".into(),
+        "--socket-timeout".into(),
+        "20".into(),
+        "--no-warnings".into(),
+    ];
+    if let Some(runtime) = js_runtime() {
+        args.push("--js-runtimes".into());
+        args.push(runtime);
+        args.push("--remote-components".into());
+        args.push("ejs:github".into());
+    }
+    push_proxy(&mut args, proxy);
+    args.push("--".into());
+    args.push(format!("https://www.youtube.com/watch?v={video_id}"));
+    let (stdout, stderr, ok) = run(&bin, &args, None, Duration::from_secs(45), &mut |_, _| {})?;
+    if let Some(url) = stdout.lines().map(str::trim).find(|line| line.starts_with("http")) {
+        return Ok(url.to_string());
+    }
+    Err(friendly_error(&stderr, &stdout, !ok))
+}
+
 fn resolve_bin(configured: &str) -> Option<String> {
     let mut candidates = Vec::new();
     let trimmed = configured.trim();

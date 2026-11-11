@@ -48,6 +48,11 @@ pub struct Song {
     pub file_size: u64,
     #[serde(default)]
     pub cover_path: String,
+    /// Seconds. A saved window skips a long intro and an unwanted outro.
+    #[serde(default)]
+    pub trim_start: f64,
+    #[serde(default)]
+    pub trim_end: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -470,6 +475,62 @@ impl Store {
         self.archive.iter().find(|item| same_label(&item.title, title) && same_label(&item.artist, artist))
     }
 
+    pub fn set_trim(&mut self, id: &str, start: f64, end: f64) -> bool {
+        let Some(song) = self.songs.iter_mut().find(|song| song.id == id) else {
+            return false;
+        };
+        let duration = if song.duration.is_finite() { song.duration.max(0.0) } else { 0.0 };
+        let mut start = if start.is_finite() { start.max(0.0) } else { 0.0 };
+        let mut end = if end.is_finite() { end.max(0.0) } else { 0.0 };
+        if duration > 0.0 {
+            start = start.min(duration);
+            if end <= 0.0 || end > duration {
+                end = duration;
+            }
+        }
+        if end > 0.0 && end < start {
+            std::mem::swap(&mut start, &mut end);
+        }
+        if end > 0.0 && end - start < 0.5 {
+            return false;
+        }
+        song.trim_start = start;
+        song.trim_end = if end > start { end } else { 0.0 };
+        true
+    }
+
+    /// Point the library row at a newly downloaded file and drop the old one when nothing else uses it.
+    pub fn replace_song_file(&mut self, id: &str, new_path: &Path) -> Result<(), String> {
+        if !new_path.is_file() {
+            return Err("Файл не сохранился".into());
+        }
+        let Some(pos) = self.songs.iter().position(|song| song.id == id) else {
+            return Err("Трек не найден".into());
+        };
+        let old = self.songs[pos].path.clone();
+        let new_path_str = new_path.to_string_lossy().into_owned();
+        let size = fs::metadata(new_path).map(|meta| meta.len()).unwrap_or(self.songs[pos].file_size);
+        let duration = wav_duration(new_path);
+        {
+            let song = &mut self.songs[pos];
+            song.path = new_path_str.clone();
+            song.file_size = size;
+            song.modified_at = now_ms();
+            song.trim_start = 0.0;
+            song.trim_end = 0.0;
+            if duration > 0.0 {
+                song.duration = duration;
+            }
+        }
+        if old != new_path_str {
+            let still_used = self.songs.iter().any(|song| song.path == old) || self.archive.iter().any(|item| item.path == old);
+            if !still_used {
+                let _ = fs::remove_file(&old);
+            }
+        }
+        Ok(())
+    }
+
     /// A created-mix track can play once its file is in the archive or the library.
     pub fn mix_file_id(&self, title: &str, artist: &str) -> String {
         if let Some(item) = self.archive_match(title, artist) {
@@ -603,6 +664,8 @@ impl Store {
             last_played_at: None,
             file_size,
             cover_path: String::new(),
+            trim_start: 0.0,
+            trim_end: 0.0,
         });
         true
     }
@@ -1740,6 +1803,8 @@ mod tests {
             last_played_at: None,
             file_size: 0,
             cover_path: String::new(),
+            trim_start: 0.0,
+            trim_end: 0.0,
         }
     }
 

@@ -73,6 +73,9 @@ struct ActForm {
     url: Option<String>,
     cover: Option<String>,
     album: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    video: Option<String>,
 }
 
 fn main() {
@@ -115,6 +118,9 @@ fn main() {
         .route("/import-search", post(import_search))
         .route("/api/archive/fetch", post(archive_fetch))
         .route("/api/archive/match", get(archive_match))
+        .route("/api/track/search", get(track_search))
+        .route("/api/track/preview", get(track_preview))
+        .route("/api/track/replace", post(track_replace))
         .route("/import-status", get(import_status))
         .route("/audio/:id", get(audio))
         .route("/cover/:id", get(cover_file))
@@ -367,6 +373,17 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 form.url.as_deref().unwrap_or(""),
                 form.cover.as_deref().unwrap_or(""),
             );
+        }
+        "trim" => {
+            if let Some(id) = form.id.as_deref() {
+                let start = form.start.as_deref().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let end = form.end.as_deref().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                if store.set_trim(id, start, end) {
+                    message = "Отрезок сохранён".into();
+                } else {
+                    message = "Не удалось сохранить отрезок".into();
+                }
+            }
         }
         "create-mixes" => match store.create_external_mixes() {
             Ok(()) => message = "Миксы собраны".into(),
@@ -1075,6 +1092,110 @@ async fn cover_file(State(state): State<Arc<AppState>>, Path(id): Path<String>) 
         "image/jpeg"
     };
     ([(header::CONTENT_TYPE, kind)], bytes).into_response()
+}
+
+#[derive(Deserialize)]
+struct TrackQuery {
+    id: Option<String>,
+    video: Option<String>,
+}
+
+async fn track_search(State(state): State<Arc<AppState>>, Query(query): Query<TrackQuery>) -> Response {
+    let id = query.id.unwrap_or_default();
+    let (title, artist, configured, proxy) = {
+        let store = state.store.lock().expect("store");
+        let Some(song) = store.song(&id) else {
+            return json_msg(false, "Трек не найден");
+        };
+        (
+            song.title.clone(),
+            song.artist.clone(),
+            store.settings.ytdlp_path.clone(),
+            store.settings.ytdlp_proxy.clone(),
+        )
+    };
+    let found = tokio::task::spawn_blocking(move || ytdlp::list_search(&title, &artist, &configured, &proxy)).await;
+    let hits = match found {
+        Ok(Ok(hits)) => hits,
+        Ok(Err(err)) => return json_msg(false, &err),
+        Err(_) => return json_msg(false, "Поиск прервался"),
+    };
+    let tracks: Vec<_> = hits
+        .into_iter()
+        .map(|hit| {
+            serde_json::json!({
+                "id": hit.id,
+                "title": hit.title,
+                "artist": hit.channel,
+                "duration": hit.duration,
+            })
+        })
+        .collect();
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({ "ok": true, "tracks": tracks }).to_string(),
+    )
+        .into_response()
+}
+
+async fn track_preview(State(state): State<Arc<AppState>>, Query(query): Query<TrackQuery>) -> Response {
+    let video = query.video.unwrap_or_default();
+    let (configured, proxy) = {
+        let store = state.store.lock().expect("store");
+        (store.settings.ytdlp_path.clone(), store.settings.ytdlp_proxy.clone())
+    };
+    let found = tokio::task::spawn_blocking(move || ytdlp::preview_url(&video, &configured, &proxy)).await;
+    match found {
+        Ok(Ok(url)) => (
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "ok": true, "url": url }).to_string(),
+        )
+            .into_response(),
+        Ok(Err(err)) => json_msg(false, &err),
+        Err(_) => json_msg(false, "Не удалось включить"),
+    }
+}
+
+async fn track_replace(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {
+    let id = form.id.unwrap_or_default();
+    let video = form.video.unwrap_or_default();
+    let (label, configured, proxy, dest) = {
+        let store = state.store.lock().expect("store");
+        let Some(song) = store.song(&id) else {
+            return json_msg(false, "Трек не найден");
+        };
+        let label = if song.artist.is_empty() {
+            song.title.clone()
+        } else {
+            format!("{} — {}", song.artist, song.title)
+        };
+        let dest = std::path::Path::new(&song.path)
+            .parent()
+            .map(|dir| dir.to_path_buf())
+            .unwrap_or_else(|| {
+                state
+                    .data_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("downloads")
+            });
+        (label, store.settings.ytdlp_path.clone(), store.settings.ytdlp_proxy.clone(), dest)
+    };
+    let _ = std::fs::create_dir_all(&dest);
+    let fetched = tokio::task::spawn_blocking(move || ytdlp::download_id(&video, &label, &configured, &proxy, &dest)).await;
+    let path = match fetched {
+        Ok(Ok(path)) => path,
+        Ok(Err(err)) => return json_msg(false, &err),
+        Err(_) => return json_msg(false, "Скачивание прервалось"),
+    };
+    let mut store = state.store.lock().expect("store");
+    match store.replace_song_file(&id, &path) {
+        Ok(()) => {
+            save(&state, &store);
+            json_msg(true, "Файл заменён")
+        }
+        Err(err) => json_msg(false, &err),
+    }
 }
 
 async fn archive_fetch(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {

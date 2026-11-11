@@ -106,6 +106,64 @@
       readCreatedMixes().forEach((mix) => downloadCreatedMix(mix.id));
       return;
     }
+    const trimHear = event.target.closest("[data-trim-hear]");
+    if (trimHear) {
+      event.preventDefault();
+      hearTrim(trimHear.dataset.id || "");
+      return;
+    }
+    const trimSave = event.target.closest("[data-trim-save]");
+    if (trimSave) {
+      event.preventDefault();
+      saveTrim(trimSave.dataset.id || "");
+      return;
+    }
+    const researchPlay = event.target.closest("[data-research-play]");
+    if (researchPlay) {
+      event.preventDefault();
+      researchPlay.disabled = true;
+      fetch("/api/track/preview?video=" + encodeURIComponent(researchPlay.dataset.researchPlay || ""))
+        .then((res) => res.json())
+        .then((data) => {
+          researchPlay.disabled = false;
+          if (!data.ok || !data.url) {
+            toast(data.message || data.error || "Не удалось включить", "error");
+            return;
+          }
+          waves.active = false;
+          listQueue = null;
+          artistQueue = null;
+          playUrl(data.url, researchPlay.dataset.title || "", researchPlay.dataset.artist || "");
+        })
+        .catch(() => {
+          researchPlay.disabled = false;
+          toast("Не удалось включить", "error");
+        });
+      return;
+    }
+    const researchSave = event.target.closest("[data-research-save]");
+    if (researchSave) {
+      event.preventDefault();
+      researchSave.disabled = true;
+      researchSave.textContent = "Скачивание…";
+      const body = new URLSearchParams({ id: researchSave.dataset.song || "", video: researchSave.dataset.researchSave || "" });
+      fetch("/api/track/replace", { method: "POST", body })
+        .then((res) => res.json())
+        .then((data) => {
+          toast(data.message || (data.ok ? "Файл заменён" : "Не удалось скачать"), data.ok ? "success" : "error");
+          if (data.ok) navigate("/?view=all");
+          else {
+            researchSave.disabled = false;
+            researchSave.textContent = "Скачать этот";
+          }
+        })
+        .catch(() => {
+          researchSave.disabled = false;
+          researchSave.textContent = "Скачать этот";
+          toast("Не удалось скачать", "error");
+        });
+      return;
+    }
     const deleteMix = event.target.closest("[data-delete-mix]");
     if (deleteMix) {
       event.preventDefault();
@@ -607,7 +665,34 @@
     const whole = Math.max(0, Math.floor(value || 0));
     return String(Math.floor(whole / 60)).padStart(2, "0") + ":" + String(whole % 60).padStart(2, "0");
   };
+  let clip = { id: "", start: 0, end: 0, preview: false };
+  function savedClip(id) {
+    const song = library.find((item) => item.id === id);
+    if (!song) return { id: "", start: 0, end: 0, preview: false };
+    return { id, start: Number(song.trimStart) || 0, end: Number(song.trimEnd) || 0, preview: false };
+  }
+  function seekClip() {
+    if (!(clip.start > 0)) return;
+    const start = clip.start;
+    const token = clip.id;
+    const place = () => {
+      if (clip.id !== token || !(clip.start > 0)) return;
+      if (!Number.isFinite(audio.duration)) return;
+      audio.currentTime = Math.min(start, Math.max(0, audio.duration - 0.2));
+    };
+    audio.addEventListener("loadedmetadata", place, { once: true });
+  }
   audio.addEventListener("timeupdate", () => {
+    if (clip.end > clip.start && audio.currentTime >= clip.end - 0.05) {
+      const natural = Number.isFinite(audio.duration) && clip.end >= audio.duration - 0.3;
+      const preview = clip.preview;
+      clip = { id: "", start: 0, end: 0, preview: false };
+      if (!natural) {
+        audio.pause();
+        if (!preview) playNext();
+        return;
+      }
+    }
     if (drag && drag.kind === "seek") return;
     paintProgress();
     const fade = Number(document.body.dataset.crossfade || 0);
@@ -1977,6 +2062,7 @@
   }
 
   async function playUrl(url, title, artist) {
+    clip = { id: "", start: 0, end: 0, preview: false };
     audio.src = url;
     try { await audio.play(); } catch { /* autoplay */ }
     setNowPlaying(title, artist, { url: url || "", cover: "" });
@@ -1992,7 +2078,9 @@
       listQueue = null;
     }
     const data = await post("play", { id });
+    clip = savedClip(id);
     audio.src = "/audio/" + encodeURIComponent(id);
+    seekClip();
     try { await audio.play(); } catch { /* autoplay */ }
     setNowPlaying(title || data.title || "", artist || data.artist || "", { url: "", cover: "" });
     markCurrent(id);
@@ -2707,6 +2795,8 @@
     if (act === "queue") post("queue-add", { id }).then((data) => toast(data.message, "info"));
     if (act === "like") post("like", { id });
     if (act === "playlist") post("add-playlist", { id, value: menuItem.dataset.playlist }).then(() => toast("Добавлено в плейлист", "success"));
+    if (act === "trim") openTrim(id, menuItem.dataset.title || "", menuItem.dataset.artist || "");
+    if (act === "research") openResearch(id, menuItem.dataset.title || "", menuItem.dataset.artist || "");
     if (act === "edit") {
       const title = window.prompt("Название", menuItem.dataset.title || "");
       if (title == null) return;
@@ -2720,6 +2810,83 @@
       post("delete-song", { id }).then(() => navigate(location.pathname + location.search));
     }
   });
+  function openTrim(id, title) {
+    document.querySelectorAll(".modal-overlay").forEach((node) => node.remove());
+    const song = library.find((item) => item.id === id);
+    const duration = Number(song?.duration) || 0;
+    const start = Number(song?.trimStart) || 0;
+    const end = Number(song?.trimEnd) || (duration > 0 ? Math.round(duration) : 0);
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML =
+      `<div class="modal trim-modal" role="dialog" aria-label="Обрезать"><div class="modal-header"><h2>Обрезать</h2><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div>` +
+      `<div class="modal-body"><p class="modal-message">${escapeHtml(title)}</p><p class="modal-message">Начало и конец. Длинное вступление и лишняя концовка не играют.${duration ? ` Длительность ${fmt(duration)}.` : ""}</p>` +
+      `<div class="trim-fields"><label>Начало, сек<input id="trim-start" type="number" min="0" step="1" value="${start}"></label><label>Конец, сек<input id="trim-end" type="number" min="0" step="1" value="${end}"></label></div></div>` +
+      `<div class="modal-footer"><button type="button" class="btn btn-secondary" data-trim-hear="1" data-id="${escapeAttr(id)}">Слушать этот кусок</button><button type="button" class="btn btn-primary" data-trim-save="1" data-id="${escapeAttr(id)}">Сохранить</button></div></div>`;
+    document.body.appendChild(overlay);
+  }
+
+  function hearTrim(id) {
+    const start = Math.max(0, Number(document.getElementById("trim-start")?.value) || 0);
+    const end = Math.max(0, Number(document.getElementById("trim-end")?.value) || 0);
+    if (!(end > start)) {
+      toast("Конец должен быть позже начала", "error");
+      return;
+    }
+    const song = library.find((item) => item.id === id);
+    clip = { id, start, end, preview: true };
+    waves.active = false;
+    audio.src = "/audio/" + encodeURIComponent(id);
+    seekClip();
+    audio.play().catch(() => {});
+    setNowPlaying(song?.title || "", song?.artist || "", { url: "", cover: "" });
+    syncPlayButton();
+  }
+
+  function saveTrim(id) {
+    const start = Math.max(0, Number(document.getElementById("trim-start")?.value) || 0);
+    const end = Math.max(0, Number(document.getElementById("trim-end")?.value) || 0);
+    post("trim", { id, start: String(start), end: String(end) }).then((data) => {
+      if (!data.ok && data.message && data.message.includes("Не удалось")) {
+        toast(data.message, "error");
+        return;
+      }
+      const song = library.find((item) => item.id === id);
+      if (song) {
+        song.trimStart = start;
+        song.trimEnd = end;
+      }
+      toast(data.message || "Отрезок сохранён", "success");
+      document.querySelector(".modal-overlay")?.remove();
+    });
+  }
+
+  async function openResearch(id, title, artist) {
+    document.querySelectorAll(".modal-overlay").forEach((node) => node.remove());
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML =
+      `<div class="modal research-modal" role="dialog" aria-label="Найти снова"><div class="modal-header"><h2>Найти снова</h2><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div>` +
+      `<div class="modal-body"><p class="modal-message">${escapeHtml(title)}${artist ? " — " + escapeHtml(artist) : ""}</p><p class="research-status">Ищем…</p></div></div>`;
+    document.body.appendChild(overlay);
+    let data = { ok: false, message: "Не удалось найти" };
+    try {
+      data = await fetch("/api/track/search?id=" + encodeURIComponent(id)).then((res) => res.json());
+    } catch { /* search */ }
+    const body = overlay.querySelector(".modal-body");
+    if (!body) return;
+    if (!data.ok || !(data.tracks || []).length) {
+      body.innerHTML = `<p class="modal-message">${escapeHtml(data.message || data.error || "Ничего не найдено")}</p>`;
+      return;
+    }
+    const rows = data.tracks.map((track) =>
+      `<li class="research-row"><div class="research-copy"><strong>${escapeHtml(track.title || "")}</strong><span>${escapeHtml(track.artist || "")}${track.duration ? " · " + fmt(track.duration) : ""}</span></div>` +
+      `<button type="button" class="btn btn-secondary" data-research-play="${escapeAttr(track.id)}" data-title="${escapeAttr(track.title || "")}" data-artist="${escapeAttr(track.artist || "")}">Слушать</button>` +
+      `<button type="button" class="btn btn-primary" data-research-save="${escapeAttr(track.id)}" data-song="${escapeAttr(id)}">Скачать этот</button></li>`
+    ).join("");
+    body.innerHTML = `<p class="modal-message">Послушайте вариант и скачайте выбранный. Он заменит старый файл.</p><ul class="research-list">${rows}</ul>`;
+  }
+
   async function openTrackMenu(button) {
     document.querySelectorAll(".context-menu").forEach((node) => node.remove());
     const id = button.dataset.menu;
@@ -2739,6 +2906,8 @@
       `<button type="button" class="context-menu-item" data-menu-act="queue" ${attrs}>Добавить в очередь</button>` +
       (playlists ? `<div class="context-menu-header">В плейлист</div>${playlists}` : "") +
       `<button type="button" class="context-menu-item" data-menu-act="like" ${attrs}>Нравится</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="trim" ${attrs}>Обрезать</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="research" ${attrs}>Найти снова</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="edit" ${attrs}>Редактировать метаданные</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="reveal" ${attrs}>Открыть расположение</button>` +
       `<button type="button" class="context-menu-item danger" data-menu-act="delete" ${attrs}>Удалить из библиотеки</button>`;

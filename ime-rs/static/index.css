@@ -3838,6 +3838,71 @@ select:focus-visible {
   line-height: 1.5;
 }
 
+.trim-modal {
+  max-width: 440px;
+}
+
+.research-modal {
+  max-width: 680px;
+}
+
+.trim-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.trim-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.trim-fields input {
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  padding: 0 10px;
+  font: inherit;
+}
+
+.research-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.research-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.research-copy {
+  min-width: 0;
+}
+
+.research-copy strong,
+.research-copy span {
+  display: block;
+}
+
+.research-copy span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .modal-message.muted {
   color: var(--text-muted);
 }

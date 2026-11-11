@@ -284,11 +284,14 @@ fn library_seed(store: &Store) -> String {
     let mut parts = Vec::new();
     for song in &store.songs {
         parts.push(format!(
-            r#"{{"id":"{}","title":"{}","artist":"{}","liked":{}}}"#,
+            r#"{{"id":"{}","title":"{}","artist":"{}","liked":{},"duration":{},"trimStart":{},"trimEnd":{}}}"#,
             json_escape(&song.id),
             json_escape(&song.title),
             json_escape(&song.artist),
             if song.liked { "true" } else { "false" },
+            json_num(song.duration),
+            json_num(song.trim_start),
+            json_num(song.trim_end),
         ));
     }
     format!("[{}]", parts.join(","))
@@ -317,6 +320,14 @@ fn wishlist_seed(store: &Store) -> String {
         ));
     }
     format!("[{}]", parts.join(","))
+}
+
+fn json_num(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value}")
+    } else {
+        "0".into()
+    }
 }
 
 fn json_escape(value: &str) -> String {
@@ -2139,7 +2150,7 @@ fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="updates">{}</button><button type="button" class="btn btn-ghost" data-tool="releases">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="export-backup">{}</button><button type="button" class="btn btn-primary" data-tool="import-backup">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary" data-tool="playlist-url">{}</button><button type="button" class="btn btn-ghost" data-tool="playlist-file">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary" data-tool="phone">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary" data-tool="meta">{}</button><div style="margin-top:12px"><button type="button" class="btn btn-ghost" data-tool="rebuild-autos">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="find-dupes">{}</button><button type="button" class="btn btn-primary" data-tool="merge-dupes">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
-        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.3")])),
+        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.4")])),
         esc(&i18n.t("tools.updateCheck")),
         esc(&i18n.t("tools.updateOpenPage")),
         esc(&i18n.t("tools.backup")),
