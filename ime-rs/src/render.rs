@@ -186,7 +186,7 @@ fn flag(on: bool) -> &'static str {
 fn body_attrs(store: &Store) -> String {
     let wallpaper = store.settings.wallpaper_mode != "none" && !store.settings.wallpaper_path.is_empty();
     format!(
-        r#" data-volume="{volume}" data-current="{current}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-show-search="{search}" data-show-queue="{queue_btn}" data-gapless="{gapless}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}""#,
+        r#" data-volume="{volume}" data-current="{current}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-show-search="{search}" data-show-queue="{queue_btn}" data-gapless="{gapless}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}" data-archive-ahead="{ahead}" data-archive-keep="{keep}""#,
         volume = store.settings.volume,
         current = esc(store.player.current_id.as_deref().unwrap_or("")),
         density = esc(ui_str(store, "layout.density", "standard")),
@@ -222,6 +222,8 @@ fn body_attrs(store: &Store) -> String {
         bass = store.settings.playback.eq_bass,
         mid = store.settings.playback.eq_mid,
         treble = store.settings.playback.eq_treble,
+        ahead = store.settings.archive_ahead.clamp(2, 20),
+        keep = store.settings.archive_keep.clamp(10, 250),
     )
 }
 
@@ -462,6 +464,8 @@ fn sidebar(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let wish_count = if wish > 0 { Some(wish) } else { None };
     html.push_str(&nav_button(screen, "wishlist", view == "wishlist", "heartOutline", &i18n.t("nav.wishlist"), wish_count));
     html.push_str(&nav_button(screen, "history", view == "history", "history", &i18n.t("nav.history"), None));
+    let archive_count = if store.archive.is_empty() { None } else { Some(store.archive.len()) };
+    html.push_str(&nav_button(screen, "archive", view == "archive", "folder", "Архив", archive_count));
     html.push_str("</nav>");
     let mut create = screen.clone();
     create.modal = "create".into();
@@ -519,9 +523,33 @@ fn main_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         "all" | "liked" | "playlist" => library_view(store, i18n, screen),
         "wishlist" => wishlist_view(store, i18n, screen),
         "history" => history_view(store, i18n),
+        "archive" => archive_view(store, screen),
         "recommendations" => recommendations_view(i18n, screen),
         _ => home_view(store, i18n),
     }
+}
+
+fn archive_view(store: &Store, _screen: &Screen) -> String {
+    let ahead = store.settings.archive_ahead.clamp(2, 20);
+    let keep = store.settings.archive_keep.clamp(10, 250);
+    let mut rows = String::new();
+    if store.archive.is_empty() {
+        rows.push_str(r#"<p class="artist-view-empty">Архив пуст. Включите IMe Waves — следующие треки скачаются сюда и не попадут в библиотеку.</p>"#);
+    }
+    for item in store.archive.iter().rev() {
+        rows.push_str(&format!(
+            r#"<li class="song-row" data-archive-id="{id}"><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name" data-archive-play="1" data-id="{id}" data-title="{title}" data-artist="{artist}">{title}</button><span class="song-artist">{artist}</span></div></div><button type="button" class="btn btn-secondary" data-archive-library="1" data-id="{id}">В библиотеку</button></li>"#,
+            id = esc(&item.id),
+            title = esc(&item.title),
+            artist = esc(&item.artist),
+        ));
+    }
+    format!(
+        r#"<div class="archive-view"><div class="view-header"><div class="view-info"><h1>Архив</h1><p>Полные файлы волны. Они не лежат в библиотеке, пока вы сами их туда не перенесёте.</p></div></div><section class="settings-section"><label class="field-label" for="archive-ahead">Сколько следующих треков качать</label><input id="archive-ahead" class="field-input" type="number" min="2" max="20" step="1" value="{ahead}" data-archive-setting="archive_ahead"><p class="field-hint">От 2 до 20. Волны качают столько ближайших треков вперёд.</p></section><section class="settings-section"><label class="field-label" for="archive-keep">Сколько треков хранить</label><input id="archive-keep" class="field-input" type="number" min="10" max="250" step="1" value="{keep}" data-archive-setting="archive_keep"><p class="field-hint">От 10 до 250. Если лимит 10, одиннадцатый трек заменяет самый старый.</p></section><ul class="song-list archive-list">{rows}</ul></div>"#,
+        ahead = ahead,
+        keep = keep,
+        rows = rows,
+    )
 }
 
 fn waves_chip_row(i18n: &I18n, field: &str, current: &str, options: &[(&str, &str)]) -> String {
@@ -1924,7 +1952,7 @@ fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="updates">{}</button><button type="button" class="btn btn-ghost" data-tool="releases">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="export-backup">{}</button><button type="button" class="btn btn-primary" data-tool="import-backup">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary" data-tool="playlist-url">{}</button><button type="button" class="btn btn-ghost" data-tool="playlist-file">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary" data-tool="phone">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary" data-tool="meta">{}</button><div style="margin-top:12px"><button type="button" class="btn btn-ghost" data-tool="rebuild-autos">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="find-dupes">{}</button><button type="button" class="btn btn-primary" data-tool="merge-dupes">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
-        esc(&i18n.tf("tools.currentVersion", &[("version", "1.2.0")])),
+        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.0")])),
         esc(&i18n.t("tools.updateCheck")),
         esc(&i18n.t("tools.updateOpenPage")),
         esc(&i18n.t("tools.backup")),

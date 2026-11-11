@@ -5046,6 +5046,35 @@ body {
   display: none;
 }
 
+.archive-view {
+  background: var(--bg-main);
+  min-height: 100%;
+}
+
+.archive-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.archive-list .song-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border-radius: 12px;
+}
+
+.archive-list .song-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
 [data-player-art="0"] .player-cover,
 [data-player-art="0"] .player-cover-fallback,
 [data-player-title="0"] .player-track-title,

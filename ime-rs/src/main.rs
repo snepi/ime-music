@@ -35,6 +35,7 @@ struct AppState {
     static_dir: PathBuf,
     sync: Mutex<Option<SyncSession>>,
     import_status: Arc<Mutex<ImportLive>>,
+    archive_inflight: Mutex<std::collections::HashSet<String>>,
 }
 
 #[derive(Clone)]
@@ -97,6 +98,7 @@ fn main() {
             done: true,
             ok: true,
         })),
+        archive_inflight: Mutex::new(std::collections::HashSet::new()),
     });
     let port: u16 = std::env::var("IME_RS_PORT")
         .ok()
@@ -111,6 +113,8 @@ fn main() {
         .route("/wallpaper-image", get(wallpaper_image))
         .route("/import-path", post(import_path))
         .route("/import-search", post(import_search))
+        .route("/api/archive/fetch", post(archive_fetch))
+        .route("/api/archive/match", get(archive_match))
         .route("/import-status", get(import_status))
         .route("/audio/:id", get(audio))
         .route("/cover/:id", get(cover_file))
@@ -363,6 +367,13 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 form.url.as_deref().unwrap_or(""),
                 form.cover.as_deref().unwrap_or(""),
             );
+        }
+        "archive-to-library" => {
+            if let Some(id) = form.id.as_deref() {
+                if store.promote_archive(id) {
+                    message = "Трек перенесён в библиотеку".into();
+                }
+            }
         }
         "favorite-artist" => {
             let on = store.toggle_favorite_artist(
@@ -694,6 +705,19 @@ fn apply_field(store: &mut Store, field: &str, value: &str) {
         "listenbrainz" => store.settings.listenbrainz = on,
         "ytdlp_path" => store.settings.ytdlp_path = value.trim().into(),
         "ytdlp_proxy" => store.settings.ytdlp_proxy = value.trim().into(),
+        "archive_ahead" => {
+            if let Ok(count) = value.parse::<u32>() {
+                store.settings.archive_ahead = count.clamp(2, 20);
+            }
+        }
+        "archive_keep" => {
+            if let Ok(count) = value.parse::<u32>() {
+                store.settings.archive_keep = count.clamp(10, 250);
+                for path in store.trim_archive() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
         "ffmpeg_path" => store.settings.ffmpeg_path = value.trim().into(),
         "preset" => store.apply_preset(value),
         "crossfade" => {
@@ -1018,6 +1042,82 @@ async fn cover_file(State(state): State<Arc<AppState>>, Path(id): Path<String>) 
     ([(header::CONTENT_TYPE, kind)], bytes).into_response()
 }
 
+async fn archive_fetch(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {
+    let title = form.title.unwrap_or_default();
+    let artist = form.artist.unwrap_or_default();
+    let cover = form.cover.unwrap_or_default();
+    if title.trim().is_empty() && artist.trim().is_empty() {
+        return json_msg(false, "Пустой трек");
+    }
+    let key = format!("{}|{}", title.trim().to_lowercase(), artist.trim().to_lowercase());
+    {
+        let store = state.store.lock().expect("store");
+        if store.archive_has(&title, &artist) {
+            return json_msg(true, "Уже сохранено");
+        }
+    }
+    {
+        let mut inflight = state.archive_inflight.lock().expect("archive");
+        if !inflight.insert(key.clone()) {
+            return json_msg(true, "Уже качается");
+        }
+    }
+    let state = Arc::clone(&state);
+    let title_job = title.clone();
+    let artist_job = artist.clone();
+    tokio::spawn(async move {
+        let (configured, proxy, dest, covers) = {
+            let store = state.store.lock().expect("store");
+            let root = state.data_path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+            (
+                store.settings.ytdlp_path.clone(),
+                store.settings.ytdlp_proxy.clone(),
+                root.join("archive"),
+                root.join("covers"),
+            )
+        };
+        let _ = std::fs::create_dir_all(&dest);
+        let fetched = tokio::task::spawn_blocking(move || {
+            ytdlp::download_search(&title_job, &artist_job, &configured, &proxy, &dest, &mut |_, _| {})
+        })
+        .await;
+        if let Ok(Ok(path)) = fetched {
+            let cover_path = ytdlp::save_cover(&cover, &covers, &format!("{artist}-{title}"))
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let mut store = state.store.lock().expect("store");
+            store.push_archive(&title, &artist, &path, &cover_path);
+            let doomed = store.trim_archive();
+            save(&state, &store);
+            drop(store);
+            for path in doomed {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        state.archive_inflight.lock().expect("archive").remove(&key);
+    });
+    json_msg(true, "Качается в архив")
+}
+
+#[derive(Deserialize)]
+struct ArchiveMatchQuery {
+    title: Option<String>,
+    artist: Option<String>,
+}
+
+async fn archive_match(State(state): State<Arc<AppState>>, Query(query): Query<ArchiveMatchQuery>) -> Response {
+    let store = state.store.lock().expect("store");
+    let title = query.title.unwrap_or_default();
+    let artist = query.artist.unwrap_or_default();
+    let hit = store.archive_match(&title, &artist);
+    let body = if let Some(item) = hit {
+        serde_json::json!({ "ok": true, "id": item.id, "title": item.title, "artist": item.artist })
+    } else {
+        serde_json::json!({ "ok": false })
+    };
+    ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
+}
+
 async fn audio(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -1025,7 +1125,10 @@ async fn audio(
 ) -> Response {
     let path = {
         let store = state.store.lock().expect("store");
-        store.song(&id).map(|song| song.path.clone())
+        store
+            .song(&id)
+            .map(|song| song.path.clone())
+            .or_else(|| store.archive.iter().find(|item| item.id == id).map(|item| item.path.clone()))
     };
     let Some(path) = path else {
         return (StatusCode::NOT_FOUND, "missing").into_response();

@@ -218,6 +218,20 @@ pub struct Settings {
     pub wallpaper_mode: String,
     #[serde(default)]
     pub wallpaper_path: String,
+    /// How many upcoming Waves tracks to download. 2–20.
+    #[serde(default = "default_archive_ahead")]
+    pub archive_ahead: u32,
+    /// How many archived tracks to keep. The next download drops the oldest. 10–250.
+    #[serde(default = "default_archive_keep")]
+    pub archive_keep: u32,
+}
+
+fn default_archive_ahead() -> u32 {
+    3
+}
+
+fn default_archive_keep() -> u32 {
+    30
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -263,8 +277,21 @@ impl Default for Settings {
             ui: std::collections::BTreeMap::new(),
             wallpaper_mode: "none".into(),
             wallpaper_path: String::new(),
+            archive_ahead: default_archive_ahead(),
+            archive_keep: default_archive_keep(),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArchiveItem {
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub path: String,
+    #[serde(default)]
+    pub cover_path: String,
+    pub added_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -295,6 +322,8 @@ pub struct Store {
     pub history: Vec<HistoryItem>,
     pub settings: Settings,
     pub player: Player,
+    #[serde(default)]
+    pub archive: Vec<ArchiveItem>,
 }
 
 impl Default for Store {
@@ -305,6 +334,7 @@ impl Default for Store {
             history: Vec::new(),
             settings: Settings::default(),
             player: Player::default(),
+            archive: Vec::new(),
         }
     }
 }
@@ -393,6 +423,53 @@ impl Store {
         }
         if !cover_path.trim().is_empty() {
             song.cover_path = cover_path.trim().to_string();
+        }
+        true
+    }
+
+    pub fn archive_has(&self, title: &str, artist: &str) -> bool {
+        self.archive.iter().any(|item| same_label(&item.title, title) && same_label(&item.artist, artist))
+            || self.songs.iter().any(|song| same_label(&song.title, title) && same_label(&song.artist, artist))
+    }
+
+    pub fn archive_match(&self, title: &str, artist: &str) -> Option<&ArchiveItem> {
+        self.archive.iter().find(|item| same_label(&item.title, title) && same_label(&item.artist, artist))
+    }
+
+    pub fn push_archive(&mut self, title: &str, artist: &str, path: &Path, cover_path: &str) {
+        if self.archive_has(title, artist) {
+            return;
+        }
+        self.archive.push(ArchiveItem {
+            id: nid(),
+            title: title.trim().to_string(),
+            artist: artist.trim().to_string(),
+            path: path.to_string_lossy().into_owned(),
+            cover_path: cover_path.trim().to_string(),
+            added_at: now_ms(),
+        });
+    }
+
+    /// Drop the oldest files once the archive is past its limit. Returns paths to delete.
+    pub fn trim_archive(&mut self) -> Vec<String> {
+        let keep = self.settings.archive_keep.clamp(10, 250) as usize;
+        let mut doomed = Vec::new();
+        while self.archive.len() > keep {
+            doomed.push(self.archive.remove(0).path);
+        }
+        doomed
+    }
+
+    /// Move an archived file into the library and drop the archive row.
+    pub fn promote_archive(&mut self, id: &str) -> bool {
+        let Some(pos) = self.archive.iter().position(|item| item.id == id) else {
+            return false;
+        };
+        let item = self.archive.remove(pos);
+        let path = PathBuf::from(&item.path);
+        if Path::new(&item.path).is_file() {
+            self.add_file(&path);
+            self.apply_download_meta(&path, &item.title, &item.artist, "", &item.cover_path);
         }
         true
     }
@@ -971,6 +1048,14 @@ impl Store {
         }
         changed
     }
+}
+
+fn same_label(left: &str, right: &str) -> bool {
+    fn norm(value: &str) -> String {
+        value.trim().to_lowercase().replace('ё', "е").split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+    let left = norm(left);
+    !left.is_empty() && left == norm(right)
 }
 
 fn non_empty(value: &str) -> Option<String> {

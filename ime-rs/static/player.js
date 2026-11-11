@@ -73,6 +73,19 @@
       document.querySelectorAll("[data-color-reset]").forEach((btn) => applyColor(btn.dataset.colorReset, btn.dataset.colorDefault));
       return;
     }
+    const archivePlay = event.target.closest("[data-archive-play]");
+    if (archivePlay) {
+      event.preventDefault();
+      playUrl("/audio/" + encodeURIComponent(archivePlay.dataset.id || ""), archivePlay.dataset.title || "", archivePlay.dataset.artist || "");
+      return;
+    }
+    const archiveLibrary = event.target.closest("[data-archive-library]");
+    if (archiveLibrary) {
+      event.preventDefault();
+      archiveLibrary.disabled = true;
+      post("archive-to-library", { id: archiveLibrary.dataset.id || "" }).then(() => navigate("/?view=archive"));
+      return;
+    }
     const tool = event.target.closest("[data-tool]");
     if (tool) {
       event.preventDefault();
@@ -849,6 +862,7 @@
       return;
     }
     playWavesIndex(0);
+    scheduleArchive();
   }
 
   async function artistBio(name) {
@@ -1272,6 +1286,7 @@
       return;
     }
     playWavesIndex(0);
+    scheduleArchive();
   }
 
   function toggleWavesSettings() {
@@ -1356,6 +1371,7 @@
       waves.seen.add(item.url);
       waves.queue.push(item);
     }
+    if (waves.active) scheduleArchive();
   }
 
   async function resetWaves() {
@@ -1735,7 +1751,35 @@
     const meta = document.querySelector(".home-waves-meta");
     if (title) title.textContent = item.title;
     if (meta) meta.innerHTML = artistLink(item.artist);
-    playUrl(item.url, item.title, item.artist);
+    const archived = await archiveFile(item.title, item.artist);
+    playUrl(archived || item.url, item.title, item.artist);
+    scheduleArchive();
+  }
+
+  const archiveQueued = new Set();
+
+  async function archiveFile(title, artist) {
+    try {
+      const response = await fetch(
+        "/api/archive/match?title=" + encodeURIComponent(title || "") + "&artist=" + encodeURIComponent(artist || ""),
+      );
+      const data = await response.json();
+      if (data && data.id) return "/audio/" + encodeURIComponent(data.id);
+    } catch { /* preview */ }
+    return "";
+  }
+
+  function scheduleArchive() {
+    if (!waves.active) return;
+    const ahead = Math.min(20, Math.max(2, Number(document.body.dataset.archiveAhead || 3)));
+    const from = waves.index < 0 ? 0 : waves.index;
+    for (const item of waves.queue.slice(from, from + ahead)) {
+      const key = `${item.title}\n${item.artist}`;
+      if (!item.title || archiveQueued.has(key)) continue;
+      archiveQueued.add(key);
+      const body = new URLSearchParams({ title: item.title, artist: item.artist || "", cover: item.cover || "" });
+      fetch("/api/archive/fetch", { method: "POST", body }).catch(() => archiveQueued.delete(key));
+    }
   }
 
   async function playQuery(title, artist) {
@@ -2395,6 +2439,18 @@
       const data = await fetch("/import-backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: text }).then((res) => res.json());
       toast(data.message || "Импортировано", data.ok ? "success" : "error");
       input.value = "";
+      return;
+    }
+    if (input.dataset.archiveSetting) {
+      const min = Number(input.min || 0);
+      const max = Number(input.max || 0);
+      let value = Number(input.value);
+      if (Number.isFinite(min)) value = Math.max(min, value);
+      if (Number.isFinite(max) && max) value = Math.min(max, value);
+      input.value = String(value);
+      if (input.dataset.archiveSetting === "archive_ahead") document.body.dataset.archiveAhead = String(value);
+      if (input.dataset.archiveSetting === "archive_keep") document.body.dataset.archiveKeep = String(value);
+      post("set", { field: input.dataset.archiveSetting, value: String(value) });
       return;
     }
     if (input.dataset.setField) {
