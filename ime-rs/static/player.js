@@ -89,6 +89,12 @@
       playId(items[0].id, items[0].title, items[0].artist, true);
       return;
     }
+    const playMix = event.target.closest("[data-play-mix]");
+    if (playMix) {
+      event.preventDefault();
+      playCreatedMix(playMix.dataset.playMix || "");
+      return;
+    }
     const downloadMix = event.target.closest("[data-download-mix]");
     if (downloadMix) {
       event.preventDefault();
@@ -1850,19 +1856,97 @@
     }
   }
 
-  function downloadCreatedMix(id) {
-    const mix = readCreatedMixes().find((item) => item.id === id);
-    if (!mix) return;
-    notify(`Скачивание микса: ${mix.title}`, "info");
+  function writeCreatedMixes(mixes) {
+    const node = document.getElementById("created-mixes-seed");
+    if (node) node.textContent = JSON.stringify(mixes);
+  }
+
+  async function refreshMixFiles(mix) {
+    let ready = 0;
     for (const track of mix.tracks || []) {
+      if (track.file) {
+        ready += 1;
+        continue;
+      }
+      try {
+        const response = await fetch(
+          "/api/archive/match?title=" + encodeURIComponent(track.title || "") + "&artist=" + encodeURIComponent(track.artist || ""),
+        );
+        const data = await response.json();
+        if (data && data.id) {
+          track.file = data.id;
+          ready += 1;
+        }
+      } catch { /* still downloading */ }
+    }
+    return ready;
+  }
+
+  async function playCreatedMix(id) {
+    const mixes = readCreatedMixes();
+    const mix = mixes.find((item) => item.id === id);
+    if (!mix) return;
+    const ready = await refreshMixFiles(mix);
+    writeCreatedMixes(mixes);
+    const total = (mix.tracks || []).length;
+    if (!total || ready < total) {
+      notify(ready ? `Микс ещё не готов: ${ready} из ${total}` : "Микс ещё скачивается", "info");
+      return;
+    }
+    const items = mix.tracks.map((track) => ({
+      id: track.file,
+      title: track.title || "",
+      artist: track.artist || "",
+      preview: "",
+    }));
+    listQueue = { items, index: 0 };
+    artistQueue = null;
+    waves.active = false;
+    waves.artist = false;
+    playId(items[0].id, items[0].title, items[0].artist, true);
+  }
+
+  async function downloadCreatedMix(id) {
+    const mixes = readCreatedMixes();
+    const mix = mixes.find((item) => item.id === id);
+    if (!mix) return;
+    const button = document.querySelector(`[data-download-mix="${cssEscape(id)}"]`);
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Скачивание…";
+    }
+    notify(`Скачивание микса: ${mix.title}`, "info");
+    await Promise.all((mix.tracks || []).map((track) => {
       const body = new URLSearchParams({
         title: track.title || "",
         artist: track.artist || "",
         id: mix.id,
         name: mix.title || "",
       });
-      fetch("/api/archive/fetch", { method: "POST", body }).catch(() => {});
+      return fetch("/api/archive/fetch", { method: "POST", body }).catch(() => {});
+    }));
+    let ready = 0;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      ready = await refreshMixFiles(mix);
+      if (ready === (mix.tracks || []).length) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
     }
+    writeCreatedMixes(mixes);
+    const total = (mix.tracks || []).length;
+    if (button) button.disabled = false;
+    if (ready === total && total >= 8) {
+      if (button) {
+        button.textContent = "Слушать";
+        button.classList.remove("btn-secondary");
+        button.classList.add("btn-primary");
+        button.dataset.playMix = id;
+        delete button.dataset.downloadMix;
+      }
+      notify("Микс готов", "success");
+      return;
+    }
+    if (button) button.textContent = "Скачать";
+    notify(ready ? `Скачано ${ready} из ${total}. Микс можно слушать, когда скачаются все треки.` : "Скачивание продолжается в архиве", "info");
   }
 
   function scheduleArchive() {

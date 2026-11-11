@@ -770,19 +770,37 @@ fn home_created_mixes(store: &Store) -> String {
         if index > 0 {
             seed.push(',');
         }
+        let mut ready = 0usize;
         let tracks = mix
             .tracks
             .iter()
-            .map(|track| format!(r#"{{"title":"{}","artist":"{}"}}"#, json_escape(&track.title), json_escape(&track.artist)))
+            .map(|track| {
+                let file = store.mix_file_id(&track.title, &track.artist);
+                if !file.is_empty() {
+                    ready += 1;
+                }
+                format!(
+                    r#"{{"title":"{}","artist":"{}","file":"{}"}}"#,
+                    json_escape(&track.title),
+                    json_escape(&track.artist),
+                    json_escape(&file)
+                )
+            })
             .collect::<Vec<_>>()
             .join(",");
         seed.push_str(&format!(r#"{{"id":"{}","title":"{}","tracks":[{}]}}"#, json_escape(&mix.id), json_escape(&mix.title), tracks));
+        let finished = ready == mix.tracks.len() && ready >= 8;
+        let action = if finished {
+            format!(r#"<button type="button" class="btn btn-primary" data-play-mix="{id}">Слушать</button>"#, id = esc(&mix.id))
+        } else {
+            format!(r#"<button type="button" class="btn btn-secondary" data-download-mix="{id}">Скачать</button>"#, id = esc(&mix.id))
+        };
         cards.push_str(&format!(
-            r#"<li class="home-mix-card"><div class="home-card-cover">{cover}</div><div class="home-card-title">{title}</div><div class="home-card-artist">{count} треков</div><button type="button" class="btn btn-secondary" data-download-mix="{id}">Скачать</button></li>"#,
+            r#"<li class="home-mix-card"><div class="home-card-cover">{cover}</div><div class="home-card-title">{title}</div><div class="home-card-artist">{count} треков</div>{action}</li>"#,
             cover = mix_cover(&mix.title),
             title = esc(&mix.title),
             count = mix.tracks.len(),
-            id = esc(&mix.id),
+            action = action,
         ));
     }
     seed.push(']');

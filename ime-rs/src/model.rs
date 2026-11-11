@@ -470,6 +470,18 @@ impl Store {
         self.archive.iter().find(|item| same_label(&item.title, title) && same_label(&item.artist, artist))
     }
 
+    /// A created-mix track can play once its file is in the archive or the library.
+    pub fn mix_file_id(&self, title: &str, artist: &str) -> String {
+        if let Some(item) = self.archive_match(title, artist) {
+            return item.id.clone();
+        }
+        self.songs
+            .iter()
+            .find(|song| same_label(&song.title, title) && same_label(&song.artist, artist))
+            .map(|song| song.id.clone())
+            .unwrap_or_default()
+    }
+
     pub fn push_archive(&mut self, title: &str, artist: &str, path: &Path, cover_path: &str) {
         if self.archive_has(title, artist) {
             return;
@@ -1135,44 +1147,157 @@ impl Store {
 const FIVE_HOURS_MS: i64 = 5 * 60 * 60 * 1000;
 const THREE_HOURS_MS: i64 = 3 * 60 * 60 * 1000;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MixClass {
+    Rock,
+    Rap,
+    Pop,
+    Electro,
+    Jazz,
+    Indie,
+    Russian,
+    Foreign,
+    Liked,
+    Often,
+    New,
+    Calm,
+    Dance,
+    Soundtrack,
+    Soul,
+}
+
 struct MixKind {
     title: &'static str,
-    words: &'static [&'static str],
+    class: MixClass,
 }
 
 const LIBRARY_KINDS: &[MixKind] = &[
-    MixKind { title: "Смиксовали ваши треки в стиле рок", words: &["рок", "rock", "metal", "метал", "punk", "панк"] },
-    MixKind { title: "Смиксовали ваши треки в жанре рэп", words: &["рэп", "rap", "hip", "хип"] },
-    MixKind { title: "Смиксовали ваши треки в стиле поп", words: &["поп", "pop"] },
-    MixKind { title: "Смиксовали ваши треки в стиле электро", words: &["electro", "электро", "edm", "techno", "техно"] },
-    MixKind { title: "Смиксовали ваши треки в стиле джаз", words: &["джаз", "jazz", "blues", "блюз"] },
-    MixKind { title: "Смиксовали ваши треки в стиле инди", words: &["инди", "indie", "alternative"] },
-    MixKind { title: "Смиксовали ваши русские треки", words: &["рус"] },
-    MixKind { title: "Смиксовали ваши зарубежные треки", words: &["лат"] },
-    MixKind { title: "Смиксовали ваши любимые треки", words: &["лайк"] },
-    MixKind { title: "Смиксовали то, что вы часто слушаете", words: &["часто"] },
-    MixKind { title: "Смиксовали ваши новые треки", words: &["новые"] },
-    MixKind { title: "Смиксовали ваши спокойные треки", words: &["ballad", "acoustic", "piano", "спокой"] },
-    MixKind { title: "Смиксовали ваши танцевальные треки", words: &["dance", "house", "disco", "танц"] },
-    MixKind { title: "Смиксовали ваши саундтреки", words: &["ost", "soundtrack", "саундтрек", "score"] },
-    MixKind { title: "Смиксовали ваши треки в стиле соул", words: &["soul", "соул", "funk", "фанк"] },
+    MixKind { title: "Смиксовали ваши треки в стиле рок", class: MixClass::Rock },
+    MixKind { title: "Смиксовали ваши треки в жанре рэп", class: MixClass::Rap },
+    MixKind { title: "Смиксовали ваши треки в стиле поп", class: MixClass::Pop },
+    MixKind { title: "Смиксовали ваши треки в стиле электро", class: MixClass::Electro },
+    MixKind { title: "Смиксовали ваши треки в стиле джаз", class: MixClass::Jazz },
+    MixKind { title: "Смиксовали ваши треки в стиле инди", class: MixClass::Indie },
+    MixKind { title: "Смиксовали ваши русские треки", class: MixClass::Russian },
+    MixKind { title: "Смиксовали ваши зарубежные треки", class: MixClass::Foreign },
+    MixKind { title: "Смиксовали ваши любимые треки", class: MixClass::Liked },
+    MixKind { title: "Смиксовали то, что вы часто слушаете", class: MixClass::Often },
+    MixKind { title: "Смиксовали ваши новые треки", class: MixClass::New },
+    MixKind { title: "Смиксовали ваши спокойные треки", class: MixClass::Calm },
+    MixKind { title: "Смиксовали ваши танцевальные треки", class: MixClass::Dance },
+    MixKind { title: "Смиксовали ваши саундтреки", class: MixClass::Soundtrack },
+    MixKind { title: "Смиксовали ваши треки в стиле соул", class: MixClass::Soul },
 ];
 
-fn song_blob(song: &Song) -> String {
-    format!("{} {} {}", song.title, song.artist, song.album).to_lowercase()
+fn has_cyrillic(text: &str) -> bool {
+    text.chars().any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
 }
 
-fn song_matches_kind(song: &Song, words: &[&str]) -> bool {
-    match words {
-        ["рус"] => song.title.chars().any(|ch| ('а'..='я').contains(&ch) || ch == 'ё'),
-        ["лат"] => song.title.chars().any(|ch| ch.is_ascii_alphabetic()) && !song.title.chars().any(|ch| ('а'..='я').contains(&ch)),
-        ["лайк"] => song.liked,
-        ["часто"] => song.play_count > 0,
-        ["новые"] => true,
-        _ => {
-            let blob = song_blob(song);
-            words.iter().any(|word| blob.contains(word))
+fn is_russian_track(song: &Song) -> bool {
+    has_cyrillic(&song.title) || has_cyrillic(&song.artist)
+}
+
+fn latin_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphabetic() {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            if current.len() >= 2 {
+                words.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
         }
+    }
+    if current.len() >= 2 {
+        words.push(current);
+    }
+    words
+}
+
+/// A Latin title is not enough. One short title plus a one-word artist
+/// (a local file named "Alpha") is not a foreign song. A Russian artist
+/// never lands here, even when the title is in Latin.
+fn is_foreign_track(song: &Song) -> bool {
+    if is_russian_track(song) {
+        return false;
+    }
+    let title = latin_words(&song.title);
+    let artist = latin_words(&song.artist);
+    if title.is_empty() || artist.is_empty() {
+        return false;
+    }
+    title.len() >= 2 || (title.iter().any(|word| word.len() >= 4) && artist.len() >= 2)
+}
+
+fn track_tokens(song: &Song) -> Vec<String> {
+    let raw = format!("{} {} {}", song.title, song.artist, song.album)
+        .to_lowercase()
+        .replace('ё', "е")
+        .replace('-', " ");
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in raw.chars() {
+        if ch.is_alphanumeric() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn has_phrase(tokens: &[String], phrase: &str) -> bool {
+    let parts: Vec<&str> = phrase.split_whitespace().collect();
+    if parts.is_empty() || tokens.len() < parts.len() {
+        return false;
+    }
+    tokens.windows(parts.len()).any(|window| window.iter().zip(&parts).all(|(token, part)| token == part))
+}
+
+fn has_genre(song: &Song, phrases: &[&str]) -> bool {
+    let tokens = track_tokens(song);
+    let raw = format!("{} {} {}", song.title, song.artist, song.album).to_lowercase().replace('ё', "е");
+    phrases.iter().any(|phrase| {
+        if phrase.contains('&') {
+            raw.contains(phrase)
+        } else {
+            has_phrase(&tokens, phrase)
+        }
+    })
+}
+
+fn is_new_track(song: &Song, songs: &[Song]) -> bool {
+    const TWO_WEEKS_MS: i64 = 14 * 24 * 60 * 60 * 1000;
+    let now = now_ms();
+    if now.saturating_sub(song.added_at) > TWO_WEEKS_MS {
+        return false;
+    }
+    songs.iter().any(|other| now.saturating_sub(other.added_at) > TWO_WEEKS_MS)
+}
+
+fn song_matches_kind(song: &Song, class: MixClass, songs: &[Song]) -> bool {
+    match class {
+        MixClass::Rock => has_genre(song, &["rock", "рок", "punk", "панк", "metal", "метал", "grunge", "гранж"]),
+        MixClass::Rap => has_genre(song, &["rap", "рэп", "реп", "hip hop", "хип хоп", "trap", "трэп"]),
+        MixClass::Pop => has_genre(song, &["pop", "поп", "synthpop", "k pop", "kpop"]),
+        MixClass::Electro => has_genre(song, &["electro", "electronic", "edm", "techno", "техно", "электро", "электроника", "электронная", "trance", "транс"]),
+        MixClass::Jazz => has_genre(song, &["jazz", "джаз", "blues", "блюз"]),
+        MixClass::Indie => has_genre(song, &["indie", "инди"]),
+        MixClass::Russian => is_russian_track(song),
+        MixClass::Foreign => is_foreign_track(song),
+        MixClass::Liked => song.liked,
+        MixClass::Often => song.play_count >= 3,
+        MixClass::New => is_new_track(song, songs),
+        MixClass::Calm => has_genre(song, &["ballad", "acoustic", "piano", "ambient", "chill", "lofi", "спокойная", "спокойный", "акустика", "баллада"]),
+        MixClass::Dance => has_genre(song, &["dance", "disco", "диско", "танцевальная", "танцевальный", "house"]),
+        MixClass::Soundtrack => has_genre(song, &["soundtrack", "саундтрек", "ost", "score"]),
+        MixClass::Soul => has_genre(song, &["soul", "соул", "funk", "фанк", "rnb"]) || format!("{} {} {}", song.title, song.artist, song.album).to_lowercase().contains("r&b"),
     }
 }
 
@@ -1202,13 +1327,13 @@ impl Store {
                 break;
             }
             let kind = &LIBRARY_KINDS[(step + offset) % LIBRARY_KINDS.len()];
-            let mut songs: Vec<&Song> = self.songs.iter().filter(|song| song_matches_kind(song, kind.words)).collect();
-            if kind.words == ["новые"] {
+            let mut songs: Vec<&Song> = self.songs.iter().filter(|song| song_matches_kind(song, kind.class, &self.songs)).collect();
+            if kind.class == MixClass::New {
                 songs.sort_by_key(|song| std::cmp::Reverse(song.added_at));
-            } else if kind.words == ["часто"] {
+            } else if kind.class == MixClass::Often {
                 songs.sort_by_key(|song| std::cmp::Reverse(song.play_count));
             }
-            if songs.len() < 2 && kind.words != ["лайк"] && kind.words != ["часто"] {
+            if songs.len() < 2 && kind.class != MixClass::Liked && kind.class != MixClass::Often {
                 continue;
             }
             if songs.is_empty() {
@@ -1219,10 +1344,6 @@ impl Store {
                 continue;
             }
             mixes.push(LibraryMix { title: kind.title.to_string(), song_ids: ids });
-        }
-        if mixes.is_empty() {
-            let ids: Vec<String> = self.songs.iter().take(20).map(|song| song.id.clone()).collect();
-            mixes.push(LibraryMix { title: "Смиксовали ваши треки".into(), song_ids: ids });
         }
         mixes
     }
@@ -1249,7 +1370,7 @@ impl Store {
                 .take(20)
                 .map(|(title, artist)| MixTrack { title: (*title).to_string(), artist: (*artist).to_string() })
                 .collect::<Vec<_>>();
-            if tracks.is_empty() {
+            if tracks.len() < 8 {
                 continue;
             }
             mixes.push(CreatedMix {
@@ -1280,21 +1401,21 @@ struct ExternalKind {
 }
 
 const EXTERNAL_MIXES: &[ExternalKind] = &[
-    ExternalKind { title: "Микс в стиле рок", tracks: &[("Bohemian Rhapsody", "Queen"), ("Smells Like Teen Spirit", "Nirvana"), ("Back in Black", "AC/DC"), ("Wonderwall", "Oasis"), ("Enter Sandman", "Metallica")] },
-    ExternalKind { title: "Микс в жанре рэп", tracks: &[("Lose Yourself", "Eminem"), ("HUMBLE.", "Kendrick Lamar"), ("Sicko Mode", "Travis Scott"), ("God's Plan", "Drake"), ("In Da Club", "50 Cent")] },
-    ExternalKind { title: "Микс в стиле поп", tracks: &[("Blinding Lights", "The Weeknd"), ("Levitating", "Dua Lipa"), ("Anti-Hero", "Taylor Swift"), ("As It Was", "Harry Styles"), ("Flowers", "Miley Cyrus")] },
-    ExternalKind { title: "Микс в стиле электро", tracks: &[("One More Time", "Daft Punk"), ("Levels", "Avicii"), ("Titanium", "David Guetta"), ("Strobe", "deadmau5"), ("Opus", "Eric Prydz")] },
-    ExternalKind { title: "Микс в стиле джаз", tracks: &[("Take Five", "Dave Brubeck"), ("So What", "Miles Davis"), ("Feeling Good", "Nina Simone"), ("Fly Me to the Moon", "Frank Sinatra"), ("What a Wonderful World", "Louis Armstrong")] },
-    ExternalKind { title: "Микс в стиле инди", tracks: &[("Do I Wanna Know?", "Arctic Monkeys"), ("Somebody Else", "The 1975"), ("Electric Feel", "MGMT"), ("R U Mine?", "Arctic Monkeys"), ("Fluorescent Adolescent", "Arctic Monkeys")] },
-    ExternalKind { title: "Микс в стиле соул", tracks: &[("Respect", "Aretha Franklin"), ("Superstition", "Stevie Wonder"), ("I Want You Back", "The Jackson 5"), ("Ain't No Sunshine", "Bill Withers"), ("Lovely Day", "Bill Withers")] },
-    ExternalKind { title: "Микс в стиле метал", tracks: &[("Master of Puppets", "Metallica"), ("Chop Suey!", "System of a Down"), ("Du Hast", "Rammstein"), ("Toxicity", "System of a Down"), ("The Trooper", "Iron Maiden")] },
-    ExternalKind { title: "Микс в стиле фолк", tracks: &[("The Sound of Silence", "Simon & Garfunkel"), ("Fast Car", "Tracy Chapman"), ("Heart of Gold", "Neil Young"), ("Both Sides Now", "Joni Mitchell"), ("Big Yellow Taxi", "Joni Mitchell")] },
-    ExternalKind { title: "Микс в стиле латина", tracks: &[("Despacito", "Luis Fonsi"), ("Livin' la Vida Loca", "Ricky Martin"), ("Bailando", "Enrique Iglesias"), ("Provenza", "Karol G"), ("Tití Me Preguntó", "Bad Bunny")] },
-    ExternalKind { title: "Микс в стиле k-pop", tracks: &[("Dynamite", "BTS"), ("How You Like That", "BLACKPINK"), ("Butter", "BTS"), ("Pink Venom", "BLACKPINK"), ("Cupid", "FIFTY FIFTY")] },
-    ExternalKind { title: "Микс в стиле классика", tracks: &[("Für Elise", "Ludwig van Beethoven"), ("Clair de Lune", "Claude Debussy"), ("The Four Seasons", "Antonio Vivaldi"), ("Nocturne Op. 9 No. 2", "Frédéric Chopin"), ("Moonlight Sonata", "Ludwig van Beethoven")] },
-    ExternalKind { title: "Микс из саундтреков", tracks: &[("Cornfield Chase", "Hans Zimmer"), ("Time", "Hans Zimmer"), ("Now We Are Free", "Lisa Gerrard"), ("Married Life", "Michael Giacchino"), ("Comptine d'un autre été", "Yann Tiersen")] },
-    ExternalKind { title: "Микс в стиле лоуфай", tracks: &[("Snowman", "WYS"), ("Coffee", "beabadoobee"), ("Sunset Lover", "Petit Biscuit"), ("Night Owl", "Galimatias"), ("Weightless", "Marconi Union")] },
-    ExternalKind { title: "Микс в стиле диско", tracks: &[("Stayin' Alive", "Bee Gees"), ("Le Freak", "Chic"), ("I Will Survive", "Gloria Gaynor"), ("Don't Stop 'Til You Get Enough", "Michael Jackson"), ("September", "Earth, Wind & Fire")] },
+    ExternalKind { title: "Микс в стиле рок", tracks: &[("Bohemian Rhapsody", "Queen"), ("Smells Like Teen Spirit", "Nirvana"), ("Back in Black", "AC/DC"), ("Wonderwall", "Oasis"), ("Enter Sandman", "Metallica"), ("Sweet Child O Mine", "Guns N Roses"), ("Livin on a Prayer", "Bon Jovi"), ("Don't Stop Believin", "Journey"), ("Smoke on the Water", "Deep Purple"), ("Highway to Hell", "AC/DC"), ("Paint It Black", "The Rolling Stones"), ("Seven Nation Army", "The White Stripes")] },
+    ExternalKind { title: "Микс в жанре рэп", tracks: &[("Lose Yourself", "Eminem"), ("HUMBLE.", "Kendrick Lamar"), ("Sicko Mode", "Travis Scott"), ("God's Plan", "Drake"), ("In Da Club", "50 Cent"), ("Juicy", "The Notorious B.I.G."), ("Alright", "Kendrick Lamar"), ("Stan", "Eminem"), ("Empire State of Mind", "Jay-Z"), ("Stronger", "Kanye West"), ("Gold Digger", "Kanye West"), ("California Love", "2Pac")] },
+    ExternalKind { title: "Микс в стиле поп", tracks: &[("Blinding Lights", "The Weeknd"), ("Levitating", "Dua Lipa"), ("Anti-Hero", "Taylor Swift"), ("As It Was", "Harry Styles"), ("Flowers", "Miley Cyrus"), ("Shake It Off", "Taylor Swift"), ("Uptown Funk", "Mark Ronson"), ("Bad Guy", "Billie Eilish"), ("Shape of You", "Ed Sheeran"), ("Rolling in the Deep", "Adele"), ("Happy", "Pharrell Williams"), ("Can't Stop the Feeling", "Justin Timberlake")] },
+    ExternalKind { title: "Микс в стиле электро", tracks: &[("One More Time", "Daft Punk"), ("Levels", "Avicii"), ("Titanium", "David Guetta"), ("Strobe", "deadmau5"), ("Opus", "Eric Prydz"), ("Around the World", "Daft Punk"), ("Wake Me Up", "Avicii"), ("Faded", "Alan Walker"), ("Animals", "Martin Garrix"), ("Silence", "Marshmello"), ("Lean On", "Major Lazer"), ("Scary Monsters", "Skrillex")] },
+    ExternalKind { title: "Микс в стиле джаз", tracks: &[("Take Five", "Dave Brubeck"), ("So What", "Miles Davis"), ("Feeling Good", "Nina Simone"), ("Fly Me to the Moon", "Frank Sinatra"), ("What a Wonderful World", "Louis Armstrong"), ("Take the A Train", "Duke Ellington"), ("Summertime", "Ella Fitzgerald"), ("Autumn Leaves", "Bill Evans"), ("The Girl from Ipanema", "Stan Getz"), ("Sing Sing Sing", "Benny Goodman"), ("Blue in Green", "Miles Davis"), ("My Favorite Things", "John Coltrane")] },
+    ExternalKind { title: "Микс в стиле инди", tracks: &[("Do I Wanna Know?", "Arctic Monkeys"), ("Somebody Else", "The 1975"), ("Electric Feel", "MGMT"), ("R U Mine?", "Arctic Monkeys"), ("Fluorescent Adolescent", "Arctic Monkeys"), ("Midnight City", "M83"), ("Kids", "MGMT"), ("Take Me Out", "Franz Ferdinand"), ("Reptilia", "The Strokes"), ("Time to Pretend", "MGMT"), ("Mr Brightside", "The Killers"), ("1901", "Phoenix")] },
+    ExternalKind { title: "Микс в стиле соул", tracks: &[("Respect", "Aretha Franklin"), ("Superstition", "Stevie Wonder"), ("I Want You Back", "The Jackson 5"), ("Ain't No Sunshine", "Bill Withers"), ("Lovely Day", "Bill Withers"), ("Let's Stay Together", "Al Green"), ("I Feel Good", "James Brown"), ("What's Going On", "Marvin Gaye"), ("Stand by Me", "Ben E. King"), ("A Change Is Gonna Come", "Sam Cooke"), ("Kiss", "Prince"), ("Signed Sealed Delivered", "Stevie Wonder")] },
+    ExternalKind { title: "Микс в стиле метал", tracks: &[("Master of Puppets", "Metallica"), ("Chop Suey!", "System of a Down"), ("Du Hast", "Rammstein"), ("Toxicity", "System of a Down"), ("The Trooper", "Iron Maiden"), ("Painkiller", "Judas Priest"), ("Holy Wars", "Megadeth"), ("Paranoid", "Black Sabbath"), ("Ace of Spades", "Motorhead"), ("Duality", "Slipknot"), ("Breaking the Law", "Judas Priest"), ("Before I Forget", "Slipknot")] },
+    ExternalKind { title: "Микс в стиле фолк", tracks: &[("The Sound of Silence", "Simon & Garfunkel"), ("Fast Car", "Tracy Chapman"), ("Heart of Gold", "Neil Young"), ("Both Sides Now", "Joni Mitchell"), ("Big Yellow Taxi", "Joni Mitchell"), ("Blowin in the Wind", "Bob Dylan"), ("Hallelujah", "Leonard Cohen"), ("Fire and Rain", "James Taylor"), ("Landslide", "Fleetwood Mac"), ("Harvest Moon", "Neil Young"), ("The Times They Are a Changin", "Bob Dylan"), ("Helpless", "Neil Young")] },
+    ExternalKind { title: "Микс в стиле латина", tracks: &[("Despacito", "Luis Fonsi"), ("Livin la Vida Loca", "Ricky Martin"), ("Bailando", "Enrique Iglesias"), ("Provenza", "Karol G"), ("Titi Me Pregunto", "Bad Bunny"), ("Danza Kuduro", "Don Omar"), ("Gasolina", "Daddy Yankee"), ("Mi Gente", "J Balvin"), ("Con Altura", "Rosalia"), ("Vivir Mi Vida", "Marc Anthony"), ("La Bicicleta", "Carlos Vives"), ("Hawái", "Maluma")] },
+    ExternalKind { title: "Микс в стиле k-pop", tracks: &[("Dynamite", "BTS"), ("How You Like That", "BLACKPINK"), ("Butter", "BTS"), ("Pink Venom", "BLACKPINK"), ("Cupid", "FIFTY FIFTY"), ("Gangnam Style", "PSY"), ("DNA", "BTS"), ("Kill This Love", "BLACKPINK"), ("Boy With Luv", "BTS"), ("Next Level", "aespa"), ("Love Dive", "IVE"), ("Ddu Du Ddu Du", "BLACKPINK")] },
+    ExternalKind { title: "Микс в стиле классика", tracks: &[("Fur Elise", "Ludwig van Beethoven"), ("Clair de Lune", "Claude Debussy"), ("The Four Seasons", "Antonio Vivaldi"), ("Nocturne Op 9 No 2", "Frederic Chopin"), ("Moonlight Sonata", "Ludwig van Beethoven"), ("Canon in D", "Johann Pachelbel"), ("Swan Lake", "Pyotr Tchaikovsky"), ("Spring", "Antonio Vivaldi"), ("Gymnopedie No 1", "Erik Satie"), ("Eine kleine Nachtmusik", "Wolfgang Mozart"), ("The Blue Danube", "Johann Strauss"), ("Ride of the Valkyries", "Richard Wagner")] },
+    ExternalKind { title: "Микс из саундтреков", tracks: &[("Cornfield Chase", "Hans Zimmer"), ("Time", "Hans Zimmer"), ("Now We Are Free", "Lisa Gerrard"), ("Married Life", "Michael Giacchino"), ("Comptine dun autre ete", "Yann Tiersen"), ("Hes a Pirate", "Klaus Badelt"), ("Concerning Hobbits", "Howard Shore"), ("Duel of the Fates", "John Williams"), ("Experience", "Ludovico Einaudi"), ("Arrival of the Birds", "The Cinematic Orchestra"), ("Mia and Sebastians Theme", "Justin Hurwitz"), ("Main Theme", "John Williams")] },
+    ExternalKind { title: "Микс в стиле лоуфай", tracks: &[("Snowman", "WYS"), ("Coffee", "beabadoobee"), ("Sunset Lover", "Petit Biscuit"), ("Night Owl", "Galimatias"), ("Weightless", "Marconi Union"), ("Evening Coffee", "Kupla"), ("Warm Nights", "Kupla"), ("Homework", "Kupla"), ("Late Night", "Kupla"), ("Afloat", "Sleepy Fish"), ("Coffee Break", "Kupla"), ("Rains", "Nymano")] },
+    ExternalKind { title: "Микс в стиле диско", tracks: &[("Stayin Alive", "Bee Gees"), ("Le Freak", "Chic"), ("I Will Survive", "Gloria Gaynor"), ("Dont Stop Til You Get Enough", "Michael Jackson"), ("September", "Earth Wind and Fire"), ("Good Times", "Chic"), ("Disco Inferno", "The Trammps"), ("YMCA", "Village People"), ("Born to Be Alive", "Patrick Hernandez"), ("Funky Town", "Lipps Inc"), ("Rasputin", "Boney M"), ("Night Fever", "Bee Gees")] },
 ];
 
 fn same_label(left: &str, right: &str) -> bool {
@@ -1601,5 +1722,66 @@ mod tests {
         assert_eq!(store.songs[0].cover_path, cover.to_string_lossy());
         store.settings.onboarding_done = true;
         store.save(&dir.join("library.json"));
+    }
+
+    fn sample(title: &str, artist: &str, album: &str, liked: bool, plays: u32) -> Song {
+        Song {
+            id: format!("{title}-{artist}"),
+            path: String::new(),
+            title: title.into(),
+            artist: artist.into(),
+            album: album.into(),
+            year: None,
+            duration: 180.0,
+            liked,
+            added_at: now_ms(),
+            modified_at: now_ms(),
+            play_count: plays,
+            last_played_at: None,
+            file_size: 0,
+            cover_path: String::new(),
+        }
+    }
+
+    #[test]
+    fn library_mixes_keep_foreign_tracks_out_of_the_wrong_kind() {
+        let songs = vec![
+            sample("Alpha", "Library", "Demo", true, 1),
+            sample("Beta", "Library", "Demo", false, 1),
+            sample("Младшая сестра", "дора", "Demo", false, 0),
+            sample("Speed Up", "дора", "Demo", false, 0),
+            sample("Bohemian Rhapsody", "Queen", "Rock", false, 0),
+            sample("Paint It Black", "The Rolling Stones", "Rock", false, 5),
+            sample("Ghost", "Library", "Lost Post", false, 0),
+            sample("Популярный урок", "Школа", "", false, 0),
+        ];
+        assert!(song_matches_kind(&songs[2], MixClass::Russian, &songs));
+        assert!(song_matches_kind(&songs[3], MixClass::Russian, &songs));
+        assert!(!song_matches_kind(&songs[3], MixClass::Foreign, &songs));
+        assert!(!song_matches_kind(&songs[0], MixClass::Foreign, &songs));
+        assert!(!song_matches_kind(&songs[1], MixClass::Foreign, &songs));
+        assert!(!song_matches_kind(&songs[6], MixClass::Foreign, &songs));
+        assert!(song_matches_kind(&songs[4], MixClass::Foreign, &songs));
+        assert!(song_matches_kind(&songs[4], MixClass::Rock, &songs));
+        assert!(song_matches_kind(&songs[5], MixClass::Rock, &songs));
+        assert!(!song_matches_kind(&songs[0], MixClass::Rock, &songs));
+        assert!(!song_matches_kind(&songs[7], MixClass::Pop, &songs));
+        assert!(!song_matches_kind(&songs[7], MixClass::Rock, &songs));
+        assert!(song_matches_kind(&songs[7], MixClass::Russian, &songs));
+        assert!(!song_matches_kind(&songs[6], MixClass::Soundtrack, &songs));
+        assert!(!song_matches_kind(&songs[0], MixClass::Often, &songs));
+        assert!(song_matches_kind(&songs[5], MixClass::Often, &songs));
+        assert!(song_matches_kind(&songs[0], MixClass::Liked, &songs));
+        assert!(!song_matches_kind(&songs[1], MixClass::Liked, &songs));
+    }
+
+    #[test]
+    fn external_mixes_hold_between_eight_and_twenty_tracks() {
+        let mut store = Store::default();
+        store.create_external_mixes().unwrap();
+        assert!(store.created_mixes.len() >= 2);
+        for mix in &store.created_mixes {
+            assert!(mix.tracks.len() >= 8 && mix.tracks.len() <= 20, "{}", mix.title);
+        }
     }
 }
