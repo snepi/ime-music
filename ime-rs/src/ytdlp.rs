@@ -48,10 +48,21 @@ pub fn download_search(
     }
     let bin = resolve_bin(configured).ok_or_else(|| MISSING.to_string())?;
     report(&format!("Поиск: {label}"), None);
-    let video_id = resolve_video(&bin, title, artist, proxy, report)?;
-    let url = format!("https://www.youtube.com/watch?v={video_id}");
-    report(&format!("Скачивание: {label}"), Some(0));
-    download_audio(&bin, &url, &video_id, proxy, dest_dir, &label, report)
+    let ids = resolve_videos(&bin, title, artist, proxy, report)?;
+    let mut last_error = String::new();
+    for video_id in ids {
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        report(&format!("Скачивание: {label}"), Some(0));
+        match download_audio(&bin, &url, &video_id, proxy, dest_dir, &label, report) {
+            Ok(path) => return Ok(path),
+            Err(err) => last_error = err,
+        }
+    }
+    Err(if last_error.is_empty() {
+        "yt-dlp завершился без файла".into()
+    } else {
+        last_error
+    })
 }
 
 fn resolve_bin(configured: &str) -> Option<String> {
@@ -89,19 +100,34 @@ struct Hit {
     channel: String,
 }
 
+fn loosen(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '"' | '«' | '»') {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn search_queries(title: &str, artist: &str) -> Vec<String> {
+    let loose = loosen(title);
     let mut queries = Vec::new();
-    if !artist.is_empty() && !title.is_empty() {
-        queries.push(format!("{artist} - {title}"));
-        queries.push(format!("{artist} {title}"));
-        queries.push(format!("{title} {artist}"));
-        queries.push(format!("{artist} {title} official audio"));
-        queries.push(format!("\"{artist}\" \"{title}\""));
-        queries.push(format!("{artist} {title} topic"));
-        queries.push(format!("{title} official audio"));
+    if !artist.is_empty() && !loose.is_empty() {
+        // Parentheses in "Толпы (Speed Up)" make some yt-dlp builds return no rows.
+        queries.push(format!("{artist} - {loose}"));
+        queries.push(format!("{artist} {loose}"));
+        if loose != title.trim() {
+            queries.push(format!("{artist} - {title}"));
+        }
+        queries.push(format!("{loose} {artist}"));
     } else if !title.is_empty() {
-        queries.push(format!("{title} official audio"));
-        queries.push(title.to_string());
+        if loose != title.trim() {
+            queries.push(title.trim().to_string());
+        }
+        queries.push(loose);
     } else if !artist.is_empty() {
         queries.push(artist.to_string());
     }
@@ -114,14 +140,14 @@ fn search_queries(title: &str, artist: &str) -> Vec<String> {
     unique
 }
 
-fn resolve_video(
+fn resolve_videos(
     bin: &str,
     title: &str,
     artist: &str,
     proxy: &str,
     report: &mut dyn FnMut(&str, Option<u8>),
-) -> Result<String, String> {
-    let mut best: Option<(Hit, i32)> = None;
+) -> Result<Vec<String>, String> {
+    let mut ranked: Vec<(Hit, i32)> = Vec::new();
     let mut last_error = String::new();
     for query in search_queries(title, artist) {
         report(&format!("Поиск: {query}"), None);
@@ -129,26 +155,29 @@ fn resolve_video(
             Ok(hits) => {
                 for hit in hits {
                     let score = score_hit(&hit, title, artist);
-                    let better = best.as_ref().map(|(_, current)| score > *current).unwrap_or(true);
-                    if better {
-                        best = Some((hit, score));
+                    if score < 30 {
+                        continue;
+                    }
+                    if let Some(existing) = ranked.iter_mut().find(|(item, _)| item.id == hit.id) {
+                        if score > existing.1 {
+                            *existing = (hit, score);
+                        }
+                    } else {
+                        ranked.push((hit, score));
                     }
                 }
-                if best.as_ref().map(|(_, score)| *score >= 90).unwrap_or(false) {
+                if ranked.iter().any(|(_, score)| *score >= 90) {
                     break;
                 }
             }
             Err(err) => last_error = err,
         }
     }
-    if let Some((hit, score)) = best {
-        if score >= 30 {
-            return Ok(hit.id);
-        }
-        return Err(format!(
-            "Не удалось уверенно найти «{title}». Ближе всего «{}» ({score}). Уточните название или исполнителя.",
-            hit.title
-        ));
+    ranked.sort_by(|left, right| right.1.cmp(&left.1));
+    // Two ids, not a long list. A burst of player requests is what makes YouTube answer with a bot check.
+    let ids: Vec<String> = ranked.into_iter().take(2).map(|(hit, _)| hit.id).collect();
+    if !ids.is_empty() {
+        return Ok(ids);
     }
     if last_error.is_empty() {
         Err("Не удалось найти видео на YouTube".into())
@@ -158,58 +187,117 @@ fn resolve_video(
 }
 
 fn search_hits(bin: &str, query: &str, proxy: &str) -> Result<Vec<Hit>, String> {
+    let runtime = js_runtime();
+    // JSON is UTF-8. `--print` on Windows yt-dlp.exe is often cp1251, and a
+    // Cyrillic title then looks like an empty result. android,web is Electron's
+    // search client; when it prints nothing, the default client still returns rows.
+    let mut attempts = vec![search_args(true, None)];
+    attempts.push(search_args(false, runtime.as_deref()));
+    let mut last_error = String::new();
+    for mut args in attempts {
+        push_proxy(&mut args, proxy);
+        args.push("--".into());
+        args.push(format!("ytsearch8:{query}"));
+        let (stdout, stderr, ok) = run(bin, &args, None, Duration::from_secs(60), &mut |_, _| {})?;
+        let hits = parse_hits(&stdout);
+        if !hits.is_empty() {
+            return Ok(hits);
+        }
+        last_error = friendly_error(&stderr, &stdout, !ok);
+    }
+    Err(if last_error.is_empty() {
+        "yt-dlp не вернул данные".into()
+    } else {
+        last_error
+    })
+}
+
+fn search_args(android_client: bool, runtime: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "--no-playlist".into(),
         "--ignore-config".into(),
         "--flat-playlist".into(),
-        "--extractor-args".into(),
-        "youtube:player_client=android,web".into(),
-        "--print".into(),
-        "%(id)s||%(title)s||%(duration)s||%(channel)s||%(uploader)s".into(),
+        "-J".into(),
         "--socket-timeout".into(),
         "30".into(),
         "--retries".into(),
         "3".into(),
     ];
-    push_proxy(&mut args, proxy);
-    args.push("--".into());
-    args.push(format!("ytsearch8:{query}"));
-    let (stdout, stderr, ok) = run(bin, &args, None, Duration::from_secs(45), &mut |_, _| {})?;
+    if android_client {
+        args.push("--extractor-args".into());
+        args.push("youtube:player_client=android,web".into());
+    } else if let Some(runtime) = runtime {
+        args.push("--js-runtimes".into());
+        args.push(runtime.into());
+        args.push("--remote-components".into());
+        args.push("ejs:github".into());
+    }
+    args
+}
+
+fn parse_hits(stdout: &str) -> Vec<Hit> {
+    let trimmed = stdout.trim();
+    if let Some(start) = trimmed.find('{') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&trimmed[start..]) {
+            let entries = value
+                .get("entries")
+                .and_then(|entry| entry.as_array())
+                .cloned()
+                .unwrap_or_else(|| vec![value]);
+            let hits: Vec<Hit> = entries.iter().filter_map(hit_from_json).collect();
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
+    }
     let mut hits = Vec::new();
     for line in stdout.lines() {
         let parts: Vec<&str> = line.trim().split("||").collect();
-        if parts.is_empty() {
+        let Some(hit) = hit_from_parts(
+            parts.first().copied().unwrap_or(""),
+            parts.get(1).copied().unwrap_or(""),
+            parts.get(2).and_then(|value| value.trim().parse().ok()).unwrap_or(0.0),
+            parts.get(3).copied().filter(|value| !value.trim().is_empty()).or_else(|| parts.get(4).copied()).unwrap_or(""),
+        ) else {
             continue;
-        }
-        let id = parts.first().copied().unwrap_or("").trim();
-        if id.len() < 6 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
-            continue;
-        }
-        hits.push(Hit {
-            id: id.to_string(),
-            title: parts.get(1).copied().unwrap_or("").trim().to_string(),
-            duration: parts.get(2).and_then(|value| value.trim().parse().ok()).unwrap_or(0.0),
-            channel: parts
-                .get(3)
-                .copied()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| parts.get(4).copied())
-                .unwrap_or("")
-                .trim()
-                .to_string(),
-        });
+        };
+        hits.push(hit);
     }
-    if !hits.is_empty() {
-        return Ok(hits);
+    hits
+}
+
+fn hit_from_json(value: &serde_json::Value) -> Option<Hit> {
+    hit_from_parts(
+        value.get("id").and_then(|item| item.as_str()).unwrap_or(""),
+        value.get("title").and_then(|item| item.as_str()).unwrap_or(""),
+        value.get("duration").and_then(|item| item.as_f64()).unwrap_or(0.0),
+        value
+            .get("channel")
+            .and_then(|item| item.as_str())
+            .filter(|item| !item.is_empty())
+            .or_else(|| value.get("uploader").and_then(|item| item.as_str()))
+            .unwrap_or(""),
+    )
+}
+
+fn hit_from_parts(id: &str, title: &str, duration: f64, channel: &str) -> Option<Hit> {
+    let id = id.trim();
+    if id.len() < 6 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        return None;
     }
-    Err(friendly_error(&stderr, &stdout, !ok))
+    Some(Hit {
+        id: id.to_string(),
+        title: title.trim().to_string(),
+        duration,
+        channel: channel.trim().to_string(),
+    })
 }
 
 fn score_hit(hit: &Hit, title: &str, artist: &str) -> i32 {
-    let result = hit.title.to_lowercase();
-    let channel = hit.channel.to_lowercase();
-    let title = title.to_lowercase();
-    let artist = artist.to_lowercase();
+    let result = loosen(&hit.title).to_lowercase();
+    let channel = loosen(&hit.channel).to_lowercase();
+    let title = loosen(title).to_lowercase();
+    let artist = loosen(artist).to_lowercase();
     if result.is_empty() {
         return -999;
     }
@@ -304,13 +392,9 @@ fn download_audio(
     // the JS challenge solver (`--remote-components ejs:github`).
     let mut attempts = Vec::new();
     if let Some(runtime) = runtime.clone() {
+        // This is the invocation that writes a file: default clients plus the JS challenge solver.
+        // Forcing android,web first makes current yt-dlp stop on a bot check and print nothing useful.
         attempts.push(download_args(&template, "bestaudio[protocol!*=m3u8]/bestaudio/best", None, Some(&runtime)));
-        attempts.push(download_args(
-            &template,
-            "bestaudio[protocol^=http]/best[protocol^=http]",
-            Some("youtube:player_client=web_safari,mweb"),
-            Some(&runtime),
-        ));
     }
     attempts.push(download_args(&template, "bestaudio/best", Some("youtube:player_client=android,web"), None));
     let mut last_error = String::new();
@@ -318,7 +402,7 @@ fn download_audio(
         push_proxy(&mut args, proxy);
         args.push("--".into());
         args.push(url.to_string());
-        let (_stdout, stderr, ok) = run(bin, &args, Some(dest_dir), Duration::from_secs(15 * 60), &mut |line, percent| {
+        let (stdout, stderr, ok) = run(bin, &args, Some(dest_dir), Duration::from_secs(15 * 60), &mut |line, percent| {
             if let Some(percent) = percent {
                 report(&format!("Скачивание: {label} · {percent}%"), Some(percent));
             } else if !line.is_empty() {
@@ -329,10 +413,10 @@ fn download_audio(
             return Ok(path);
         }
         remove_incomplete(dest_dir, video_id);
-        last_error = if ok && stderr.trim().is_empty() {
+        last_error = if ok && stderr.trim().is_empty() && stdout.trim().is_empty() {
             "yt-dlp завершился без файла".into()
         } else {
-            friendly_error(&stderr, "", true)
+            friendly_error(&stderr, &stdout, true)
         };
     }
     Err(if last_error.is_empty() {
@@ -437,11 +521,13 @@ fn run(
     let stderr_pipe = child.stderr.take();
     let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
     let stdout_task = std::thread::spawn(move || {
-        let mut text = String::new();
+        let mut raw = Vec::new();
         if let Some(mut pipe) = stdout_pipe {
-            let _ = pipe.read_to_string(&mut text);
+            let _ = pipe.read_to_end(&mut raw);
         }
-        text
+        // read_to_string drops the whole buffer when a Cyrillic title is cp1251,
+        // so a successful search looks like "yt-dlp не вернул данные".
+        decode_output(&raw)
     });
     let stderr_task = std::thread::spawn(move || {
         let mut raw = Vec::new();
@@ -463,7 +549,7 @@ fn run(
                 let _ = line_tx.send(String::from_utf8_lossy(&line).to_string());
             }
         }
-        String::from_utf8_lossy(&raw).into_owned()
+        decode_output(&raw)
     });
     let started = std::time::Instant::now();
     let status = loop {
@@ -475,7 +561,8 @@ fn run(
         }
         if started.elapsed() > timeout {
             let _ = child.kill();
-            return Err("Превышено время ожидания скачивания (15 мин)".into());
+            let minutes = timeout.as_secs().max(1) / 60;
+            return Err(format!("Превышено время ожидания ({minutes} мин)"));
         }
         std::thread::sleep(Duration::from_millis(200));
     };
@@ -485,6 +572,14 @@ fn run(
     let stdout = stdout_task.join().unwrap_or_default();
     let stderr = stderr_task.join().unwrap_or_default();
     Ok((stdout, stderr, status.success()))
+}
+
+fn decode_output(raw: &[u8]) -> String {
+    if std::str::from_utf8(raw).is_ok() {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    let (text, _, _) = encoding_rs::WINDOWS_1251.decode(raw);
+    text.into_owned()
 }
 
 fn report_progress(line: &str, on_line: &mut dyn FnMut(&str, Option<u8>)) {
@@ -584,7 +679,34 @@ fn remove_incomplete(dir: &Path, video_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::friendly_error;
+    use super::{decode_output, friendly_error, loosen, parse_hits};
+
+    #[test]
+    fn cyrillic_search_output_is_not_dropped() {
+        let title: Vec<u8> = vec![0xD2, 0xEE, 0xEB, 0xEF, 0xFB];
+        assert_eq!(decode_output(&title), "Толпы");
+        let mut line = b"bqk447IzpaU||".to_vec();
+        line.extend_from_slice(&title);
+        let text = decode_output(&line);
+        let hits = parse_hits(&text);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "bqk447IzpaU");
+        assert_eq!(hits[0].title, "Толпы");
+    }
+
+    #[test]
+    fn speed_up_query_keeps_the_words_inside_parentheses() {
+        assert_eq!(loosen("Толпы (Speed Up)"), "Толпы Speed Up");
+    }
+
+    #[test]
+    fn json_search_rows_keep_the_video_id() {
+        let stdout = r#"{"entries":[{"id":"bqk447IzpaU","title":"madk1d - Толпы (speed up)","duration":82,"channel":"soyuzmusic"}]}"#;
+        let hits = parse_hits(stdout);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "bqk447IzpaU");
+        assert_eq!(hits[0].channel, "soyuzmusic");
+    }
 
     #[test]
     fn failures_are_not_described_as_a_missing_proxy() {
