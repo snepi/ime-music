@@ -3846,6 +3846,67 @@ select:focus-visible {
   max-width: 680px;
 }
 
+.trim-bar {
+  position: relative;
+  height: 48px;
+  margin-top: 18px;
+  touch-action: none;
+  user-select: none;
+}
+
+.trim-bar-track,
+.trim-bar-window {
+  position: absolute;
+  top: 18px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.trim-bar-track {
+  left: 0;
+  right: 0;
+  background: color-mix(in srgb, var(--text-primary) 16%, transparent);
+}
+
+.trim-bar-window {
+  background: var(--accent);
+}
+
+.trim-handle {
+  position: absolute;
+  top: 6px;
+  width: 16px;
+  height: 36px;
+  margin-left: -8px;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  cursor: ew-resize;
+  padding: 0;
+  z-index: 1;
+}
+
+.trim-handle::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  border-left: 1px solid #222;
+  border-right: 1px solid #222;
+}
+
+.trim-times {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 .trim-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -5238,6 +5299,21 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.home-mix-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.home-mix-actions .btn {
+  flex: 1;
+}
+
+.mix-album .artist-view-cover .mix-cover {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 [data-player-art="0"] .player-cover,

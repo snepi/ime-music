@@ -92,7 +92,15 @@
     const playMix = event.target.closest("[data-play-mix]");
     if (playMix) {
       event.preventDefault();
-      playCreatedMix(playMix.dataset.playMix || "");
+      const mixId = playMix.dataset.playMix || "";
+      if (!document.querySelector(`.mix-album[data-mix="${cssEscape(mixId)}"]`)) openCreatedMix(mixId);
+      playCreatedMix(mixId);
+      return;
+    }
+    const openMix = event.target.closest("[data-open-mix]");
+    if (openMix) {
+      event.preventDefault();
+      openCreatedMix(openMix.dataset.openMix || "");
       return;
     }
     const downloadMix = event.target.closest("[data-download-mix]");
@@ -1967,19 +1975,33 @@
     return ready;
   }
 
-  async function playCreatedMix(id) {
+  async function openCreatedMix(id) {
+    const host = document.getElementById("discovery-results");
+    if (!host) return;
     const mixes = readCreatedMixes();
     const mix = mixes.find((item) => item.id === id);
     if (!mix) return;
-    const ready = await refreshMixFiles(mix);
+    if (!host.dataset.restore) host.dataset.restore = host.innerHTML;
+    host.dataset.albumFromList = "1";
+    await refreshMixFiles(mix);
     writeCreatedMixes(mixes);
-    const total = (mix.tracks || []).length;
-    if (!total || ready < total) {
-      notify(ready ? `Микс ещё не готов: ${ready} из ${total}` : "Микс ещё скачивается", "info");
-      return;
-    }
+    const cover = document.querySelector(`[data-open-mix="${cssEscape(id)}"] .mix-cover`)?.outerHTML || "";
+    const rows = (mix.tracks || []).map((track) => {
+      const play = track.file ? `data-play="${escapeAttr(track.file)}"` : `data-play-query="1"`;
+      return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title || "")}" data-artist="${escapeAttr(track.artist || "")}"><span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title || "")}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-name="${escapeAttr(track.artist || "")}">${escapeHtml(track.artist || "")}</button></div></div></li>`;
+    }).join("");
+    host.innerHTML = `<div class="album-view artist-view mix-album" data-mix="${escapeAttr(id)}"><div class="artist-view-header"><button type="button" class="artist-view-back" data-album-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><div class="artist-view-hero"><div class="artist-view-cover">${cover}</div><div class="artist-view-info"><p class="artist-kicker">Микс</p><h1>${escapeHtml(mix.title || "")}</h1><p class="artist-view-stats">${(mix.tracks || []).length} треков</p><button type="button" class="btn btn-primary" data-play-mix="${escapeAttr(id)}">Слушать</button></div></div></div><section class="artist-view-section"><h2>Треки</h2>${rows ? `<ul class="demo-tracks-grid">${rows}</ul>` : '<p class="artist-view-empty">Нет треков</p>'}</section></div>`;
+    host.scrollIntoView({ block: "start" });
+  }
+
+  async function playCreatedMix(id) {
+    const mixes = readCreatedMixes();
+    const mix = mixes.find((item) => item.id === id);
+    if (!mix || !(mix.tracks || []).length) return;
+    await refreshMixFiles(mix);
+    writeCreatedMixes(mixes);
     const items = mix.tracks.map((track) => ({
-      id: track.file,
+      id: track.file || "",
       title: track.title || "",
       artist: track.artist || "",
       preview: "",
@@ -1988,7 +2010,9 @@
     artistQueue = null;
     waves.active = false;
     waves.artist = false;
-    playId(items[0].id, items[0].title, items[0].artist, true);
+    const first = items[0];
+    if (first.id) playId(first.id, first.title, first.artist, true);
+    else playQuery(first.title, first.artist);
   }
 
   async function downloadCreatedMix(id) {
@@ -2018,20 +2042,11 @@
     }
     writeCreatedMixes(mixes);
     const total = (mix.tracks || []).length;
-    if (button) button.disabled = false;
-    if (ready === total && total >= 8) {
-      if (button) {
-        button.textContent = "Слушать";
-        button.classList.remove("btn-secondary");
-        button.classList.add("btn-primary");
-        button.dataset.playMix = id;
-        delete button.dataset.downloadMix;
-      }
-      notify("Микс готов", "success");
-      return;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Скачать";
     }
-    if (button) button.textContent = "Скачать";
-    notify(ready ? `Скачано ${ready} из ${total}. Микс можно слушать, когда скачаются все треки.` : "Скачивание продолжается в архиве", "info");
+    notify(ready === total && total ? "Микс скачан" : ready ? `Скачано ${ready} из ${total}` : "Скачивание продолжается в архиве", ready ? "success" : "info");
   }
 
   function scheduleArchive() {
@@ -2810,25 +2825,93 @@
       post("delete-song", { id }).then(() => navigate(location.pathname + location.search));
     }
   });
+  function paintTrimBar(bar) {
+    const duration = Number(bar.dataset.duration) || 0;
+    const span = duration > 0 ? duration : Math.max(Number(bar.dataset.end) || 1, 1);
+    const start = Math.max(0, Number(bar.dataset.start) || 0);
+    const end = Math.min(span, Math.max(start + 1, Number(bar.dataset.end) || span));
+    const left = (start / span) * 100;
+    const right = (end / span) * 100;
+    const windowEl = bar.querySelector(".trim-bar-window");
+    const startHandle = bar.querySelector(".trim-handle-start");
+    const endHandle = bar.querySelector(".trim-handle-end");
+    if (windowEl) {
+      windowEl.style.left = left + "%";
+      windowEl.style.width = Math.max(0, right - left) + "%";
+    }
+    if (startHandle) startHandle.style.left = left + "%";
+    if (endHandle) endHandle.style.left = right + "%";
+    const startLabel = bar.parentElement?.querySelector('[data-trim-label="start"]');
+    const endLabel = bar.parentElement?.querySelector('[data-trim-label="end"]');
+    if (startLabel) startLabel.textContent = "Начало " + fmt(start);
+    if (endLabel) endLabel.textContent = "Конец " + fmt(end);
+  }
+
+  function readTrimBar() {
+    const bar = document.querySelector("[data-trim-bar]");
+    if (!bar) return { start: 0, end: 0 };
+    return { start: Number(bar.dataset.start) || 0, end: Number(bar.dataset.end) || 0 };
+  }
+
+  function bindTrimBar(bar) {
+    bar.querySelectorAll("[data-trim-edge]").forEach((handle) => {
+      handle.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        handle.setPointerCapture(event.pointerId);
+        const drag = (ev) => {
+          if (ev.pointerId !== event.pointerId) return;
+          const rect = bar.getBoundingClientRect();
+          const span = Number(bar.dataset.duration) > 0 ? Number(bar.dataset.duration) : Math.max(Number(bar.dataset.end) || 1, 1);
+          const ratio = rect.width ? Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width)) : 0;
+          let value = Math.round(ratio * span);
+          if (handle.dataset.trimEdge === "start") {
+            const end = Number(bar.dataset.end) || span;
+            value = Math.max(0, Math.min(value, end - 1));
+            bar.dataset.start = String(value);
+          } else {
+            const start = Number(bar.dataset.start) || 0;
+            value = Math.min(span, Math.max(value, start + 1));
+            bar.dataset.end = String(value);
+          }
+          paintTrimBar(bar);
+        };
+        const stop = (ev) => {
+          if (ev.pointerId !== event.pointerId) return;
+          handle.removeEventListener("pointermove", drag);
+          handle.removeEventListener("pointerup", stop);
+          handle.removeEventListener("pointercancel", stop);
+        };
+        handle.addEventListener("pointermove", drag);
+        handle.addEventListener("pointerup", stop);
+        handle.addEventListener("pointercancel", stop);
+      });
+    });
+  }
+
   function openTrim(id, title) {
     document.querySelectorAll(".modal-overlay").forEach((node) => node.remove());
     const song = library.find((item) => item.id === id);
     const duration = Number(song?.duration) || 0;
     const start = Number(song?.trimStart) || 0;
-    const end = Number(song?.trimEnd) || (duration > 0 ? Math.round(duration) : 0);
+    const end = Number(song?.trimEnd) || (duration > 0 ? Math.round(duration) : 30);
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     overlay.innerHTML =
       `<div class="modal trim-modal" role="dialog" aria-label="Обрезать"><div class="modal-header"><h2>Обрезать</h2><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div>` +
-      `<div class="modal-body"><p class="modal-message">${escapeHtml(title)}</p><p class="modal-message">Начало и конец. Длинное вступление и лишняя концовка не играют.${duration ? ` Длительность ${fmt(duration)}.` : ""}</p>` +
-      `<div class="trim-fields"><label>Начало, сек<input id="trim-start" type="number" min="0" step="1" value="${start}"></label><label>Конец, сек<input id="trim-end" type="number" min="0" step="1" value="${end}"></label></div></div>` +
+      `<div class="modal-body"><p class="modal-message">${escapeHtml(title)}</p><p class="modal-message">Потяните края полосы. Длинное вступление и лишняя концовка не играют.${duration ? ` Длительность ${fmt(duration)}.` : ""}</p>` +
+      `<div class="trim-bar" data-trim-bar="1" data-duration="${duration}" data-start="${start}" data-end="${end}"><div class="trim-bar-track"></div><div class="trim-bar-window"></div><button type="button" class="trim-handle trim-handle-start" data-trim-edge="start" aria-label="Начало"></button><button type="button" class="trim-handle trim-handle-end" data-trim-edge="end" aria-label="Конец"></button></div><p class="trim-times"><span data-trim-label="start"></span><span data-trim-label="end"></span></p></div>` +
       `<div class="modal-footer"><button type="button" class="btn btn-secondary" data-trim-hear="1" data-id="${escapeAttr(id)}">Слушать этот кусок</button><button type="button" class="btn btn-primary" data-trim-save="1" data-id="${escapeAttr(id)}">Сохранить</button></div></div>`;
     document.body.appendChild(overlay);
+    const bar = overlay.querySelector("[data-trim-bar]");
+    paintTrimBar(bar);
+    bindTrimBar(bar);
   }
 
   function hearTrim(id) {
-    const start = Math.max(0, Number(document.getElementById("trim-start")?.value) || 0);
-    const end = Math.max(0, Number(document.getElementById("trim-end")?.value) || 0);
+    const range = readTrimBar();
+    const start = Math.max(0, range.start);
+    const end = Math.max(0, range.end);
     if (!(end > start)) {
       toast("Конец должен быть позже начала", "error");
       return;
@@ -2844,8 +2927,9 @@
   }
 
   function saveTrim(id) {
-    const start = Math.max(0, Number(document.getElementById("trim-start")?.value) || 0);
-    const end = Math.max(0, Number(document.getElementById("trim-end")?.value) || 0);
+    const range = readTrimBar();
+    const start = Math.max(0, range.start);
+    const end = Math.max(0, range.end);
     post("trim", { id, start: String(start), end: String(end) }).then((data) => {
       if (!data.ok && data.message && data.message.includes("Не удалось")) {
         toast(data.message, "error");

@@ -781,15 +781,11 @@ fn home_created_mixes(store: &Store) -> String {
         if index > 0 {
             seed.push(',');
         }
-        let mut ready = 0usize;
         let tracks = mix
             .tracks
             .iter()
             .map(|track| {
                 let file = store.mix_file_id(&track.title, &track.artist);
-                if !file.is_empty() {
-                    ready += 1;
-                }
                 format!(
                     r#"{{"title":"{}","artist":"{}","file":"{}"}}"#,
                     json_escape(&track.title),
@@ -800,18 +796,12 @@ fn home_created_mixes(store: &Store) -> String {
             .collect::<Vec<_>>()
             .join(",");
         seed.push_str(&format!(r#"{{"id":"{}","title":"{}","tracks":[{}]}}"#, json_escape(&mix.id), json_escape(&mix.title), tracks));
-        let finished = ready == mix.tracks.len() && ready >= 8;
-        let action = if finished {
-            format!(r#"<button type="button" class="btn btn-primary" data-play-mix="{id}">Слушать</button>"#, id = esc(&mix.id))
-        } else {
-            format!(r#"<button type="button" class="btn btn-secondary" data-download-mix="{id}">Скачать</button>"#, id = esc(&mix.id))
-        };
         cards.push_str(&format!(
-            r#"<li class="home-mix-card"><div class="home-card-cover">{cover}</div><div class="home-card-title">{title}</div><div class="home-card-artist">{count} треков</div>{action}</li>"#,
+            r#"<li class="home-mix-card"><button type="button" class="home-card" data-open-mix="{id}"><span class="home-card-cover">{cover}</span><span class="home-card-title">{title}</span><span class="home-card-artist">{count} треков</span></button><div class="home-mix-actions"><button type="button" class="btn btn-primary" data-play-mix="{id}">Слушать</button><button type="button" class="btn btn-secondary" data-download-mix="{id}">Скачать</button></div></li>"#,
+            id = esc(&mix.id),
             cover = mix_cover(&mix.title),
             title = esc(&mix.title),
             count = mix.tracks.len(),
-            action = action,
         ));
     }
     seed.push(']');
