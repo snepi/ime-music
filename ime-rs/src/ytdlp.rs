@@ -8,6 +8,10 @@ use std::time::Duration;
 
 fn hidden(bin: &str) -> Command {
     let mut command = Command::new(bin);
+    // Electron's ytDlpSpawnEnv. Without this, a Cyrillic query is mojibake on Windows
+    // and yt-dlp returns nothing, which used to be reported as a missing proxy.
+    command.env("PYTHONUTF8", "1");
+    command.env("PYTHONIOENCODING", "utf-8");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -198,7 +202,7 @@ fn search_hits(bin: &str, query: &str, proxy: &str) -> Result<Vec<Hit>, String> 
     if !hits.is_empty() {
         return Ok(hits);
     }
-    Err(friendly_error(&stderr, &stdout, !proxy.trim().is_empty(), !ok))
+    Err(friendly_error(&stderr, &stdout, !ok))
 }
 
 fn score_hit(hit: &Hit, title: &str, artist: &str) -> i32 {
@@ -247,32 +251,32 @@ fn score_hit(hit: &Hit, title: &str, artist: &str) -> i32 {
     score
 }
 
-fn friendly_error(stderr: &str, stdout: &str, has_proxy: bool, failed: bool) -> String {
+fn friendly_error(stderr: &str, stdout: &str, failed: bool) -> String {
     let text = format!("{stderr}\n{stdout}");
+    let lower = text.to_lowercase();
     if text.trim().is_empty() {
-        return if has_proxy {
-            "YouTube не ответил на поиск. Проверьте прокси в Настройках → Инструменты и попробуйте снова.".into()
-        } else {
-            "YouTube не ответил на поиск. Если включён VPN, укажите его локальный прокси в Настройках → Инструменты (например socks5://127.0.0.1:1080).".into()
-        };
+        return "yt-dlp не вернул данные".into();
+    }
+    if lower.contains("sign in") || lower.contains("not a bot") || lower.contains("video unavailable") || lower.contains("private video") {
+        return "YouTube не отдал видео. Обновите yt-dlp.".into();
+    }
+    if text.contains("403") || lower.contains("file is empty") || lower.contains("requested format is not available") {
+        return "yt-dlp не смог сохранить аудиопоток. Обновите yt-dlp.".into();
     }
     if text.contains("Connection aborted") || text.contains("10054") || text.contains("ConnectionReset") {
-        return "Не удалось подключиться к YouTube. Включите VPN и укажите прокси в Настройках → Инструменты (например socks5://127.0.0.1:1080).".into();
+        return "Не удалось подключиться к YouTube.".into();
     }
-    if text.to_lowercase().contains("video unavailable") || text.to_lowercase().contains("private video") {
-        return "Видео недоступно или требует авторизации".into();
-    }
-    if text.contains("403") {
-        return "Доступ к видео запрещён. Обновите yt-dlp до последней версии".into();
-    }
-    if text.to_lowercase().contains("timed out") || text.to_lowercase().contains("network") {
-        return "Ошибка сети при скачивании. Проверьте интернет и прокси в Настройках → Инструменты.".into();
+    if lower.contains("timed out") {
+        return "YouTube не ответил вовремя.".into();
     }
     if !failed {
         return "Не удалось найти видео на YouTube".into();
     }
     text.lines()
-        .find(|line| !line.trim().is_empty() && !line.trim().starts_with('['))
+        .find(|line| {
+            let line = line.trim();
+            !line.is_empty() && !line.starts_with('[') && !line.starts_with("WARNING")
+        })
         .unwrap_or("Не удалось скачать аудио")
         .chars()
         .take(240)
@@ -292,44 +296,116 @@ fn download_audio(
     if let Some(existing) = find_download(dest_dir, video_id) {
         return Ok(existing);
     }
-    let template = dest_dir.join(format!("{video_id}.%(ext)s"));
+    let template = dest_dir.join(format!("{video_id}.%(ext)s")).to_string_lossy().into_owned();
+    let runtime = js_runtime();
+    // android,web is what Electron sends, and it still finds the search hit.
+    // On current yt-dlp that client answers "Sign in to confirm you're not a bot"
+    // and writes no file. The download that saves uses the default clients plus
+    // the JS challenge solver (`--remote-components ejs:github`).
+    let mut attempts = Vec::new();
+    if let Some(runtime) = runtime.clone() {
+        attempts.push(download_args(&template, "bestaudio[protocol!*=m3u8]/bestaudio/best", None, Some(&runtime)));
+        attempts.push(download_args(
+            &template,
+            "bestaudio[protocol^=http]/best[protocol^=http]",
+            Some("youtube:player_client=web_safari,mweb"),
+            Some(&runtime),
+        ));
+    }
+    attempts.push(download_args(&template, "bestaudio/best", Some("youtube:player_client=android,web"), None));
+    let mut last_error = String::new();
+    for mut args in attempts {
+        push_proxy(&mut args, proxy);
+        args.push("--".into());
+        args.push(url.to_string());
+        let (_stdout, stderr, ok) = run(bin, &args, Some(dest_dir), Duration::from_secs(15 * 60), &mut |line, percent| {
+            if let Some(percent) = percent {
+                report(&format!("Скачивание: {label} · {percent}%"), Some(percent));
+            } else if !line.is_empty() {
+                report(&format!("Скачивание: {label}"), None);
+            }
+        })?;
+        if let Some(path) = find_download(dest_dir, video_id) {
+            return Ok(path);
+        }
+        remove_incomplete(dest_dir, video_id);
+        last_error = if ok && stderr.trim().is_empty() {
+            "yt-dlp завершился без файла".into()
+        } else {
+            friendly_error(&stderr, "", true)
+        };
+    }
+    Err(if last_error.is_empty() {
+        "yt-dlp завершился без файла".into()
+    } else {
+        last_error
+    })
+}
+
+fn download_args(template: &str, format: &str, client: Option<&str>, runtime: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "--no-playlist".into(),
         "--ignore-config".into(),
         "-f".into(),
-        "bestaudio/best".into(),
-        "--extractor-args".into(),
-        "youtube:player_client=android,web".into(),
+        format.into(),
         "--socket-timeout".into(),
         "30".into(),
         "--retries".into(),
-        "5".into(),
+        "3".into(),
         "--fragment-retries".into(),
-        "5".into(),
+        "2".into(),
         "--no-mtime".into(),
         "--newline".into(),
         "--progress".into(),
-        "-o".into(),
-        template.to_string_lossy().into_owned(),
     ];
-    push_proxy(&mut args, proxy);
-    args.push("--".into());
-    args.push(url.to_string());
-    let (_stdout, stderr, ok) = run(bin, &args, Some(dest_dir), Duration::from_secs(15 * 60), &mut |line, percent| {
-        if let Some(percent) = percent {
-            report(&format!("Скачивание: {label} · {percent}%"), Some(percent));
-        } else if !line.is_empty() {
-            report(&format!("Скачивание: {label}"), None);
-        }
-    })?;
-    if let Some(path) = find_download(dest_dir, video_id) {
-        return Ok(path);
+    if let Some(runtime) = runtime {
+        args.push("--js-runtimes".into());
+        args.push(runtime.into());
+        args.push("--remote-components".into());
+        args.push("ejs:github".into());
     }
-    Err(if ok {
-        "yt-dlp завершился без файла".into()
-    } else {
-        friendly_error(&stderr, "", !proxy.trim().is_empty(), true)
-    })
+    if let Some(client) = client {
+        args.push("--extractor-args".into());
+        args.push(client.into());
+    }
+    args.push("-o".into());
+    args.push(template.into());
+    args
+}
+
+fn js_runtime() -> Option<String> {
+    // Pass the runtime name, not a full path. `--js-runtimes node:C:\...`
+    // splits on the first colon and drops the Windows path.
+    if command_on_path("node").is_some() && version_ok("node") {
+        return Some("node".into());
+    }
+    if let Some(path) = command_on_path("nodejs") {
+        if version_ok("nodejs") {
+            return Some(format!("node:{}", path.display()));
+        }
+    }
+    if command_on_path("deno").is_some() && version_ok("deno") {
+        return Some("deno".into());
+    }
+    None
+}
+
+fn command_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let exe = dir.join(format!("{name}.exe"));
+            if exe.is_file() {
+                return Some(exe);
+            }
+        }
+    }
+    None
 }
 
 fn push_proxy(args: &mut Vec<String>, proxy: &str) {
@@ -368,12 +444,12 @@ fn run(
         text
     });
     let stderr_task = std::thread::spawn(move || {
-        let mut text = String::new();
+        let mut raw = Vec::new();
         if let Some(mut pipe) = stderr_pipe {
             let mut byte = [0u8; 1];
             let mut line = Vec::new();
             while pipe.read(&mut byte).unwrap_or(0) == 1 {
-                text.push(byte[0] as char);
+                raw.push(byte[0]);
                 if byte[0] == b'\n' || byte[0] == b'\r' {
                     if !line.is_empty() {
                         let _ = line_tx.send(String::from_utf8_lossy(&line).to_string());
@@ -387,7 +463,7 @@ fn run(
                 let _ = line_tx.send(String::from_utf8_lossy(&line).to_string());
             }
         }
-        text
+        String::from_utf8_lossy(&raw).into_owned()
     });
     let started = std::time::Instant::now();
     let status = loop {
@@ -456,8 +532,72 @@ pub fn save_cover(url: &str, dir: &Path, seed: &str) -> Option<PathBuf> {
 }
 
 fn find_download(dir: &Path, video_id: &str) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries.filter_map(|entry| entry.ok()).map(|entry| entry.path()).find(|path| {
-        path.file_stem().and_then(|stem| stem.to_str()) == Some(video_id) && path.is_file()
-    })
+    let prefix = format!("{video_id}.");
+    let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        if name.ends_with(".part") || name.ends_with(".ytdl") || name.ends_with(".temp") {
+            continue;
+        }
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !matches!(
+            ext.as_str(),
+            "webm" | "m4a" | "mp3" | "opus" | "ogg" | "wav" | "flac" | "aac" | "mp4" | "mkv" | "mov" | "m4b"
+        ) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() < 1024 {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if best.as_ref().map(|(_, when)| modified > *when).unwrap_or(true) {
+            best = Some((path, modified));
+        }
+    }
+    best.map(|(path, _)| path)
+}
+
+fn remove_incomplete(dir: &Path, video_id: &str) {
+    let prefix = format!("{video_id}.");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let tiny = entry.metadata().map(|meta| meta.len() < 1024).unwrap_or(true);
+        if tiny || name.ends_with(".part") || name.ends_with(".ytdl") {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::friendly_error;
+
+    #[test]
+    fn failures_are_not_described_as_a_missing_proxy() {
+        for sample in [
+            "",
+            "ConnectionResetError: [WinError 10054]",
+            "ERROR: unable to download webpage: network is unreachable",
+            "ERROR: timed out",
+            "ERROR: [youtube] abc: Sign in to confirm you’re not a bot",
+        ] {
+            let message = friendly_error(sample, "", true);
+            let lower = message.to_lowercase();
+            assert!(!lower.contains("прокси") && !lower.contains("proxy"), "{message}");
+        }
+    }
 }
