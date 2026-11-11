@@ -315,7 +315,10 @@
     if (artistMore && artistPage) {
       event.preventDefault();
       const box = document.querySelector("[data-artist-tracks]");
-      if (box) box.innerHTML = artistTrackRows(artistPage.tracks);
+      if (box) {
+        box.dataset.expanded = "1";
+        box.innerHTML = artistTrackRows(artistPage.tracks);
+      }
       artistMore.replaceWith(trackCountNote(artistPage.tracks.length));
       return;
     }
@@ -857,6 +860,17 @@
     return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}</div></li>`;
   }
 
+  function deezerCover(row) {
+    if (!row) return "";
+    const album = row.album || {};
+    const direct = album.cover_medium || album.cover_big || album.cover_xl || album.cover_small || "";
+    if (direct) return direct;
+    const md5 = album.md5_image || row.md5_image;
+    if (md5) return `https://cdn-images.dzcdn.net/images/cover/${md5}/250x250-000000-80-0-0.jpg`;
+    if (album.id) return `https://api.deezer.com/album/${album.id}/image`;
+    return "";
+  }
+
   function mapDeezerTrack(row, requirePreview = true) {
     if (!row || !row.title || (requirePreview && !row.preview)) return null;
     return {
@@ -865,7 +879,7 @@
       artist: row.artist?.name || "",
       artistId: row.artist?.id || "",
       album: row.album?.title || "",
-      cover: row.album?.cover_medium || row.album?.cover || "",
+      cover: deezerCover(row),
       preview: row.preview,
     };
   }
@@ -1141,11 +1155,7 @@
     const artistName = String(name || "").trim();
     const blocked = ["неизвестный исполнитель", "unknown artist", "unknown", "—", "-"];
     if (!id && (!artistName || blocked.includes(artistName.toLowerCase()))) return;
-    let host = panelHost();
-    if (!host) {
-      await navigate("/?view=home");
-      host = document.getElementById("discovery-results");
-    }
+    const host = panelHost();
     if (!host) return;
     if (!artistName && !id) return;
     rememberPanel(host);
@@ -1159,32 +1169,56 @@
         artistId = hit ? String(hit.id) : "";
       }
       if (!artistId) throw new Error("missing");
-      const quoted = encodeURIComponent(`artist:"${artistName || ""}"`);
-      const mentioned = encodeURIComponent(artistName || "");
-      const [info, top, albumRows, searchRows, mentionRows, related] = await Promise.all([
+      const [info, top] = await Promise.all([
         deezer("/artist/" + encodeURIComponent(artistId)),
         deezer("/artist/" + encodeURIComponent(artistId) + "/top?limit=100"),
-        deezerPages("/artist/" + encodeURIComponent(artistId) + "/albums?limit=100", 400),
-        deezerPages("/search/track?q=" + quoted + "&limit=100", 300),
-        deezer("/search/track?q=" + mentioned + "&limit=80").catch(() => ({ data: [] })),
-        deezer("/artist/" + encodeURIComponent(artistId) + "/related?limit=20").catch(() => ({ data: [] })),
       ]);
-      const extraAlbums = [];
-      for (let index = 0; index < albumRows.length; index += 8) {
-        const chunk = albumRows.slice(index, index + 8);
-        const lists = await Promise.all(chunk.map((album) => deezer("/album/" + album.id + "/tracks?limit=100").catch(() => ({ data: [] }))));
-        for (const list of lists) {
-          for (const row of list.data || []) {
-            if (!row.artist) row.artist = { id: Number(artistId), name: artistName };
-            extraAlbums.push(row);
-          }
-        }
-      }
-      renderArtist(host, info, top.data || [], searchRows, mentionRows.data || [], extraAlbums, albumRows, related.data || []);
+      renderArtist(host, info, top.data || [], [], [], [], [], []);
+      enrichArtist(host, info, top.data || []);
     } catch {
       host.innerHTML =
         '<p class="home-discovery-search-error">Артист не найден</p><button type="button" class="btn btn-secondary" data-artist-back="1">Назад</button>';
     }
+  }
+
+  async function enrichArtist(host, info, topRows) {
+    const artistId = String(info.id || "");
+    const artistName = String(info.name || "");
+    const still = () => host.querySelector(`[data-artist-page="${artistId}"]`);
+    const quoted = encodeURIComponent(`artist:"${artistName}"`);
+    const mentioned = encodeURIComponent(artistName);
+    let albumRows = [];
+    let searchRows = [];
+    let mentionRows = [];
+    let relatedRows = [];
+    try {
+      const [albums, searchPage, mention, related] = await Promise.all([
+        deezerPages("/artist/" + encodeURIComponent(artistId) + "/albums?limit=100", 400),
+        deezer("/search/track?q=" + quoted + "&limit=100").catch(() => ({ data: [] })),
+        deezer("/search/track?q=" + mentioned + "&limit=40").catch(() => ({ data: [] })),
+        deezer("/artist/" + encodeURIComponent(artistId) + "/related?limit=20").catch(() => ({ data: [] })),
+      ]);
+      albumRows = albums;
+      searchRows = searchPage.data || [];
+      mentionRows = mention.data || [];
+      relatedRows = related.data || [];
+    } catch { /* the card is already visible */ }
+    if (!still()) return;
+    renderArtist(host, info, topRows, searchRows, mentionRows, [], albumRows, relatedRows);
+    const extraAlbums = [];
+    for (let index = 0; index < albumRows.length; index += 8) {
+      if (!still()) return;
+      const chunk = albumRows.slice(index, index + 8);
+      const lists = await Promise.all(chunk.map((album) => deezer("/album/" + album.id + "/tracks?limit=100").catch(() => ({ data: [] }))));
+      for (const list of lists) {
+        for (const row of list.data || []) {
+          if (!row.artist) row.artist = { id: Number(artistId), name: artistName };
+          extraAlbums.push(row);
+        }
+      }
+    }
+    if (!still() || !extraAlbums.length) return;
+    renderArtist(host, info, topRows, searchRows, mentionRows, extraAlbums, albumRows, relatedRows);
   }
 
   function renderArtist(host, info, topRows, searchRows, mentionRows, albumTrackRows, albumRows, relatedRows) {
@@ -1198,9 +1232,14 @@
       const previous = byId.get(row.id);
       if (!previous || Number(row.rank || 0) > Number(previous.rank || 0)) byId.set(row.id, row);
     }
+    const pictureEarly = info.picture_xl || info.picture_big || info.picture_medium || "";
     const tracks = [...byId.values()]
       .sort((a, b) => Number(b.rank || 0) - Number(a.rank || 0))
-      .map((row) => mapDeezerTrack(row, false))
+      .map((row) => {
+        const track = mapDeezerTrack(row, false);
+        if (track && !track.cover) track.cover = pictureEarly;
+        return track;
+      })
       .filter(Boolean);
     const featureRows = [];
     const featureSeen = new Set();
@@ -1213,7 +1252,13 @@
       featureRows.push(row);
     }
     featureRows.sort((a, b) => Number(b.rank || 0) - Number(a.rank || 0));
-    const features = featureRows.map((row) => mapDeezerTrack(row, false)).filter(Boolean);
+    const features = featureRows
+      .map((row) => {
+        const track = mapDeezerTrack(row, false);
+        if (track && !track.cover) track.cover = pictureEarly;
+        return track;
+      })
+      .filter(Boolean);
     const albums = albumRows
       .filter((album) => album && album.title)
       .sort((a, b) => Number(b.fans || 0) - Number(a.fans || 0) || String(b.release_date || "").localeCompare(String(a.release_date || "")));
@@ -1222,7 +1267,8 @@
     const fans = Number(info.nb_fan) || 0;
     const albumCount = Number(info.nb_album) || albums.length;
     const favorite = isFavoriteArtist(artistName);
-    const previewTracks = tracks.slice(0, 8);
+    const expanded = host.querySelector("[data-artist-tracks]")?.dataset.expanded === "1";
+    const previewTracks = expanded ? tracks : tracks.slice(0, 8);
     const hidden = tracks.length - previewTracks.length;
     const albumCards = albums
       .map((album) => {
@@ -1249,7 +1295,7 @@
       )
       .join("");
     const glow = picture ? ` style="background-image:url('${escapeAttr(picture)}')"` : "";
-    host.innerHTML = `<div class="artist-page artist-view"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><header class="artist-hero"><div class="artist-hero-glow"${glow}></div><div class="artist-hero-cover">${picture ? `<img src="${escapeAttr(picture)}" alt="">` : svg('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>', 64)}</div><div class="artist-hero-copy"><p class="artist-kicker">Артист</p><h1>${escapeHtml(artistName)}</h1><p class="artist-hero-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p><div class="artist-hero-actions"><button type="button" class="btn btn-primary artist-play" data-artist-play="1">${svg(PLAY, 16)}<span>Слушать</span></button><button type="button" class="artist-icon-btn${favorite ? " is-on" : ""}" data-artist-fav="1" aria-pressed="${favorite ? "true" : "false"}" aria-label="Избранные артисты" title="Избранные артисты">${heartIcon(favorite)}</button><button type="button" class="artist-icon-btn" data-artist-menu="1" aria-label="Ещё">${svg('<circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/>', 18)}</button><button type="button" class="btn btn-secondary" data-artist-about="1">Об исполнителе</button></div><div class="artist-platforms">${platforms}</div></div></header><section class="artist-section"><div class="artist-section-head"><h2>Популярные треки</h2><span class="artist-view-tab-count">${tracks.length}</span></div>${tracks.length ? `<ol class="artist-track-list" data-artist-tracks>${artistTrackRows(previewTracks)}</ol>${hidden > 0 ? `<button type="button" class="btn btn-secondary artist-section-more" data-artist-more="1">Показать все (${hidden})</button>` : `<p class="artist-view-section-count">Всего: ${tracks.length} треков</p>`}` : '<p class="artist-view-empty">Нет треков</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Альбомы</h2><span class="artist-view-tab-count">${albums.length}</span></div>${albumCards ? `<ul class="artist-releases-grid">${albumCards}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Фиты</h2><span class="artist-view-tab-count">${features.length}</span></div>${features.length ? `<ol class="artist-track-list">${featureList(features)}</ol>` : '<p class="artist-view-empty">Нет фитов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Похожие артисты</h2></div>${similar ? `<ul class="artist-chip-grid artist-similar">${similar}</ul>` : '<p class="artist-view-empty">Нет похожих артистов</p>'}</section></div>`;
+    host.innerHTML = `<div class="artist-page artist-view" data-artist-page="${escapeAttr(String(artistId))}"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><header class="artist-hero"><div class="artist-hero-glow"${glow}></div><div class="artist-hero-cover">${picture ? `<img src="${escapeAttr(picture)}" alt="">` : svg('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>', 64)}</div><div class="artist-hero-copy"><p class="artist-kicker">Артист</p><h1>${escapeHtml(artistName)}</h1><p class="artist-hero-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p><div class="artist-hero-actions"><button type="button" class="btn btn-primary artist-play" data-artist-play="1">${svg(PLAY, 16)}<span>Слушать</span></button><button type="button" class="artist-icon-btn${favorite ? " is-on" : ""}" data-artist-fav="1" aria-pressed="${favorite ? "true" : "false"}" aria-label="Избранные артисты" title="Избранные артисты">${heartIcon(favorite)}</button><button type="button" class="artist-icon-btn" data-artist-menu="1" aria-label="Ещё">${svg('<circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/>', 18)}</button><button type="button" class="btn btn-secondary" data-artist-about="1">Об исполнителе</button></div><div class="artist-platforms">${platforms}</div></div></header><section class="artist-section"><div class="artist-section-head"><h2>Популярные треки</h2><span class="artist-view-tab-count">${tracks.length}</span></div>${tracks.length ? `<ol class="artist-track-list" data-artist-tracks>${artistTrackRows(previewTracks)}</ol>${hidden > 0 ? `<button type="button" class="btn btn-secondary artist-section-more" data-artist-more="1">Показать все (${hidden})</button>` : `<p class="artist-view-section-count">Всего: ${tracks.length} треков</p>`}` : '<p class="artist-view-empty">Нет треков</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Альбомы</h2><span class="artist-view-tab-count">${albums.length}</span></div>${albumCards ? `<ul class="artist-releases-grid">${albumCards}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Фиты</h2><span class="artist-view-tab-count">${features.length}</span></div>${features.length ? `<ol class="artist-track-list">${featureList(features)}</ol>` : '<p class="artist-view-empty">Нет фитов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Похожие артисты</h2></div>${similar ? `<ul class="artist-chip-grid artist-similar">${similar}</ul>` : '<p class="artist-view-empty">Нет похожих артистов</p>'}</section></div>`;
     lastArtistHtml = host.innerHTML;
   }
 
@@ -1401,7 +1447,8 @@
   function panelHost() {
     return document.getElementById("discovery-results")
       || document.getElementById("recommendations-root")
-      || document.getElementById("wishlist-body");
+      || document.getElementById("wishlist-body")
+      || document.querySelector(".main-content");
   }
 
   async function openAlbumByName(title, artist) {
