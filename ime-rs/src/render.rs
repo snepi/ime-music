@@ -740,10 +740,10 @@ fn home_library_mixes(store: &Store) -> String {
     for mix in mixes {
         let ids = mix.song_ids.iter().cloned().collect::<Vec<_>>().join(",");
         cards.push_str(&format!(
-            r#"<li><button type="button" class="home-card" data-library-mix="1" data-ids="{ids}" data-title="{title}"><span class="home-card-cover">{icon}<span class="home-card-play">{play}</span></span><span class="home-card-title">{title}</span><span class="home-card-artist">{count} треков</span></button></li>"#,
+            r#"<li><button type="button" class="home-card" data-library-mix="1" data-ids="{ids}" data-title="{title}"><span class="home-card-cover">{cover}<span class="home-card-play">{play}</span></span><span class="home-card-title">{title}</span><span class="home-card-artist">{count} треков</span></button></li>"#,
             ids = esc(&ids),
             title = esc(&mix.title),
-            icon = icon("disc", 22),
+            cover = mix_cover(&mix.title),
             play = icon("play", 14),
             count = mix.song_ids.len(),
         ));
@@ -778,8 +778,8 @@ fn home_created_mixes(store: &Store) -> String {
             .join(",");
         seed.push_str(&format!(r#"{{"id":"{}","title":"{}","tracks":[{}]}}"#, json_escape(&mix.id), json_escape(&mix.title), tracks));
         cards.push_str(&format!(
-            r#"<li class="home-mix-card"><div class="home-card-cover">{icon}</div><div class="home-card-title">{title}</div><div class="home-card-artist">{count} треков</div><button type="button" class="btn btn-secondary" data-download-mix="{id}">Скачать</button></li>"#,
-            icon = icon("disc", 22),
+            r#"<li class="home-mix-card"><div class="home-card-cover">{cover}</div><div class="home-card-title">{title}</div><div class="home-card-artist">{count} треков</div><button type="button" class="btn btn-secondary" data-download-mix="{id}">Скачать</button></li>"#,
+            cover = mix_cover(&mix.title),
             title = esc(&mix.title),
             count = mix.tracks.len(),
             id = esc(&mix.id),
@@ -791,6 +791,65 @@ fn home_created_mixes(store: &Store) -> String {
         refresh = refresh,
         cards = cards,
         seed = seed,
+    )
+}
+
+fn mix_cover(title: &str) -> String {
+    let looks: &[(&str, &str, &str, usize)] = &[
+        ("Смиксовали ваши треки в стиле рок", "рок", "#ff3b30", 0),
+        ("Смиксовали ваши треки в жанре рэп", "рэп", "#7c4dff", 1),
+        ("Смиксовали ваши треки в стиле поп", "поп", "#ff2d95", 2),
+        ("Смиксовали ваши треки в стиле электро", "электро", "#00e5ff", 3),
+        ("Смиксовали ваши треки в стиле джаз", "джаз", "#ffb300", 4),
+        ("Смиксовали ваши треки в стиле инди", "инди", "#69f0ae", 5),
+        ("Смиксовали ваши русские треки", "русские", "#2979ff", 6),
+        ("Смиксовали ваши зарубежные треки", "зарубежные", "#ff6d00", 7),
+        ("Смиксовали ваши любимые треки", "любимые", "#ff1744", 0),
+        ("Смиксовали то, что вы часто слушаете", "часто", "#00e676", 1),
+        ("Смиксовали ваши новые треки", "новые", "#18ffff", 2),
+        ("Смиксовали ваши спокойные треки", "спокойные", "#b388ff", 3),
+        ("Смиксовали ваши танцевальные треки", "танцы", "#ffea00", 4),
+        ("Смиксовали ваши саундтреки", "саундтрек", "#ff4081", 5),
+        ("Смиксовали ваши треки в стиле соул", "соул", "#ff9100", 6),
+        ("Микс в стиле рок", "рок", "#e53935", 1),
+        ("Микс в жанре рэп", "рэп", "#651fff", 2),
+        ("Микс в стиле поп", "поп", "#f50057", 3),
+        ("Микс в стиле электро", "электро", "#00b0ff", 4),
+        ("Микс в стиле джаз", "джаз", "#ffd600", 5),
+        ("Микс в стиле инди", "инди", "#00c853", 6),
+        ("Микс в стиле соул", "соул", "#ff6f00", 7),
+        ("Микс в стиле метал", "метал", "#d50000", 0),
+        ("Микс в стиле фолк", "фолк", "#64dd17", 1),
+        ("Микс в стиле латина", "латина", "#ffab00", 2),
+        ("Микс в стиле k-pop", "k-pop", "#ea80fc", 3),
+        ("Микс в стиле классика", "классика", "#40c4ff", 4),
+        ("Микс из саундтреков", "саундтрек", "#ff5252", 5),
+        ("Микс в стиле лоуфай", "лоуфай", "#b2ff59", 6),
+        ("Микс в стиле диско", "диско", "#ffd740", 7),
+    ];
+    let found = looks.iter().find(|(name, _, _, _)| *name == title);
+    let label = found.map(|(_, label, _, _)| *label).unwrap_or("микс");
+    let color = found.map(|(_, _, color, _)| *color).unwrap_or("#ff4081");
+    let shape = found.map(|(_, _, _, shape)| *shape).unwrap_or(0);
+    let ink = if matches!(shape, 3 | 4) { "#102018" } else { "#ffffff" };
+    let mark = 28 + (title.len() % 12) * 12;
+    let drawing = match shape {
+        0 => r##"<line x1="16" y1="36" x2="184" y2="36" stroke="#ffffff" stroke-width="8"/><line x1="16" y1="58" x2="150" y2="58" stroke="#ffffff" stroke-width="8"/><line x1="16" y1="80" x2="120" y2="80" stroke="#ffffff" stroke-width="8"/>"##,
+        1 => r##"<circle cx="58" cy="58" r="28" fill="none" stroke="#ffffff" stroke-width="8"/><circle cx="128" cy="48" r="16" fill="#ffffff"/><circle cx="150" cy="92" r="10" fill="none" stroke="#ffffff" stroke-width="6"/>"##,
+        2 => r##"<line x1="20" y1="100" x2="100" y2="20" stroke="#ffffff" stroke-width="8"/><line x1="50" y1="110" x2="140" y2="20" stroke="#ffffff" stroke-width="8"/><line x1="90" y1="110" x2="180" y2="20" stroke="#ffffff" stroke-width="8"/>"##,
+        3 => r##"<circle cx="40" cy="40" r="8" fill="#102018"/><circle cx="80" cy="40" r="8" fill="#102018"/><circle cx="120" cy="40" r="8" fill="#102018"/><circle cx="60" cy="76" r="8" fill="#102018"/><circle cx="100" cy="76" r="8" fill="#102018"/>"##,
+        4 => r##"<polygon points="100,18 160,96 40,96" fill="none" stroke="#102018" stroke-width="8"/><polygon points="70,70 110,70 90,104" fill="#102018"/>"##,
+        5 => r##"<path d="M20 90 A50 50 0 0 1 120 40" fill="none" stroke="#ffffff" stroke-width="8"/><path d="M40 110 A70 70 0 0 1 170 50" fill="none" stroke="#ffffff" stroke-width="8"/>"##,
+        6 => r##"<rect x="28" y="28" width="48" height="48" fill="none" stroke="#ffffff" stroke-width="8"/><rect x="96" y="40" width="36" height="36" fill="#ffffff"/><rect x="146" y="28" width="22" height="22" fill="none" stroke="#ffffff" stroke-width="6"/>"##,
+        _ => r##"<line x1="24" y1="30" x2="176" y2="30" stroke="#ffffff" stroke-width="6"/><line x1="100" y1="18" x2="100" y2="100" stroke="#ffffff" stroke-width="8"/><circle cx="100" cy="78" r="18" fill="none" stroke="#ffffff" stroke-width="6"/>"##,
+    };
+    format!(
+        r#"<svg class="mix-cover" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="200" height="200" fill="{color}"/>{drawing}<circle cx="{mark}" cy="22" r="8" fill="{ink}"/><text x="16" y="148" fill="{ink}" font-size="18" font-family="sans-serif">Микс для вас</text><text x="16" y="176" fill="{ink}" font-size="22" font-weight="700" font-family="sans-serif">{label}</text></svg>"#,
+        color = color,
+        drawing = drawing,
+        mark = mark,
+        ink = ink,
+        label = esc(label),
     )
 }
 
@@ -2062,7 +2121,7 @@ fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="updates">{}</button><button type="button" class="btn btn-ghost" data-tool="releases">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="export-backup">{}</button><button type="button" class="btn btn-primary" data-tool="import-backup">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary" data-tool="playlist-url">{}</button><button type="button" class="btn btn-ghost" data-tool="playlist-file">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary" data-tool="phone">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary" data-tool="meta">{}</button><div style="margin-top:12px"><button type="button" class="btn btn-ghost" data-tool="rebuild-autos">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="find-dupes">{}</button><button type="button" class="btn btn-primary" data-tool="merge-dupes">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
-        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.2")])),
+        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.3")])),
         esc(&i18n.t("tools.updateCheck")),
         esc(&i18n.t("tools.updateOpenPage")),
         esc(&i18n.t("tools.backup")),
