@@ -2174,10 +2174,13 @@ select:focus-visible {
 }
 
 .main-content > .artist-page.artist-view {
-  flex: 1;
+  /* Stay the height of the column. Late tracks must not stretch the page. */
+  flex: 1 1 0;
+  height: 0;
   min-height: 0;
+  max-height: 100%;
   overflow-x: hidden;
-  overflow-y: scroll;
+  overflow-y: auto;
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
 }

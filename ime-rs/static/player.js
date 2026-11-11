@@ -1299,7 +1299,23 @@
     host.innerHTML = `<div class="artist-page artist-view" data-artist-page="${escapeAttr(String(artistId))}"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><header class="artist-hero"><div class="artist-hero-glow"${glow}></div><div class="artist-hero-cover">${picture ? `<img src="${escapeAttr(picture)}" alt="">` : svg('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>', 64)}</div><div class="artist-hero-copy"><p class="artist-kicker">Артист</p><h1>${escapeHtml(artistName)}</h1><p class="artist-hero-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p><div class="artist-hero-actions"><button type="button" class="btn btn-primary artist-play" data-artist-play="1">${svg(PLAY, 16)}<span>Слушать</span></button><button type="button" class="artist-icon-btn${favorite ? " is-on" : ""}" data-artist-fav="1" aria-pressed="${favorite ? "true" : "false"}" aria-label="Избранные артисты" title="Избранные артисты">${heartIcon(favorite)}</button><button type="button" class="artist-icon-btn" data-artist-menu="1" aria-label="Ещё">${svg('<circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/>', 18)}</button><button type="button" class="btn btn-secondary" data-artist-about="1">Об исполнителе</button></div><div class="artist-platforms">${platforms}</div></div></header><section class="artist-section"><div class="artist-section-head"><h2>Популярные треки</h2><span class="artist-view-tab-count">${tracks.length}</span></div>${tracks.length ? `<ol class="artist-track-list" data-artist-tracks>${artistTrackRows(previewTracks)}</ol>${hidden > 0 ? `<button type="button" class="btn btn-secondary artist-section-more" data-artist-more="1">Показать все (${hidden})</button>` : `<p class="artist-view-section-count">Всего: ${tracks.length} треков</p>`}` : '<p class="artist-view-empty">Нет треков</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Альбомы</h2><span class="artist-view-tab-count">${albums.length}</span></div>${albumCards ? `<ul class="artist-releases-grid">${albumCards}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Фиты</h2><span class="artist-view-tab-count">${features.length}</span></div>${features.length ? `<ol class="artist-track-list">${featureList(features)}</ol>` : '<p class="artist-view-empty">Нет фитов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Похожие артисты</h2></div>${similar ? `<ul class="artist-chip-grid artist-similar">${similar}</ul>` : '<p class="artist-view-empty">Нет похожих артистов</p>'}</section></div>`;
     lastArtistHtml = host.innerHTML;
     const scroller = host.classList.contains("artist-page") ? host : host.querySelector(".artist-page");
+    lockArtistScroll(scroller);
     if (scroller && keptScroll) scroller.scrollTop = keptScroll;
+  }
+
+  function lockArtistScroll(scroller) {
+    if (!scroller) return;
+    const column = scroller.parentElement?.classList.contains("main-content") ? scroller.parentElement : scroller.closest(".main-content");
+    if (!column) return;
+    const height = column.clientHeight;
+    if (height > 0) {
+      scroller.style.flex = "1 1 0";
+      scroller.style.height = height + "px";
+      scroller.style.maxHeight = height + "px";
+      scroller.style.minHeight = "0";
+    }
+    scroller.style.overflowX = "hidden";
+    scroller.style.overflowY = "auto";
   }
 
   async function openAlbum(id) {
@@ -2472,6 +2488,7 @@
     paintVolume(audio.volume);
     paintMuteIcon();
   }
+  window.addEventListener("resize", () => lockArtistScroll(document.querySelector(".main-content > .artist-page")));
   document.querySelector(".player-volume")?.addEventListener("wheel", (event) => {
     event.preventDefault();
     event.stopPropagation();
