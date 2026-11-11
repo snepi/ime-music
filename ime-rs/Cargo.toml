@@ -1,6 +1,6 @@
 [package]
 name = "ime-music-rs"
-version = "1.2.0"
+version = "1.3.4"
 edition = "2021"
 description = "IMe Music rewritten in Rust. Runs beside the Electron app."
 publish = false
@@ -26,6 +26,15 @@ bytes = "=1.9.0"
 http-body = "=1.0.1"
 http-body-util = "=0.1.2"
 tokio-util = "=0.7.13"
+ureq = { version = "=2.9.7", default-features = false, features = ["tls"] }
+# url 2.5.7+ pulls idna 1.1 / icu_provider 2, which need Rust edition 2024.
+url = "=2.5.4"
+idna = "=1.0.3"
+idna_adapter = "=1.1.0"
+icu_normalizer = "=1.5.0"
+icu_properties = "=1.5.1"
+icu_provider = "=1.5.0"
+zeroize = "=1.8.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com = "=0.28.0"
