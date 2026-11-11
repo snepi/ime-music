@@ -314,10 +314,184 @@ fn save(state: &AppState, store: &Store) {
     store.save(&state.data_path);
 }
 
+fn trim_json(ok: bool, message: &str, duration: f64, id: &str) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({
+            "ok": ok,
+            "id": id,
+            "message": message,
+            "detail": { "duration": duration },
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+fn hidden_cmd(bin: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(bin);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
+
+fn resolve_tool(configured: &str, name: &str) -> Option<String> {
+    let mut candidates = Vec::new();
+    let trimmed = configured.trim();
+    if !trimmed.is_empty() {
+        let path = std::path::Path::new(trimmed);
+        if path.is_dir() {
+            candidates.push(path.join(name).to_string_lossy().into_owned());
+            candidates.push(path.join(format!("{name}.exe")).to_string_lossy().into_owned());
+        } else if let Some(file_name) = path.file_name().and_then(|item| item.to_str()) {
+            let swapped = if file_name.to_ascii_lowercase().starts_with("ffmpeg") {
+                file_name.replacen("ffmpeg", name, 1)
+            } else {
+                name.to_string()
+            };
+            if let Some(parent) = path.parent() {
+                candidates.push(parent.join(swapped).to_string_lossy().into_owned());
+            }
+            if name == "ffmpeg" {
+                candidates.push(trimmed.to_string());
+            }
+        }
+    }
+    candidates.push(name.into());
+    candidates.push(format!("{name}.exe"));
+    candidates.into_iter().find(|bin| {
+        hidden_cmd(bin)
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
+}
+
+fn audio_codec(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "mp3" => "libmp3lame",
+        "m4a" | "aac" | "mp4" => "aac",
+        "flac" => "flac",
+        "wav" => "pcm_s16le",
+        "ogg" => "libvorbis",
+        _ => "libopus",
+    }
+}
+
+fn cut_audio(bin: &str, src: &std::path::Path, dest: &std::path::Path, start: f64, end: f64) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let ext = dest.extension().and_then(|item| item.to_str()).unwrap_or("webm");
+    let start_s = format!("{start:.3}");
+    let length_s = format!("{:.3}", (end - start).max(0.0));
+    let output = hidden_cmd(bin)
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+        .arg(src)
+        .args(["-ss", &start_s, "-t", &length_s, "-vn", "-map", "0:a:0", "-c:a", audio_codec(ext)])
+        .arg(dest)
+        .output()
+        .map_err(|err| err.to_string())?;
+    let size = std::fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0);
+    if !output.status.success() || size < 64 {
+        let _ = std::fs::remove_file(dest);
+        let err = String::from_utf8_lossy(&output.stderr);
+        let line = err.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("ffmpeg");
+        return Err(line.chars().take(180).collect());
+    }
+    Ok(())
+}
+
+fn probe_duration(ffprobe: &str, path: &std::path::Path) -> Option<f64> {
+    let output = hidden_cmd(ffprobe)
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.trim().parse::<f64>().ok().filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn trim_dest(src: &std::path::Path, id: &str) -> std::path::PathBuf {
+    let ext = src.extension().and_then(|item| item.to_str()).unwrap_or("webm");
+    let dir = src.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut dest = dir.join(format!("{id}.trim.{ext}"));
+    let mut n = 2u32;
+    while dest.exists() {
+        dest = dir.join(format!("{id}.trim-{n}.{ext}"));
+        n += 1;
+    }
+    dest
+}
+
+async fn trim_song(state: Arc<AppState>, form: ActForm) -> Response {
+    let id = form.id.clone().unwrap_or_default();
+    let start_in = form.start.as_deref().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+    let end_in = form.end.as_deref().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+    let (src, file_duration, ffmpeg_cfg) = {
+        let store = state.store.lock().expect("store");
+        let Some(song) = store.song(&id) else {
+            return trim_json(false, "Не удалось обрезать: трек не найден", 0.0, &id);
+        };
+        (std::path::PathBuf::from(&song.path), song.duration, store.settings.ffmpeg_path.clone())
+    };
+    let mut start = if start_in.is_finite() { start_in.max(0.0) } else { 0.0 };
+    let mut end = if end_in.is_finite() { end_in.max(0.0) } else { 0.0 };
+    if file_duration > 0.0 {
+        start = start.min(file_duration);
+        if end <= 0.0 || end > file_duration + 0.05 {
+            end = file_duration;
+        }
+    }
+    if end < start {
+        std::mem::swap(&mut start, &mut end);
+    }
+    if end - start < 0.5 {
+        return trim_json(false, "Не удалось сохранить отрезок", 0.0, &id);
+    }
+    let Some(bin) = resolve_tool(&ffmpeg_cfg, "ffmpeg") else {
+        return trim_json(false, "Не удалось обрезать: не найден FFmpeg", 0.0, &id);
+    };
+    let dest = trim_dest(&src, &id);
+    let src_job = src.clone();
+    let dest_job = dest.clone();
+    let bin_job = bin.clone();
+    let cut = tokio::task::spawn_blocking(move || cut_audio(&bin_job, &src_job, &dest_job, start, end)).await;
+    if let Err(err) = cut.unwrap_or_else(|_| Err("Не удалось обрезать файл".into())) {
+        return trim_json(false, &format!("Не удалось обрезать: {err}"), 0.0, &id);
+    }
+    let probed = resolve_tool(&ffmpeg_cfg, "ffprobe").and_then(|probe| probe_duration(&probe, &dest));
+    let new_duration = probed.unwrap_or(end - start);
+    let mut store = state.store.lock().expect("store");
+    if let Err(err) = store.replace_song_file(&id, &dest) {
+        let _ = std::fs::remove_file(&dest);
+        return trim_json(false, &format!("Не удалось обрезать: {err}"), 0.0, &id);
+    }
+    if let Some(song) = store.songs.iter_mut().find(|song| song.id == id) {
+        song.duration = new_duration;
+        song.trim_start = 0.0;
+        song.trim_end = 0.0;
+    }
+    save(&state, &store);
+    trim_json(true, "Отрезок сохранён", new_duration, &id)
+}
+
 async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {
     let back = form.back.clone().unwrap_or_else(|| "/".into());
     let ajax = form.ajax.as_deref() == Some("1");
     let action = form.action.clone().unwrap_or_default();
+    if action == "trim" {
+        return trim_song(state, form).await;
+    }
     let mut store = state.store.lock().expect("store");
     let i18n = i18n::I18n::load(&state.static_dir.join("i18n"), &store.settings.locale);
     let mut message = String::new();
@@ -373,17 +547,6 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 form.url.as_deref().unwrap_or(""),
                 form.cover.as_deref().unwrap_or(""),
             );
-        }
-        "trim" => {
-            if let Some(id) = form.id.as_deref() {
-                let start = form.start.as_deref().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
-                let end = form.end.as_deref().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
-                if store.set_trim(id, start, end) {
-                    message = "Отрезок сохранён".into();
-                } else {
-                    message = "Не удалось сохранить отрезок".into();
-                }
-            }
         }
         "create-mixes" => match store.create_external_mixes() {
             Ok(()) => message = "Миксы собраны".into(),

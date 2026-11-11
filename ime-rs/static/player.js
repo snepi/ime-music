@@ -2899,7 +2899,7 @@
     overlay.className = "modal-overlay";
     overlay.innerHTML =
       `<div class="modal trim-modal" role="dialog" aria-label="Обрезать"><div class="modal-header"><h2>Обрезать</h2><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div>` +
-      `<div class="modal-body"><p class="modal-message">${escapeHtml(title)}</p><p class="modal-message">Потяните края полосы. Длинное вступление и лишняя концовка не играют.${duration ? ` Длительность ${fmt(duration)}.` : ""}</p>` +
+      `<div class="modal-body"><p class="modal-message">${escapeHtml(title)}</p><p class="modal-message">Потяните края полосы. Сохранение вырезает файл, и перемотка не возвращается в удалённые части.${duration ? ` Длительность ${fmt(duration)}.` : ""}</p>` +
       `<div class="trim-bar" data-trim-bar="1" data-duration="${duration}" data-start="${start}" data-end="${end}"><div class="trim-bar-track"></div><div class="trim-bar-window"></div><button type="button" class="trim-handle trim-handle-start" data-trim-edge="start" aria-label="Начало"></button><button type="button" class="trim-handle trim-handle-end" data-trim-edge="end" aria-label="Конец"></button></div><p class="trim-times"><span data-trim-label="start"></span><span data-trim-label="end"></span></p></div>` +
       `<div class="modal-footer"><button type="button" class="btn btn-secondary" data-trim-hear="1" data-id="${escapeAttr(id)}">Слушать этот кусок</button><button type="button" class="btn btn-primary" data-trim-save="1" data-id="${escapeAttr(id)}">Сохранить</button></div></div>`;
     document.body.appendChild(overlay);
@@ -2931,14 +2931,20 @@
     const start = Math.max(0, range.start);
     const end = Math.max(0, range.end);
     post("trim", { id, start: String(start), end: String(end) }).then((data) => {
-      if (!data.ok && data.message && data.message.includes("Не удалось")) {
-        toast(data.message, "error");
+      if (data.ok === false || (data.message && data.message.includes("Не удалось"))) {
+        toast(data.message || "Не удалось обрезать файл", "error");
         return;
       }
       const song = library.find((item) => item.id === id);
       if (song) {
-        song.trimStart = start;
-        song.trimEnd = end;
+        song.trimStart = 0;
+        song.trimEnd = 0;
+        const cut = Number(data.detail && data.detail.duration);
+        if (cut > 0) song.duration = cut;
+      }
+      clip = { id: "", start: 0, end: 0, preview: false };
+      if (audio.src.includes(encodeURIComponent(id))) {
+        audio.src = "/audio/" + encodeURIComponent(id) + "?cut=" + Date.now();
       }
       toast(data.message || "Отрезок сохранён", "success");
       document.querySelector(".modal-overlay")?.remove();
