@@ -267,7 +267,8 @@ async fn deezer_proxy(Query(query): Query<DeezerQuery>) -> Response {
     let allowed = path.starts_with("/search/")
         || path.starts_with("/artist/")
         || path.starts_with("/track/")
-        || path.starts_with("/album/");
+        || path.starts_with("/album/")
+        || path.starts_with("/chart/");
     if !allowed || path.contains("://") || path.contains("..") || path.contains('\n') {
         return (StatusCode::BAD_REQUEST, "bad path").into_response();
     }
@@ -382,6 +383,14 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                     detail = serde_json::json!({ "url": url });
                 }
             }
+        }
+        "waves-reset" => {
+            let heard = store.settings.waves.heard.clone();
+            let spin = store.settings.waves.spin;
+            store.settings.waves = model::Waves::default();
+            store.settings.waves.heard = heard;
+            store.settings.waves.spin = spin;
+            message = "Настройки волны сброшены".into();
         }
         "waves-setting" => {
             waves::apply_setting(

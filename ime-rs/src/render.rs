@@ -149,10 +149,11 @@ fn library_seed(store: &Store) -> String {
     let mut parts = Vec::new();
     for song in &store.songs {
         parts.push(format!(
-            r#"{{"id":"{}","title":"{}","artist":"{}"}}"#,
+            r#"{{"id":"{}","title":"{}","artist":"{}","liked":{}}}"#,
             json_escape(&song.id),
             json_escape(&song.title),
             json_escape(&song.artist),
+            if song.liked { "true" } else { "false" },
         ));
     }
     format!("[{}]", parts.join(","))
@@ -416,7 +417,7 @@ fn waves_settings(store: &Store, i18n: &I18n) -> String {
         )
     };
     format!(
-        r#"<div class="home-waves-settings" id="waves-settings" hidden>{}{}{}{}{}<label class="home-waves-toggle"><input type="checkbox" data-waves-field="skipKnown"{}><span>{}</span></label><p class="home-waves-settings-hint">{}</p></div>"#,
+        r#"<div class="home-waves-settings" id="waves-settings" hidden>{}{}{}{}{}<label class="home-waves-toggle"><input type="checkbox" data-waves-field="skipKnown"{}><span>{}</span></label><div class="home-waves-settings-actions"><button type="button" class="btn btn-primary" data-act="waves-save">{}</button><button type="button" class="btn btn-secondary" data-act="waves-reset">{}</button><button type="button" class="btn btn-secondary" data-act="waves-refresh">{}</button></div><p class="home-waves-settings-hint">{}</p></div>"#,
         block(
             "waves.genre",
             waves_chip_row(
@@ -494,6 +495,9 @@ fn waves_settings(store: &Store, i18n: &I18n) -> String {
         ),
         if waves.skip_known { " checked" } else { "" },
         esc(&i18n.t("waves.skipKnown")),
+        esc(&i18n.t("common.save")),
+        esc(&i18n.t("common.reset")),
+        esc(&i18n.t("rec.refresh")),
         esc(&i18n.t("waves.settingsHint")),
     )
 }
@@ -945,12 +949,12 @@ fn recommendations_view(i18n: &I18n, screen: &Screen) -> String {
         esc(&i18n.t("rec.refresh")),
         esc(&i18n.t("rec.filterAria"))
     );
-    for (i, key) in [
-        "rec.filter.all",
-        "rec.filter.liked",
-        "rec.filter.current",
-        "rec.filter.wishlist",
-        "rec.filter.chart",
+    for (i, (filter, key)) in [
+        ("all", "rec.filter.all"),
+        ("liked", "rec.filter.liked"),
+        ("current", "rec.filter.current"),
+        ("wishlist", "rec.filter.wishlist"),
+        ("chart", "rec.filter.chart"),
     ]
     .iter()
     .enumerate()
@@ -961,26 +965,13 @@ fn recommendations_view(i18n: &I18n, screen: &Screen) -> String {
             "rec-filter-chip"
         };
         html.push_str(&format!(
-            r#"<button type="button" role="tab" class="{class}" aria-selected="{}">{}</button>"#,
+            r#"<button type="button" role="tab" class="{class}" data-rec-filter="{filter}" aria-selected="{}">{}</button>"#,
             if i == 0 { "true" } else { "false" },
             esc(&i18n.t(key))
         ));
     }
-    html.push_str(&format!(
-        r#"<button type="button" role="tab" class="rec-filter-chip" disabled>{}</button></div>"#,
-        esc(&i18n.t("rec.blocked"))
-    ));
-    html.push_str(&empty_state(
-        "disc",
-        &i18n.t("rec.empty"),
-        &i18n.t("rec.emptyHintLong"),
-        &format!(
-            r#"<button type="button" class="btn btn-secondary">{}</button>"#,
-            esc(&i18n.t("rec.refresh"))
-        ),
-    ));
+    html.push_str("</div><div id=\"recommendations-root\" class=\"recommendations-sections\"></div></div>");
     let _ = screen;
-    html.push_str("</div>");
     html
 }
 

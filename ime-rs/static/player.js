@@ -257,23 +257,28 @@
     const wishPlay = event.target.closest(".wishlist-play");
     if (wishPlay && !wishPlay.dataset.preview) {
       event.preventDefault();
-      playQuery(wishPlay.dataset.title || "", wishPlay.dataset.artist || "");
+      armAround(wishPlay);
+      const local = librarySong(wishPlay.dataset.title || "", wishPlay.dataset.artist || "");
+      if (local) playId(local.id, local.title, local.artist, true);
+      else playQuery(wishPlay.dataset.title || "", wishPlay.dataset.artist || "");
       return;
     }
     const queryPlay = event.target.closest("[data-play-query]");
     if (queryPlay) {
       event.preventDefault();
+      armAround(queryPlay);
       const local = librarySong(queryPlay.dataset.title || "", queryPlay.dataset.artist || "");
-      if (local) playId(local.id, local.title, local.artist);
+      if (local) playId(local.id, local.title, local.artist, true);
       else playQuery(queryPlay.dataset.title || "", queryPlay.dataset.artist || "");
       return;
     }
     const preview = event.target.closest("[data-preview]");
     if (preview) {
       event.preventDefault();
+      armAround(preview);
       const local = librarySong(preview.dataset.title || "", preview.dataset.artist || "");
       if (local) {
-        playId(local.id, local.title, local.artist);
+        playId(local.id, local.title, local.artist, true);
         return;
       }
       waves.active = false;
@@ -290,7 +295,12 @@
     const row = event.target.closest("[data-play]");
     if (row && !event.target.closest("form, button.like-btn, button.song-menu-btn")) {
       waves.active = false;
-      playId(row.dataset.play, row.dataset.title || "", row.dataset.artist || "");
+      if (row.classList.contains("song-row") || row.closest(".song-list, .demo-tracks-grid, .wishlist-list, .rec-track-list")) {
+        armAround(row);
+        playId(row.dataset.play, row.dataset.title || "", row.dataset.artist || "", true);
+      } else {
+        playId(row.dataset.play, row.dataset.title || "", row.dataset.artist || "");
+      }
       return;
     }
     const waveChip = event.target.closest("[data-waves-field]");
@@ -306,7 +316,21 @@
           node.setAttribute("aria-pressed", on ? "true" : "false");
         });
       }
-      post("waves-setting", { field, value });
+      post("waves-setting", { field, value }).then(() => {
+        if (waves.active) refreshWave();
+      });
+      return;
+    }
+    const recChip = event.target.closest("[data-rec-filter]");
+    if (recChip) {
+      event.preventDefault();
+      recFilter = recChip.dataset.recFilter || "all";
+      document.querySelectorAll("[data-rec-filter]").forEach((node) => {
+        const on = node === recChip;
+        node.classList.toggle("active", on);
+        node.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      loadRecommendations(recFilter, false);
       return;
     }
     const act = event.target.closest("[data-act]");
@@ -315,6 +339,10 @@
     if (name === "toggle") toggle();
     if (name === "next") playNext();
     if (name === "prev") playPrev();
+    if (name === "waves-save") notify("Настройки волны сохранены", "success");
+    if (name === "waves-reset") resetWaves();
+    if (name === "waves-refresh") refreshWave();
+    if (name === "refresh-rec") loadRecommendations(recFilter, true);
     if (name === "mute") toggleMute();
     if (name === "shuffle" || name === "repeat") {
       post(name).then(() => act.classList.toggle("active"));
@@ -465,12 +493,7 @@
       finishSleep("Стоп в конце трека");
       return;
     }
-    if (artistQueue && artistQueue.index + 1 < artistQueue.items.length) {
-      playArtistFrom(artistQueue.index + 1);
-      return;
-    }
-    if (waves.active) playWavesIndex(waves.index + 1);
-    else playNext();
+    playNext();
   });
 
   let discoveryTimer = 0;
@@ -513,6 +536,79 @@
       .toLowerCase()
       .replace(/ё/g, "е")
       .replace(/\s+/g, " ");
+  }
+
+  function shuffleEnabled() {
+    return Boolean(document.querySelector('[data-act="shuffle"].active'));
+  }
+
+  function armAround(el) {
+    const container = el.closest(".song-list, .demo-tracks-grid, .wishlist-list, .rec-track-list");
+    if (!container) return;
+    const nodes = container.classList.contains("song-list")
+      ? [...container.querySelectorAll(".song-row")]
+      : [...container.querySelectorAll(".demo-track-play, .wishlist-play")];
+    let items = nodes.map((node) => ({
+      title: node.dataset.title || "",
+      artist: node.dataset.artist || "",
+      preview: node.dataset.preview || "",
+      id: node.classList.contains("song-row") ? node.dataset.play || "" : node.dataset.play || "",
+    }));
+    const key = `${normTrack(el.dataset.title)}\n${normTrack(el.dataset.artist)}`;
+    let index = items.findIndex((item) => `${normTrack(item.title)}\n${normTrack(item.artist)}` === key);
+    if (index < 0) index = 0;
+    if (container.classList.contains("song-list") && shuffleEnabled()) {
+      const current = items[index];
+      const rest = items.filter((_, itemIndex) => itemIndex !== index);
+      shuffleTracks(rest);
+      items = current ? [current, ...rest] : rest;
+      index = 0;
+    }
+    listQueue = { items, index };
+    artistQueue = null;
+    waves.active = false;
+    waves.artist = false;
+  }
+
+  function playQueued(index) {
+    if (!listQueue) return;
+    const item = listQueue.items[index];
+    if (!item) return;
+    listQueue.index = index;
+    waves.active = false;
+    const local = librarySong(item.title, item.artist);
+    if (local) {
+      playId(local.id, local.title || item.title, local.artist || item.artist, true);
+      return;
+    }
+    if (item.id) {
+      playId(item.id, item.title, item.artist, true);
+      return;
+    }
+    if (item.preview) playUrl(item.preview, item.title, item.artist);
+    else playQuery(item.title, item.artist);
+  }
+
+  function stepList(delta) {
+    if (waves.active) {
+      const next = waves.index + delta;
+      if (next < 0 || next >= waves.queue.length) return true;
+      playWavesIndex(next);
+      return true;
+    }
+    if (artistQueue) {
+      const next = artistQueue.index + delta;
+      if (next < 0 || next >= artistQueue.items.length) return true;
+      playArtistFrom(next);
+      return true;
+    }
+    if (listQueue) {
+      const next = listQueue.index + delta;
+      if (next < 0 || next >= listQueue.items.length) return true;
+      playQueued(next);
+      return true;
+    }
+    return false;
   }
 
   function librarySong(title, artist) {
@@ -602,6 +698,8 @@
 
   let artistPage = null;
   let artistQueue = null;
+  let listQueue = null;
+  let recFilter = "all";
   const favorites = [];
   try {
     const seed = document.getElementById("favorite-artists-seed");
@@ -780,6 +878,7 @@
     if (!track) return;
     waves.active = false;
     waves.artist = false;
+    listQueue = null;
     artistQueue = { items: artistPage.tracks, index };
     const local = librarySong(track.title, track.artist || artistPage.name);
     if (local) {
@@ -1138,19 +1237,33 @@
       }));
   }
 
+  function waveChip(field) {
+    return document.querySelector(`.waves-chip.is-active[data-waves-field="${field}"]`)?.dataset.wavesValue || "";
+  }
+
   async function loadFallbackWaves() {
-    const genre = document.querySelector('.waves-chip.is-active[data-waves-field="genre"]');
-    const genreValue = genre ? genre.dataset.wavesValue : "all";
-    const term = !genreValue || genreValue === "all"
-      ? fallbackSeeds[Math.floor(Math.random() * fallbackSeeds.length)]
-      : genreValue;
+    const genre = waveChip("genre") || "all";
+    const language = waveChip("language") || "any";
+    const mood = waveChip("mood") || "any";
+    let term = genre === "all" || genre === "ruRap" ? "music" : genre;
+    if (language === "ru") term = `русский ${term}`;
+    else if (language === "en") term = `${term} english`;
+    if (mood !== "any") term = `${term} ${mood}`;
+    const country = language === "en" ? "us" : "ru";
     const response = await fetch(
-      "https://itunes.apple.com/search?entity=song&limit=40&country=ru&term=" + encodeURIComponent(term),
+      `https://itunes.apple.com/search?entity=song&limit=40&country=${country}&term=` + encodeURIComponent(term),
     );
     const data = await response.json();
     return shuffleTracks(
       (data.results || [])
         .filter((item) => item.previewUrl)
+        .filter((item) => {
+          const text = `${item.trackName || ""} ${item.artistName || ""}`;
+          const cyr = /[а-яё]/i.test(text);
+          if (language === "ru") return cyr;
+          if (language === "en") return !cyr;
+          return true;
+        })
         .map((item) => ({
           url: item.previewUrl,
           title: item.trackName || "IMe Waves",
@@ -1164,8 +1277,7 @@
     let batch = [];
     try {
       batch = await loadServerWaves();
-    } catch { /* offline */ }
-    if (!batch.length) {
+    } catch {
       try {
         batch = await loadFallbackWaves();
       } catch { /* no previews */ }
@@ -1174,6 +1286,120 @@
       if (!item.url || waves.seen.has(item.url)) continue;
       waves.seen.add(item.url);
       waves.queue.push(item);
+    }
+  }
+
+  async function resetWaves() {
+    await post("waves-reset");
+    const defaults = { genre: "all", language: "any", mood: "any", seed: "taste", diversity: "normal" };
+    for (const [field, value] of Object.entries(defaults)) {
+      document.querySelectorAll(`[data-waves-field="${field}"]`).forEach((node) => {
+        const on = node.dataset.wavesValue === value;
+        node.classList.toggle("is-active", on);
+        node.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    }
+    const skip = document.querySelector('[data-waves-field="skipKnown"]');
+    if (skip) skip.checked = true;
+    notify("Настройки волны сброшены", "info");
+    if (waves.active) refreshWave();
+  }
+
+  async function refreshWave() {
+    waves.queue = [];
+    waves.index = -1;
+    waves.seen = new Set();
+    if (!waves.active) {
+      await startWaves();
+      return;
+    }
+    await refillWaves();
+    if (waves.queue.length) playWavesIndex(0);
+    else notify("По этим фильтрам нет треков", "info");
+  }
+
+  function recArtists(mode) {
+    if (mode === "current") return now.artist ? [now.artist] : [];
+    if (mode === "wishlist") {
+      try {
+        const items = JSON.parse(document.getElementById("wishlist-seed")?.textContent || "[]");
+        return [...new Set(items.map((item) => item.artist).filter(Boolean))].slice(0, 4);
+      } catch {
+        return [];
+      }
+    }
+    const songs = mode === "liked" ? library.filter((song) => song.liked) : library;
+    const names = [];
+    for (const song of songs) {
+      if (song.artist && !names.includes(song.artist)) names.push(song.artist);
+      if (names.length >= 4) break;
+    }
+    return names;
+  }
+
+  async function tracksForArtists(names, limit) {
+    const rows = [];
+    for (const name of names.slice(0, 3)) {
+      const data = await deezer("/search/track?q=" + encodeURIComponent(`artist:"${name}"`) + "&limit=8");
+      rows.push(...(data.data || []));
+    }
+    const seen = new Set();
+    return rows
+      .map((row) => mapDeezerTrack(row))
+      .filter((track) => track && track.preview && !seen.has(track.preview) && seen.add(track.preview))
+      .slice(0, limit);
+  }
+
+  async function albumsForArtists(names, limit) {
+    const albums = [];
+    for (const name of names.slice(0, 3)) {
+      const data = await deezer("/search/album?q=" + encodeURIComponent(name) + "&limit=6");
+      albums.push(...(data.data || []));
+    }
+    const seen = new Set();
+    return albums.filter((album) => album && album.id && album.title && !seen.has(album.id) && seen.add(album.id)).slice(0, limit);
+  }
+
+  function recAlbumCard(album) {
+    const cover = album.cover_medium ? `<img src="${escapeAttr(album.cover_medium)}" alt="">` : "";
+    const year = String(album.release_date || "").slice(0, 4);
+    return `<li><button type="button" class="artist-release-card" data-open-album="1" data-album-id="${escapeAttr(album.id)}" data-album-title="${escapeAttr(album.title)}"><div class="artist-release-cover">${cover}</div><div class="artist-release-meta"><div class="artist-release-title">${escapeHtml(album.title)}</div><div class="artist-release-sub">${escapeHtml(album.artist?.name || year)}</div></div></button></li>`;
+  }
+
+  async function loadRecommendations(mode) {
+    const root = document.getElementById("recommendations-root");
+    if (!root) return;
+    root.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
+    const names = recArtists(mode);
+    const tasteTitle = mode === "liked"
+      ? "По избранному"
+      : mode === "current"
+        ? "По текущему треку"
+        : mode === "wishlist"
+          ? "По «Хочу послушать»"
+          : "По вкусу";
+    try {
+      const chart = await deezer("/chart/0/tracks?limit=12");
+      const chartTracks = (chart.data || []).map((row) => mapDeezerTrack(row)).filter(Boolean);
+      const chartArtists = [...new Set(chartTracks.map((track) => track.artist).filter(Boolean))].slice(0, 3);
+      const taste = mode === "chart" ? [] : await tracksForArtists(names, 12);
+      const albums = await albumsForArtists(mode === "chart" ? chartArtists : names, 8);
+      const sections = [];
+      if (mode !== "chart") {
+        sections.push({ title: tasteTitle, hint: names.length ? names.join(", ") : "Добавьте музыку в библиотеку — подборка строится по ней", tracks: taste });
+      }
+      sections.push({ title: "Альбомы", albums });
+      sections.push({ title: "Чарт", hint: "Топ Deezer", tracks: chartTracks });
+      root.innerHTML = sections.map((section) => {
+        if (section.albums) {
+          const cards = section.albums.map(recAlbumCard).join("");
+          return `<section class="rec-section"><div class="rec-section-head"><h2>${escapeHtml(section.title)}</h2></div>${cards ? `<ul class="artist-releases-grid">${cards}</ul>` : '<p class="artist-view-empty">Нет альбомов для этой подборки</p>'}</section>`;
+        }
+        const cards = (section.tracks || []).map(trackCard).join("");
+        return `<section class="rec-section"><div class="rec-section-head"><h2>${escapeHtml(section.title)}</h2>${section.hint ? `<p>${escapeHtml(section.hint)}</p>` : ""}</div>${cards ? `<ul class="demo-tracks-grid rec-track-list">${cards}</ul>` : '<p class="artist-view-empty">Нет треков для этой подборки</p>'}</section>`;
+      }).join("");
+    } catch {
+      root.innerHTML = '<p class="home-discovery-search-error">Не удалось загрузить рекомендации</p>';
     }
   }
 
@@ -1218,7 +1444,10 @@
     if (!id) return;
     waves.active = false;
     waves.artist = false;
-    if (!keepQueue) artistQueue = null;
+    if (!keepQueue) {
+      artistQueue = null;
+      listQueue = null;
+    }
     const data = await post("play", { id });
     audio.src = "/audio/" + encodeURIComponent(id);
     try { await audio.play(); } catch { /* autoplay */ }
@@ -1251,10 +1480,7 @@
   }
 
   async function playNext() {
-    if (waves.active) {
-      playWavesIndex(waves.index + 1);
-      return;
-    }
+    if (stepList(1)) return;
     const data = await post("next");
     if (!data.id) return;
     const row = document.querySelector(`[data-play="${cssEscape(data.id)}"]`);
@@ -1271,10 +1497,7 @@
   }
 
   async function playPrev() {
-    if (waves.active) {
-      playWavesIndex(Math.max(0, waves.index - 1));
-      return;
-    }
+    if (stepList(-1)) return;
     const data = await post("prev");
     if (!data.id) return;
     const row = document.querySelector(`[data-play="${cssEscape(data.id)}"]`);
@@ -1307,6 +1530,52 @@
     }
     const wavesIcon = document.querySelector(".home-waves-play");
     if (wavesIcon) wavesIcon.innerHTML = svg(waves.active && playing ? PAUSE : PLAY, 22);
+    syncRowGlyphs(playing);
+  }
+
+  function rowMatchesNow(node) {
+    if (!now.title) return false;
+    const id = node.dataset.play || "";
+    if (id && document.body.dataset.current && id === document.body.dataset.current && node.classList.contains("song-row")) return true;
+    return normTrack(node.dataset.title) === normTrack(now.title) && normTrack(node.dataset.artist) === normTrack(now.artist);
+  }
+
+  function syncRowGlyphs(playing) {
+    document.querySelectorAll(".song-row").forEach((row) => {
+      const on = row.dataset.play && row.dataset.play === document.body.dataset.current;
+      row.classList.toggle("current", on);
+      row.classList.toggle("is-playing", on && playing);
+      const icon = row.querySelector(".index-play");
+      if (icon) icon.innerHTML = svg(on && playing ? PAUSE : PLAY, 14);
+    });
+    document.querySelectorAll(".demo-track-card").forEach((card) => {
+      const button = card.querySelector("button[data-title]");
+      const on = button ? rowMatchesNow(button) : false;
+      card.classList.toggle("is-active", on);
+      card.classList.toggle("is-playing", on && playing);
+      const icon = card.querySelector(".demo-track-play-icon");
+      if (icon) icon.innerHTML = svg(on && playing ? PAUSE : PLAY, 18);
+    });
+    document.querySelectorAll(".artist-track-row").forEach((row) => {
+      const button = row.querySelector("button[data-title]");
+      const on = button ? rowMatchesNow(button) : false;
+      row.classList.toggle("is-current", on);
+      row.classList.toggle("is-playing", on && playing);
+      let glyph = row.querySelector(".artist-track-glyph");
+      if (!glyph && button) {
+        glyph = document.createElement("span");
+        glyph.className = "artist-track-glyph";
+        button.after(glyph);
+      }
+      if (glyph) glyph.innerHTML = on ? svg(playing ? PAUSE : PLAY, 16) : "";
+    });
+    document.querySelectorAll(".wishlist-row, .rec-track").forEach((row) => {
+      const on = rowMatchesNow(row);
+      row.classList.toggle("is-current", on);
+      row.classList.toggle("is-playing", on && playing);
+      const icon = row.querySelector(".wishlist-play-icon, .rec-track-glyph");
+      if (icon) icon.innerHTML = svg(on && playing ? PAUSE : PLAY, 16);
+    });
   }
 
   function paintProgress(at) {
@@ -1389,6 +1658,7 @@
     if (now.title) setNowPlaying(now.title, now.artist);
     syncPlayButton();
     paintProgress();
+    if (document.getElementById("recommendations-root")) loadRecommendations(recFilter, false);
   }
 
   async function post(action, extra) {
@@ -1749,4 +2019,5 @@
 
   paintMuteIcon();
   syncPlayButton();
+  if (document.getElementById("recommendations-root")) loadRecommendations("all");
 })();

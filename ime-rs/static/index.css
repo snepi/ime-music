@@ -2338,8 +2338,49 @@ select:focus-visible {
   border-radius: 12px;
 }
 
-.artist-track-row:hover {
+.artist-track-row:hover,
+.artist-track-row.is-current {
   background: var(--bg-hover);
+}
+
+.artist-track-glyph {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+}
+
+.home-waves-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.recommendations-sections {
+  padding: 8px 28px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.rec-section-head h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.rec-section-head p {
+  margin: 4px 0 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.wishlist-row.is-current .wishlist-play-icon,
+.demo-track-card.is-playing .demo-track-play-icon {
+  opacity: 1;
 }
 
 .artist-track-rank {

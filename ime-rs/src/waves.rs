@@ -137,23 +137,25 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
     let preset = preset(&waves.genre);
     let mut raw = Vec::new();
 
+    let filtered = waves.genre != "all" || waves.language != "any" || waves.mood != "any";
     if let Some(id) = preset.deezer_id {
-        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=60")));
-    } else if waves.seed == "chart" {
-        raw.extend(fetch_list("/chart/0/tracks?limit=60"));
+        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=40")));
+    } else if waves.seed == "chart" && !filtered {
+        raw.extend(fetch_list("/chart/0/tracks?limit=40"));
     }
-    for query in preset.queries.iter().take(3) {
-        let path = format!("/search/track?q={}&limit=35", urlencoding::encode(query));
+    for query in wave_queries(&waves.genre, &waves.language, &waves.mood) {
+        let path = format!("/search/track?q={}&limit=25", urlencoding::encode(&query));
         raw.extend(fetch_list(&path));
     }
-
-    let seed_names = seed_artists(store);
-    for name in seed_names.iter().take(6) {
-        let Some(id) = resolve_artist(name) else { continue };
-        raw.extend(fetch_list(&format!("/artist/{id}/radio?limit=20")));
+    // Artist radio ignores genre. Use it only when the listener did not pick a style.
+    if waves.genre == "all" && waves.mood == "any" && waves.seed != "chart" {
+        for name in seed_artists(store).iter().take(6) {
+            let Some(id) = resolve_artist(name) else { continue };
+            raw.extend(fetch_list(&format!("/artist/{id}/radio?limit=12")));
+        }
     }
-    if raw.len() < 20 {
-        raw.extend(fetch_list("/chart/0/tracks?limit=80"));
+    if raw.len() < 8 && !filtered {
+        raw.extend(fetch_list("/chart/0/tracks?limit=40"));
     }
 
     let known = if waves.skip_known {
@@ -354,6 +356,36 @@ fn detect_language(track: &Candidate) -> &'static str {
     }
 }
 
+fn wave_queries(genre: &str, language: &str, mood: &str) -> Vec<String> {
+    let preset = preset(genre);
+    let mut queries: Vec<String> = preset.queries.iter().map(|query| (*query).to_string()).collect();
+    if queries.is_empty() {
+        queries.push(match language {
+            "ru" => "русский".into(),
+            "en" => "english".into(),
+            _ => "music".into(),
+        });
+    }
+    if language == "ru" {
+        queries = queries.into_iter().map(|query| format!("русский {query}")).collect();
+    } else if language == "en" {
+        queries = queries.into_iter().map(|query| format!("{query} english")).collect();
+    }
+    if mood != "any" {
+        let word = match mood {
+            "energetic" => "energetic party",
+            "chill" => "chill relax",
+            "dark" => "dark sad",
+            "happy" => "happy love",
+            _ => "",
+        };
+        if !word.is_empty() {
+            queries = queries.into_iter().map(|query| format!("{query} {word}")).collect();
+        }
+    }
+    queries.into_iter().take(4).collect()
+}
+
 fn matches_language(track: &Candidate, language: &str) -> bool {
     match language {
         "ru" => detect_language(track) == "ru",
@@ -422,6 +454,26 @@ mod tests {
         let old_at = items.iter().position(|item| item.preview == "old").unwrap();
         assert!(items[..old_at].iter().all(|item| item.preview != "old"));
         assert_eq!(items.last().unwrap().preview, "old");
+    }
+
+    #[test]
+    fn russian_filter_drops_latin_titles() {
+        let russian = Candidate {
+            title: "Младшая сестра".into(),
+            artist: "дора".into(),
+            album: String::new(),
+            preview: "ru".into(),
+        };
+        let english = Candidate {
+            title: "Creep".into(),
+            artist: "Radiohead".into(),
+            album: String::new(),
+            preview: "en".into(),
+        };
+        assert!(matches_language(&russian, "ru"));
+        assert!(!matches_language(&english, "ru"));
+        assert!(matches_language(&english, "en"));
+        assert!(!matches_language(&russian, "en"));
     }
 
     #[test]
