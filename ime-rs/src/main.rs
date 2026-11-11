@@ -361,6 +361,28 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 form.cover.as_deref().unwrap_or(""),
             );
         }
+        "favorite-artist" => {
+            let on = store.toggle_favorite_artist(
+                form.artist.as_deref().or(form.title.as_deref()).unwrap_or(""),
+                form.id.as_deref().unwrap_or(""),
+                form.cover.as_deref().unwrap_or(""),
+            );
+            message = if on {
+                "Артист добавлен в избранное".into()
+            } else {
+                "Артист убран из избранного".into()
+            };
+            detail = serde_json::json!({ "favorite": on });
+        }
+        "open-url" => {
+            if let Some(url) = form.url.as_deref().or(form.value.as_deref()) {
+                if let Some(url) = external_url(url) {
+                    open_external(&url);
+                    message = "Открываю".into();
+                    detail = serde_json::json!({ "url": url });
+                }
+            }
+        }
         "waves-setting" => {
             waves::apply_setting(
                 &mut store.settings.waves,
@@ -734,6 +756,30 @@ async fn import_status(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
+fn external_url(raw: &str) -> Option<String> {
+    let url = raw.trim();
+    if url.starts_with("https://") || url.starts_with("http://") {
+        Some(url.to_string())
+    } else {
+        None
+    }
+}
+
+fn open_external(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .creation_flags(0x0800_0000)
+            .spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
 fn json_msg(ok: bool, message: &str) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -834,7 +880,24 @@ async fn audio(
         .unwrap()
 }
 
-async fn waves_pool(State(state): State<Arc<AppState>>) -> Response {
+#[derive(Deserialize)]
+struct WavesQuery {
+    artist: Option<String>,
+    id: Option<String>,
+}
+
+async fn waves_pool(State(state): State<Arc<AppState>>, Query(query): Query<WavesQuery>) -> Response {
+    if let Some(name) = query.artist.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        let id = query.id.as_deref().and_then(|value| value.parse::<u64>().ok());
+        let name = name.to_string();
+        let built = tokio::task::spawn_blocking(move || waves::build_artist_wave(&name, id)).await;
+        let items = built.unwrap_or_default();
+        return (
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "ok": true, "items": items }).to_string(),
+        )
+            .into_response();
+    }
     let snapshot = {
         let mut store = state.store.lock().expect("store");
         store.settings.waves.spin = store.settings.waves.spin.wrapping_add(1).max(1);

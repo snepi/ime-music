@@ -91,6 +91,47 @@ pub fn apply_setting(waves: &mut Waves, field: &str, value: &str) -> bool {
     false
 }
 
+/// A wave built around one artist: their own tracks, then tracks in the same lane.
+/// Settings (genre, seed, mood) stay as they are.
+pub fn build_artist_wave(name: &str, id: Option<u64>) -> Vec<WaveTrack> {
+    let Some(id) = id.or_else(|| resolve_artist(name)) else {
+        return Vec::new();
+    };
+    let mut own = fetch_list(&format!("/artist/{id}/top?limit=25"));
+    let mut similar = fetch_list(&format!("/artist/{id}/radio?limit=30"));
+    if let Ok(body) = http_get(&format!("{DEEZER}/artist/{id}/related?limit=6")) {
+        if let Ok(value) = serde_json::from_str::<Value>(&body) {
+            if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
+                for row in rows.iter().take(4) {
+                    let Some(related) = row.get("id").and_then(|value| value.as_u64()) else { continue };
+                    similar.extend(fetch_list(&format!("/artist/{related}/top?limit=8")));
+                }
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut mapped = Vec::new();
+    for item in own.drain(..).chain(similar) {
+        if item.preview.is_empty() || !seen.insert(item.preview.clone()) {
+            continue;
+        }
+        mapped.push(item);
+    }
+    if mapped.len() > 8 {
+        let keep = 4.min(mapped.len());
+        shuffle(&mut mapped[keep..], id.wrapping_mul(0x9E37));
+    }
+    mapped
+        .into_iter()
+        .take(POOL_CAP)
+        .map(|item| WaveTrack {
+            preview_url: item.preview,
+            title: item.title,
+            artist: item.artist,
+        })
+        .collect()
+}
+
 pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
     let waves = &store.settings.waves;
     let preset = preset(&waves.genre);

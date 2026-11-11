@@ -123,8 +123,10 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 <input id="pick-backup" type="file" accept="application/json,.json" hidden>
 <input id="pick-playlist" type="file" accept=".m3u,.m3u8,.csv,.txt,text/plain" hidden>
 <script type="application/json" id="wishlist-seed">{}</script>
+<script type="application/json" id="favorite-artists-seed">{}</script>
 <script src="/player.js"></script></body></html>"#,
         wishlist_seed(store),
+        favorite_seed(store),
     ));
     html
 }
@@ -139,6 +141,19 @@ fn color_var(key: &str) -> Option<&'static str> {
         "accent" => Some("--accent"),
         _ => None,
     }
+}
+
+fn favorite_seed(store: &Store) -> String {
+    let mut parts = Vec::new();
+    for artist in &store.settings.favorite_artists {
+        parts.push(format!(
+            r#"{{"name":"{}","deezerId":"{}","picture":"{}"}}"#,
+            json_escape(&artist.name),
+            json_escape(&artist.deezer_id),
+            json_escape(&artist.picture),
+        ));
+    }
+    format!("[{}]", parts.join(","))
 }
 
 fn wishlist_seed(store: &Store) -> String {
@@ -599,6 +614,23 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         sort_options(i18n, &sort)
     ));
     html.push_str("</div></div>");
+    if screen.view == "liked" && !store.settings.favorite_artists.is_empty() {
+        html.push_str(r#"<section class="favorite-artists"><h2>Избранные артисты</h2><ul class="artist-chip-grid">"#);
+        for artist in &store.settings.favorite_artists {
+            let avatar = if artist.picture.is_empty() {
+                icon("disc", 18)
+            } else {
+                format!(r#"<img class="artist-chip-avatar" src="{}" alt="">"#, esc(&artist.picture))
+            };
+            html.push_str(&format!(
+                r#"<li><button type="button" class="artist-chip" data-open-artist="1" data-artist-id="{id}" data-artist-name="{name}">{avatar}<span class="artist-chip-name">{name}</span></button></li>"#,
+                id = esc(&artist.deezer_id),
+                name = esc(&artist.name),
+                avatar = avatar,
+            ));
+        }
+        html.push_str("</ul></section>");
+    }
     if store.songs.is_empty() {
         html.push_str(&empty_state(
             "music",

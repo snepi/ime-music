@@ -7,7 +7,7 @@
   let drag = null;
   let sleep = { mode: "off", timer: 0 };
   const imports = [];
-  let waves = { active: false, queue: [], index: -1, seen: new Set() };
+  let waves = { active: false, artist: false, queue: [], index: -1, seen: new Set() };
   const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
 
   const svg = (inner, size) =>
@@ -171,6 +171,51 @@
     if (platform) {
       event.preventDefault();
       event.stopPropagation();
+      openPlatform(platform.dataset.platform || "");
+      return;
+    }
+    const artistMore = event.target.closest("[data-artist-more]");
+    if (artistMore && artistPage) {
+      event.preventDefault();
+      const box = document.querySelector("[data-artist-tracks]");
+      if (box) box.innerHTML = artistTrackRows(artistPage.tracks);
+      artistMore.replaceWith(trackCountNote(artistPage.tracks.length));
+      return;
+    }
+    const artistPlay = event.target.closest("[data-artist-play], [data-artist-track]");
+    if (artistPlay && artistPage) {
+      event.preventDefault();
+      const index = Number(artistPlay.dataset.artistTrack || 0);
+      playArtistFrom(Number.isFinite(index) ? index : 0);
+      return;
+    }
+    const artistFav = event.target.closest("[data-artist-fav]");
+    if (artistFav && artistPage) {
+      event.preventDefault();
+      toggleFavoriteArtist(artistFav);
+      return;
+    }
+    const artistMenu = event.target.closest("[data-artist-menu]");
+    if (artistMenu && artistPage) {
+      event.preventDefault();
+      openArtistMenu(artistMenu);
+      return;
+    }
+    const artistWave = event.target.closest("[data-artist-wave]");
+    if (artistWave && artistPage) {
+      event.preventDefault();
+      document.querySelectorAll(".context-menu").forEach((node) => node.remove());
+      startArtistWave(artistPage.name, artistPage.id);
+      return;
+    }
+    const artistAbout = event.target.closest("[data-artist-about]");
+    if (artistAbout && artistPage) {
+      event.preventDefault();
+      openArtistAbout();
+      return;
+    }
+    if (event.target.closest("[data-about-close]")) {
+      event.target.closest(".artist-about-overlay")?.remove();
       return;
     }
     const artistBtn = event.target.closest("[data-open-artist]");
@@ -225,6 +270,7 @@
     if (preview) {
       event.preventDefault();
       waves.active = false;
+      artistQueue = null;
       playUrl(preview.dataset.preview, preview.dataset.title || "", preview.dataset.artist || "");
       return;
     }
@@ -360,7 +406,8 @@
     menu.style.top = event.clientY + "px";
     menu.innerHTML =
       `<div class="context-menu-header">${escapeHtml(name)}</div>` +
-      `<button type="button" class="context-menu-item" data-open-artist="1" data-artist-name="${escapeAttr(name)}">Карточка артиста</button>`;
+      `<button type="button" class="context-menu-item" data-open-artist="1" data-artist-name="${escapeAttr(name)}">Карточка артиста</button>` +
+      platformMenu(name);
     document.body.appendChild(menu);
   });
 
@@ -409,6 +456,10 @@
   audio.addEventListener("ended", () => {
     if (sleep.mode === "track" || sleep.mode === "album") {
       finishSleep("Стоп в конце трека");
+      return;
+    }
+    if (artistQueue && artistQueue.index + 1 < artistQueue.items.length) {
+      playArtistFrom(artistQueue.index + 1);
       return;
     }
     if (waves.active) playWavesIndex(waves.index + 1);
@@ -509,6 +560,220 @@
     }
   }
 
+  let artistPage = null;
+  let artistQueue = null;
+  const favorites = [];
+  try {
+    const seed = document.getElementById("favorite-artists-seed");
+    const items = seed ? JSON.parse(seed.textContent || "[]") : [];
+    for (const item of items) favorites.push(item);
+  } catch { /* seed */ }
+
+  function platformLinks(query, deezerId) {
+    const q = encodeURIComponent(query);
+    const deezer = deezerId
+      ? `https://www.deezer.com/artist/${encodeURIComponent(deezerId)}`
+      : `https://www.deezer.com/search/${q}`;
+    return [
+      { id: "deezer", label: "Deezer", url: deezer },
+      { id: "spotify", label: "Spotify", url: `https://open.spotify.com/search/${q}` },
+      { id: "yandex", label: "Яндекс Музыка", url: `https://music.yandex.ru/search?text=${q}` },
+    ];
+  }
+
+  function platformMenu(name) {
+    return platformLinks(name)
+      .map(
+        (item) =>
+          `<button type="button" class="context-menu-item" data-platform="${escapeAttr(item.url)}">${escapeHtml(item.label)}</button>`,
+      )
+      .join("");
+  }
+
+  function openPlatform(url) {
+    if (!/^https?:\/\//i.test(url)) return;
+    post("open-url", { url });
+    notify("Открываю", "info");
+  }
+
+  function isFavoriteArtist(name) {
+    const key = String(name || "").trim().toLowerCase();
+    return favorites.some((item) => String(item.name || "").trim().toLowerCase() === key);
+  }
+
+  async function toggleFavoriteArtist(button) {
+    const page = artistPage;
+    if (!page) return;
+    const data = await post("favorite-artist", {
+      artist: page.name,
+      id: String(page.id || ""),
+      cover: page.picture || "",
+    });
+    const on = Boolean(data.detail && data.detail.favorite);
+    const key = page.name.trim().toLowerCase();
+    const index = favorites.findIndex((item) => String(item.name || "").trim().toLowerCase() === key);
+    if (on && index < 0) {
+      favorites.unshift({ name: page.name, deezerId: String(page.id || ""), picture: page.picture || "" });
+    }
+    if (!on && index >= 0) favorites.splice(index, 1);
+    button.classList.toggle("is-on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.innerHTML = heartIcon(on);
+    notify(data.message || (on ? "Артист добавлен в избранное" : "Артист убран из избранного"), "success");
+  }
+
+  function openArtistMenu(anchor) {
+    document.querySelectorAll(".context-menu").forEach((node) => node.remove());
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    const rect = anchor.getBoundingClientRect();
+    menu.style.left = Math.max(8, rect.left) + "px";
+    menu.style.top = rect.bottom + 6 + "px";
+    menu.innerHTML =
+      `<div class="context-menu-header">${escapeHtml(artistPage.name)}</div>` +
+      `<button type="button" class="context-menu-item" data-artist-wave="1">IMe Waves: ${escapeHtml(artistPage.name)}</button>`;
+    document.body.appendChild(menu);
+  }
+
+  async function startArtistWave(name, id) {
+    artistQueue = null;
+    waves.active = true;
+    waves.artist = true;
+    waves.queue = [];
+    waves.index = -1;
+    waves.seen = new Set();
+    notify(`Волна: ${name}`, "info");
+    try {
+      const response = await fetch(
+        "/api/waves?artist=" + encodeURIComponent(name) + "&id=" + encodeURIComponent(id || ""),
+      );
+      const data = await response.json();
+      const batch = (data.items || [])
+        .filter((item) => item.previewUrl)
+        .map((item) => ({
+          url: item.previewUrl,
+          title: item.title || name,
+          artist: item.artist || name,
+        }));
+      for (const item of batch) {
+        if (!item.url || waves.seen.has(item.url)) continue;
+        waves.seen.add(item.url);
+        waves.queue.push(item);
+      }
+    } catch { /* offline */ }
+    if (!waves.queue.length) {
+      waves.active = false;
+      waves.artist = false;
+      notify("Для этой волны нет демо", "error");
+      return;
+    }
+    playWavesIndex(0);
+  }
+
+  async function artistBio(name) {
+    const read = async (title) => {
+      const response = await fetch(
+        "https://ru.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(String(title).replace(/ /g, "_")),
+      );
+      if (!response.ok) return "";
+      const data = await response.json();
+      if (data.type === "disambiguation" || !data.extract) return "";
+      return String(data.extract);
+    };
+    const direct = await read(name);
+    if (direct) return direct;
+    const response = await fetch(
+      "https://ru.wikipedia.org/w/api.php?origin=*&action=opensearch&search=" +
+        encodeURIComponent(`${name} певица`) +
+        "&limit=1&namespace=0&format=json",
+    );
+    if (!response.ok) return "";
+    const data = await response.json();
+    const found = data[1] && data[1][0];
+    return found ? read(found) : "";
+  }
+
+  async function openArtistAbout() {
+    const page = artistPage;
+    if (!page) return;
+    document.querySelectorAll(".artist-about-overlay").forEach((node) => node.remove());
+    let bio = "";
+    try {
+      bio = await artistBio(page.name);
+    } catch { /* no article */ }
+    const links = platformLinks(page.name, page.id)
+      .map(
+        (item) =>
+          `<button type="button" class="artist-platform" data-platform="${escapeAttr(item.url)}">${escapeHtml(item.label)}</button>`,
+      )
+      .join("");
+    const overlay = document.createElement("div");
+    overlay.className = "artist-about-overlay";
+    overlay.innerHTML = `<div class="artist-about" role="dialog" aria-modal="true" aria-labelledby="artist-about-title"><button type="button" class="artist-about-close" data-about-close="1" aria-label="Закрыть">×</button><p class="artist-kicker">Об исполнителе</p><h2 id="artist-about-title">${escapeHtml(page.name)}</h2><p class="artist-about-bio">${bio ? escapeHtml(bio) : "Описания нет. Площадки артиста ниже."}</p><div class="artist-platforms">${links}</div></div>`;
+    overlay.addEventListener("pointerdown", (event) => {
+      if (event.target === overlay) overlay.remove();
+    });
+    document.body.appendChild(overlay);
+  }
+
+  function trackCountNote(count) {
+    const note = document.createElement("p");
+    note.className = "artist-view-section-count";
+    note.textContent = `Всего: ${count} треков`;
+    return note;
+  }
+
+  function featureList(items) {
+    return items
+      .map((track, index) => {
+        const cover = track.cover
+          ? `<img class="artist-track-cover" src="${escapeAttr(track.cover)}" alt="">`
+          : `<span class="artist-track-cover artist-track-cover-empty"></span>`;
+        const play = track.preview
+          ? `data-preview="${escapeAttr(track.preview)}"`
+          : `data-play-query="1"`;
+        return `<li class="artist-track-row"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}</button><button type="button" class="artist-track-name" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${escapeHtml(track.title)}</button>${wishButton(track)}</li>`;
+      })
+      .join("");
+  }
+
+  function playArtistFrom(index) {
+    const track = artistPage && artistPage.tracks[index];
+    if (!track) return;
+    waves.active = false;
+    waves.artist = false;
+    artistQueue = { items: artistPage.tracks, index };
+    if (track.preview) playUrl(track.preview, track.title, artistPage.name);
+    else playQuery(track.title, artistPage.name).then(() => {
+      if (artistPage) artistQueue = { items: artistPage.tracks, index };
+    });
+  }
+
+  function artistTrackRows(tracks) {
+    return tracks
+      .map((track, index) => {
+        const cover = track.cover
+          ? `<img class="artist-track-cover" src="${escapeAttr(track.cover)}" alt="">`
+          : `<span class="artist-track-cover artist-track-cover-empty"></span>`;
+        return `<li class="artist-track-row"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-play" data-artist-track="${index}" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}</button><button type="button" class="artist-track-name" data-artist-track="${index}">${escapeHtml(track.title)}</button>${wishButton(track)}</li>`;
+      })
+      .join("");
+  }
+
+  async function deezerPages(path, cap) {
+    const rows = [];
+    let next = path;
+    for (let guard = 0; next && rows.length < cap && guard < 8; guard += 1) {
+      const page = await deezer(next);
+      rows.push(...(page.data || []));
+      const link = String(page.next || "");
+      const at = link.indexOf("api.deezer.com");
+      next = at >= 0 ? link.slice(at + "api.deezer.com".length) : "";
+      if (!next.startsWith("/")) next = "";
+    }
+    return rows;
+  }
+
   async function openArtist(id, name) {
     const artistName = String(name || "").trim();
     const blocked = ["неизвестный исполнитель", "unknown artist", "unknown", "—", "-"];
@@ -531,62 +796,97 @@
         artistId = hit ? String(hit.id) : "";
       }
       if (!artistId) throw new Error("missing");
-      const [info, top, albums, foundTracks] = await Promise.all([
+      const quoted = encodeURIComponent(`artist:"${artistName || ""}"`);
+      const mentioned = encodeURIComponent(artistName || "");
+      const [info, top, albumRows, searchRows, mentionRows, related] = await Promise.all([
         deezer("/artist/" + encodeURIComponent(artistId)),
         deezer("/artist/" + encodeURIComponent(artistId) + "/top?limit=100"),
-        deezer("/artist/" + encodeURIComponent(artistId) + "/albums?limit=100"),
-        deezer("/search/track?q=" + encodeURIComponent(artistName || "") + "&limit=100"),
+        deezerPages("/artist/" + encodeURIComponent(artistId) + "/albums?limit=100", 400),
+        deezerPages("/search/track?q=" + quoted + "&limit=100", 300),
+        deezer("/search/track?q=" + mentioned + "&limit=80").catch(() => ({ data: [] })),
+        deezer("/artist/" + encodeURIComponent(artistId) + "/related?limit=20").catch(() => ({ data: [] })),
       ]);
-      await renderArtist(host, info, top.data || [], albums.data || [], foundTracks.data || []);
+      const extraAlbums = [];
+      for (let index = 0; index < albumRows.length; index += 8) {
+        const chunk = albumRows.slice(index, index + 8);
+        const lists = await Promise.all(chunk.map((album) => deezer("/album/" + album.id + "/tracks?limit=100").catch(() => ({ data: [] }))));
+        for (const list of lists) {
+          for (const row of list.data || []) {
+            if (!row.artist) row.artist = { id: Number(artistId), name: artistName };
+            extraAlbums.push(row);
+          }
+        }
+      }
+      renderArtist(host, info, top.data || [], searchRows, mentionRows.data || [], extraAlbums, albumRows, related.data || []);
     } catch {
       host.innerHTML =
         '<p class="home-discovery-search-error">Артист не найден</p><button type="button" class="btn btn-secondary" data-artist-back="1">Назад</button>';
     }
   }
 
-  async function renderArtist(host, info, topRows, albumRows, searchRows) {
+  function renderArtist(host, info, topRows, searchRows, mentionRows, albumTrackRows, albumRows, relatedRows) {
     const artistId = Number(info.id);
     const artistName = String(info.name || "");
     const want = artistName.toLowerCase();
-    const own = [];
-    const seen = new Set();
-    for (const row of [...topRows, ...searchRows]) {
-      const track = mapDeezerTrack(row, false);
-      const key = String(track?.id || track?.preview || "");
-      if (!track || !key || seen.has(key)) continue;
-      if (Number(row.artist?.id) !== artistId) continue;
+    const byId = new Map();
+    for (const row of [...topRows, ...searchRows, ...albumTrackRows]) {
+      if (!row?.id || Number(row.artist?.id) !== artistId) continue;
       if (/\bfeat\.|\bft\./i.test(row.title || "")) continue;
-      seen.add(key);
-      own.push(track);
+      const previous = byId.get(row.id);
+      if (!previous || Number(row.rank || 0) > Number(previous.rank || 0)) byId.set(row.id, row);
     }
+    const tracks = [...byId.values()]
+      .sort((a, b) => Number(b.rank || 0) - Number(a.rank || 0))
+      .map((row) => mapDeezerTrack(row, false))
+      .filter(Boolean);
     const featureRows = [];
-    const featureIds = new Set();
-    for (const row of [...searchRows, ...topRows]) {
-      if (!row?.id || featureIds.has(row.id) || Number(row.artist?.id) === artistId) continue;
-      featureIds.add(row.id);
+    const featureSeen = new Set();
+    for (const row of mentionRows) {
+      if (!row?.id || featureSeen.has(row.id) || Number(row.artist?.id) === artistId) continue;
+      const title = String(row.title || "").toLowerCase();
+      const contributors = (row.contributors || []).map((person) => String(person.name || "").toLowerCase());
+      if (!title.includes(want) && !contributors.includes(want)) continue;
+      featureSeen.add(row.id);
       featureRows.push(row);
     }
-    const details = await Promise.all(featureRows.slice(0, 10).map((row) => deezer("/track/" + row.id).catch(() => null)));
-    const features = [];
-    for (const detail of details) {
-      const names = (detail?.contributors || []).map((person) => String(person.name || "").toLowerCase());
-      const mentioned = names.includes(want) || String(detail?.title || "").toLowerCase().includes(want);
-      if (!mentioned) continue;
-      const track = mapDeezerTrack(detail);
-      if (!track || seen.has(track.preview)) continue;
-      seen.add(track.preview);
-      features.push(track);
-    }
-    const albums = albumRows.filter((album) => album && album.title && (album.record_type === "album" || album.record_type === "compile"));
+    featureRows.sort((a, b) => Number(b.rank || 0) - Number(a.rank || 0));
+    const features = featureRows.map((row) => mapDeezerTrack(row, false)).filter(Boolean);
+    const albums = albumRows
+      .filter((album) => album && album.title)
+      .sort((a, b) => Number(b.fans || 0) - Number(a.fans || 0) || String(b.release_date || "").localeCompare(String(a.release_date || "")));
+    const picture = info.picture_xl || info.picture_big || info.picture_medium || "";
+    artistPage = { id: artistId, name: artistName, picture, tracks };
     const fans = Number(info.nb_fan) || 0;
     const albumCount = Number(info.nb_album) || albums.length;
+    const favorite = isFavoriteArtist(artistName);
+    const previewTracks = tracks.slice(0, 8);
+    const hidden = tracks.length - previewTracks.length;
     const albumCards = albums
       .map((album) => {
         const year = String(album.release_date || "").slice(0, 4);
-        return `<li><button type="button" class="artist-release-card" data-open-album="1" data-album-id="${escapeAttr(album.id)}" data-album-title="${escapeAttr(album.title)}"><div class="artist-release-cover">${album.cover_medium ? `<img src="${escapeAttr(album.cover_medium)}" alt="">` : ""}</div><div class="artist-release-meta"><div class="artist-release-title">${escapeHtml(album.title)}</div><div class="artist-release-sub">${escapeHtml(year)}</div></div></button></li>`;
+        const kind = album.record_type === "single" ? "Сингл" : album.record_type === "ep" ? "EP" : album.record_type === "compile" ? "Сборник" : "";
+        return `<li><button type="button" class="artist-release-card" data-open-album="1" data-album-id="${escapeAttr(album.id)}" data-album-title="${escapeAttr(album.title)}"><div class="artist-release-cover">${album.cover_medium ? `<img src="${escapeAttr(album.cover_medium)}" alt="">` : ""}</div><div class="artist-release-meta"><div class="artist-release-title">${escapeHtml(album.title)}</div><div class="artist-release-sub">${escapeHtml([year, kind].filter(Boolean).join(" · "))}</div></div></button></li>`;
       })
       .join("");
-    host.innerHTML = `<div class="artist-view"><div class="artist-view-header"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><div class="artist-view-hero"><div class="artist-view-cover">${info.picture_medium ? `<img src="${escapeAttr(info.picture_xl || info.picture_big || info.picture_medium)}" alt="">` : ""}</div><div class="artist-view-info"><h1>${escapeHtml(artistName)}</h1><p class="artist-view-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p></div></div></div><section class="artist-view-section"><h2>Треки <span class="artist-view-tab-count">${own.length}</span></h2>${own.length ? `<ul class="demo-tracks-grid">${own.map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет треков</p>'}</section><section class="artist-view-section"><h2>Альбомы</h2>${albumCards ? `<ul class="artist-releases-grid">${albumCards}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-view-section"><h2>Фиты</h2>${features.length ? `<ul class="demo-tracks-grid">${features.map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет фитов</p>'}</section></div>`;
+    const similar = (relatedRows || [])
+      .filter((artist) => artist && artist.name)
+      .map(
+        (artist) =>
+          `<li><button type="button" class="artist-chip" data-open-artist="1" data-artist-id="${escapeAttr(artist.id)}" data-artist-name="${escapeAttr(artist.name)}">${
+            artist.picture_medium
+              ? `<img class="artist-chip-avatar" src="${escapeAttr(artist.picture_medium)}" alt="">`
+              : `<span class="artist-chip-avatar artist-chip-avatar-fallback">${svg('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>', 18)}</span>`
+          }<span class="artist-chip-name">${escapeHtml(artist.name)}</span></button></li>`,
+      )
+      .join("");
+    const platforms = platformLinks(artistName, artistId)
+      .map(
+        (item) =>
+          `<button type="button" class="artist-platform" data-platform="${escapeAttr(item.url)}">${escapeHtml(item.label)}</button>`,
+      )
+      .join("");
+    const glow = picture ? ` style="background-image:url('${escapeAttr(picture)}')"` : "";
+    host.innerHTML = `<div class="artist-page artist-view"><button type="button" class="artist-view-back" data-artist-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><header class="artist-hero"><div class="artist-hero-glow"${glow}></div><div class="artist-hero-cover">${picture ? `<img src="${escapeAttr(picture)}" alt="">` : svg('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>', 64)}</div><div class="artist-hero-copy"><p class="artist-kicker">Артист</p><h1>${escapeHtml(artistName)}</h1><p class="artist-hero-stats">${fans ? `${fans.toLocaleString("ru-RU")} фанатов` : ""}${fans && albumCount ? " · " : ""}${albumCount ? `${albumCount} альбомов` : ""}</p><div class="artist-hero-actions"><button type="button" class="btn btn-primary artist-play" data-artist-play="1">${svg(PLAY, 16)}<span>Слушать</span></button><button type="button" class="artist-icon-btn${favorite ? " is-on" : ""}" data-artist-fav="1" aria-pressed="${favorite ? "true" : "false"}" aria-label="Избранные артисты" title="Избранные артисты">${heartIcon(favorite)}</button><button type="button" class="artist-icon-btn" data-artist-menu="1" aria-label="Ещё">${svg('<circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/>', 18)}</button><button type="button" class="btn btn-secondary" data-artist-about="1">Об исполнителе</button></div><div class="artist-platforms">${platforms}</div></div></header><section class="artist-section"><div class="artist-section-head"><h2>Популярные треки</h2><span class="artist-view-tab-count">${tracks.length}</span></div>${tracks.length ? `<ol class="artist-track-list" data-artist-tracks>${artistTrackRows(previewTracks)}</ol>${hidden > 0 ? `<button type="button" class="btn btn-secondary artist-section-more" data-artist-more="1">Показать все (${hidden})</button>` : `<p class="artist-view-section-count">Всего: ${tracks.length} треков</p>`}` : '<p class="artist-view-empty">Нет треков</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Альбомы</h2><span class="artist-view-tab-count">${albums.length}</span></div>${albumCards ? `<ul class="artist-releases-grid">${albumCards}</ul>` : '<p class="artist-view-empty">Нет альбомов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Фиты</h2><span class="artist-view-tab-count">${features.length}</span></div>${features.length ? `<ol class="artist-track-list">${featureList(features)}</ol>` : '<p class="artist-view-empty">Нет фитов</p>'}</section><section class="artist-section"><div class="artist-section-head"><h2>Похожие артисты</h2></div>${similar ? `<ul class="artist-chip-grid artist-similar">${similar}</ul>` : '<p class="artist-view-empty">Нет похожих артистов</p>'}</section></div>`;
     lastArtistHtml = host.innerHTML;
   }
 
@@ -750,6 +1050,8 @@
       return;
     }
     waves.active = true;
+    waves.artist = false;
+    artistQueue = null;
     waves.queue = [];
     waves.index = -1;
     waves.seen = new Set();
@@ -815,6 +1117,7 @@
   }
 
   async function refillWaves() {
+    if (waves.artist) return;
     let batch = [];
     try {
       batch = await loadServerWaves();
@@ -857,6 +1160,7 @@
     const item = (data.results || []).find((entry) => entry.previewUrl);
     if (!item) return;
     waves.active = false;
+    artistQueue = null;
     playUrl(item.previewUrl, item.trackName || title, item.artistName || artist);
   }
 
@@ -870,6 +1174,8 @@
   async function playId(id, title, artist) {
     if (!id) return;
     waves.active = false;
+    waves.artist = false;
+    artistQueue = null;
     const data = await post("play", { id });
     audio.src = "/audio/" + encodeURIComponent(id);
     try { await audio.play(); } catch { /* autoplay */ }

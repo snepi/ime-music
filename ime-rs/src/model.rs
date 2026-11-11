@@ -208,6 +208,17 @@ pub struct Settings {
     pub ytdlp_path: String,
     pub ytdlp_proxy: String,
     pub last_view: String,
+    #[serde(default)]
+    pub favorite_artists: Vec<FavoriteArtist>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FavoriteArtist {
+    pub name: String,
+    #[serde(default)]
+    pub deezer_id: String,
+    #[serde(default)]
+    pub picture: String,
 }
 
 impl Default for Settings {
@@ -239,6 +250,7 @@ impl Default for Settings {
             ytdlp_path: String::new(),
             ytdlp_proxy: String::new(),
             last_view: "home".into(),
+            favorite_artists: Vec::new(),
         }
     }
 }
@@ -466,6 +478,32 @@ impl Store {
                 cover_url: cover_url.into(),
             },
         );
+    }
+
+    /// Returns whether the artist is a favorite after the click.
+    pub fn toggle_favorite_artist(&mut self, name: &str, deezer_id: &str, picture: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        if let Some(index) = self
+            .settings
+            .favorite_artists
+            .iter()
+            .position(|artist| artist.name.eq_ignore_ascii_case(name))
+        {
+            self.settings.favorite_artists.remove(index);
+            return false;
+        }
+        self.settings.favorite_artists.insert(
+            0,
+            FavoriteArtist {
+                name: name.into(),
+                deezer_id: deezer_id.trim().into(),
+                picture: picture.trim().into(),
+            },
+        );
+        true
     }
 
     pub fn create_playlist(&mut self, name: &str) -> String {
