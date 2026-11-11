@@ -370,8 +370,23 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
         }
         "archive-to-library" => {
             if let Some(id) = form.id.as_deref() {
+                let previous = store
+                    .archive
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(|item| (item.title.clone(), item.artist.clone(), item.path.clone()));
                 if store.promote_archive(id) {
-                    message = "Трек перенесён в библиотеку".into();
+                    message = "Трек добавлен в библиотеку".into();
+                    if let Some((title, artist, path)) = previous {
+                        if let Some(song) = store.songs.iter().find(|song| song.path == path) {
+                            detail = serde_json::json!({
+                                "library": true,
+                                "id": song.id,
+                                "title": title,
+                                "artist": artist,
+                            });
+                        }
+                    }
                 }
             }
         }

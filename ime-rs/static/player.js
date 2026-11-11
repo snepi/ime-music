@@ -263,6 +263,44 @@
       event.stopPropagation();
       const key = wishKey(wish.dataset.title || "", wish.dataset.artist || "");
       const removing = wish.classList.contains("liked") || wished.has(key);
+      if (!removing) {
+        const title = wish.dataset.title || "";
+        const artist = wish.dataset.artist || "";
+        void (async () => {
+          let match = null;
+          try {
+            const response = await fetch(
+              "/api/archive/match?title=" + encodeURIComponent(title) + "&artist=" + encodeURIComponent(artist),
+            );
+            match = await response.json();
+          } catch { /* wishlist */ }
+          if (match && match.id) {
+            const data = await post("archive-to-library", { id: match.id });
+            const songId = data.detail && data.detail.id;
+            if (songId && !library.some((song) => song.id === songId)) {
+              library.push({ id: songId, title, artist, liked: false });
+              writeJsonSeed("library-seed", library);
+            }
+            document.querySelector(`[data-archive-id="${cssEscape(match.id)}"]`)?.remove();
+            notify("Трек добавлен в библиотеку", "success");
+            return;
+          }
+          post("wish", {
+            title,
+            artist,
+            url: wish.dataset.url || "",
+            cover: wish.dataset.cover || "",
+            album: wish.dataset.album || "",
+          });
+          wished.add(key);
+          document.querySelectorAll("[data-wish]").forEach((node) => {
+            if (wishKey(node.dataset.title || "", node.dataset.artist || "") !== key) return;
+            node.classList.add("liked");
+            node.innerHTML = heartIcon(true);
+          });
+        })();
+        return;
+      }
       post("wish", {
         title: wish.dataset.title || "",
         artist: wish.dataset.artist || "",
@@ -270,8 +308,7 @@
         cover: wish.dataset.cover || "",
         album: wish.dataset.album || "",
       });
-      if (removing) wished.delete(key);
-      else wished.add(key);
+      wished.delete(key);
       document.querySelectorAll("[data-wish]").forEach((node) => {
         if (wishKey(node.dataset.title || "", node.dataset.artist || "") !== key) return;
         const on = !removing;
@@ -1751,8 +1788,10 @@
     const meta = document.querySelector(".home-waves-meta");
     if (title) title.textContent = item.title;
     if (meta) meta.innerHTML = artistLink(item.artist);
-    const archived = await archiveFile(item.title, item.artist);
-    playUrl(archived || item.url, item.title, item.artist);
+    const local = librarySong(item.title, item.artist);
+    const archived = local ? "" : await archiveFile(item.title, item.artist);
+    const full = local ? "/audio/" + encodeURIComponent(local.id) : archived;
+    playUrl(full || item.url, item.title, item.artist);
     scheduleArchive();
   }
 
