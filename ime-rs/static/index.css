@@ -2176,7 +2176,10 @@ select:focus-visible {
 .main-content > .artist-page.artist-view {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
 }
 
 .artist-hero {
