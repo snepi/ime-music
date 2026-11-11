@@ -1030,7 +1030,11 @@
   async function openAlbum(id) {
     const host = panelHost();
     if (!host || !id) return;
-    if (host.querySelector(".artist-view") && !host.querySelector(".album-view")) lastArtistHtml = host.innerHTML;
+    const fromRecommendations = host.id === "recommendations-root";
+    if (fromRecommendations) {
+      host.dataset.restore = host.innerHTML;
+      host.dataset.albumFromList = "1";
+    } else if (host.querySelector(".artist-view") && !host.querySelector(".album-view")) lastArtistHtml = host.innerHTML;
     else if (!host.dataset.restore) rememberPanel(host);
     host.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
     try {
@@ -1048,6 +1052,31 @@
         .filter(Boolean);
       const cover = album.cover_medium || album.cover_xl || "";
       host.innerHTML = `<div class="album-view artist-view"><div class="artist-view-header"><button type="button" class="artist-view-back" data-album-back="1"><span class="artist-view-back-icon" aria-hidden="true">${svg('<polyline points="9 18 15 12 9 6"/>', 16)}</span>Назад</button><div class="artist-view-hero"><div class="artist-view-cover">${cover ? `<img src="${escapeAttr(cover)}" alt="">` : ""}</div><div class="artist-view-info"><h1>${escapeHtml(album.title || "")}</h1><p class="artist-view-stats">${escapeHtml(album.artist?.name || "")}${tracks.length ? ` · ${tracks.length} треков` : ""}</p></div></div></div><section class="artist-view-section"><h2>Треки альбома</h2>${tracks.length ? `<ul class="demo-tracks-grid">${tracks.map(trackCard).join("")}</ul>` : '<p class="artist-view-empty">Нет треков</p>'}</section></div>`;
+      if (fromRecommendations && tracks.length) {
+        const playable = tracks.map((track) => ({
+          title: track.title,
+          artist: track.artist || album.artist?.name || "",
+          preview: track.preview || "",
+          id: "",
+        }));
+        if (!playable[0].preview && playable[0].title) {
+          const found = await deezer(
+            "/search/track?q=" +
+              encodeURIComponent(`track:"${playable[0].title}" artist:"${playable[0].artist}"`) +
+              "&limit=5",
+          );
+          const hit = (found.data || []).find((row) => row.preview);
+          if (hit?.preview) playable[0].preview = hit.preview;
+        }
+        listQueue = { items: playable, index: 0 };
+        artistQueue = null;
+        waves.active = false;
+        const first = playable[0];
+        const local = librarySong(first.title, first.artist);
+        if (local) playId(local.id, local.title, local.artist, true);
+        else if (first.preview) playUrl(first.preview, first.title, first.artist);
+        else playQuery(first.title, first.artist);
+      }
     } catch {
       host.innerHTML = '<p class="home-discovery-search-error">Альбом не открылся</p><button type="button" class="btn btn-secondary" data-album-back="1">Назад</button>';
     }
@@ -1144,7 +1173,9 @@
   }
 
   function panelHost() {
-    return document.getElementById("discovery-results") || document.getElementById("wishlist-body");
+    return document.getElementById("discovery-results")
+      || document.getElementById("recommendations-root")
+      || document.getElementById("wishlist-body");
   }
 
   async function openAlbumByName(title, artist) {
@@ -1313,46 +1344,78 @@
     else notify("По этим фильтрам нет треков", "info");
   }
 
-  function recArtists(mode) {
-    if (mode === "current") return now.artist ? [now.artist] : [];
+  function readJsonSeed(id) {
+    try {
+      return JSON.parse(document.getElementById(id)?.textContent || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  function rankedArtists(songs) {
+    const counts = new Map();
+    for (const song of songs) {
+      const name = String(song.artist || "").trim();
+      if (!name) continue;
+      const key = normTrack(name);
+      const current = counts.get(key) || { name, score: 0 };
+      current.score += 1 + (song.liked ? 3 : 0);
+      counts.set(key, current);
+    }
+    return [...counts.values()].sort((a, b) => b.score - a.score).map((item) => item.name);
+  }
+
+  function recSource(mode) {
+    if (mode === "liked") {
+      const favorites = readJsonSeed("favorite-artists-seed").map((item) => item.name).filter(Boolean);
+      return { artists: [...rankedArtists(library.filter((song) => song.liked)), ...favorites].filter((name, index, all) => all.findIndex((item) => normTrack(item) === normTrack(name)) === index), tracks: library.filter((song) => song.liked) };
+    }
     if (mode === "wishlist") {
-      try {
-        const items = JSON.parse(document.getElementById("wishlist-seed")?.textContent || "[]");
-        return [...new Set(items.map((item) => item.artist).filter(Boolean))].slice(0, 4);
-      } catch {
-        return [];
+      const wishes = readJsonSeed("wishlist-seed");
+      return { artists: rankedArtists(wishes), tracks: wishes };
+    }
+    if (mode === "current") {
+      return { artists: now.artist ? [now.artist] : [], tracks: now.title ? [{ title: now.title, artist: now.artist }] : [] };
+    }
+    return { artists: rankedArtists(library), tracks: library };
+  }
+
+  async function resolveArtist(name) {
+    const data = await deezer("/search/artist?q=" + encodeURIComponent(name) + "&limit=8");
+    const want = normTrack(name);
+    return (data.data || []).find((item) => item && normTrack(item.name) === want) || null;
+  }
+
+  async function catalogForArtists(names) {
+    const tracks = [];
+    const albums = [];
+    const seenTracks = new Set();
+    const seenAlbums = new Set();
+    for (const name of names.slice(0, 4)) {
+      const artist = await resolveArtist(name);
+      if (!artist) continue;
+      const [top, listed] = await Promise.all([
+        deezer("/artist/" + artist.id + "/top?limit=10"),
+        deezer("/artist/" + artist.id + "/albums?limit=12"),
+      ]);
+      for (const row of top.data || []) {
+        if (normTrack(row.artist?.name) !== normTrack(artist.name)) continue;
+        const track = mapDeezerTrack(row);
+        if (!track || !track.preview || seenTracks.has(track.preview)) continue;
+        seenTracks.add(track.preview);
+        tracks.push(track);
+      }
+      for (const album of listed.data || []) {
+        if (!album?.id || seenAlbums.has(album.id)) continue;
+        const by = album.artist?.name || artist.name;
+        if (normTrack(by) !== normTrack(artist.name)) continue;
+        if (album.record_type === "single") continue;
+        seenAlbums.add(album.id);
+        if (!album.artist?.name) album.artist = { name: artist.name, id: artist.id };
+        albums.push(album);
       }
     }
-    const songs = mode === "liked" ? library.filter((song) => song.liked) : library;
-    const names = [];
-    for (const song of songs) {
-      if (song.artist && !names.includes(song.artist)) names.push(song.artist);
-      if (names.length >= 4) break;
-    }
-    return names;
-  }
-
-  async function tracksForArtists(names, limit) {
-    const rows = [];
-    for (const name of names.slice(0, 3)) {
-      const data = await deezer("/search/track?q=" + encodeURIComponent(`artist:"${name}"`) + "&limit=8");
-      rows.push(...(data.data || []));
-    }
-    const seen = new Set();
-    return rows
-      .map((row) => mapDeezerTrack(row))
-      .filter((track) => track && track.preview && !seen.has(track.preview) && seen.add(track.preview))
-      .slice(0, limit);
-  }
-
-  async function albumsForArtists(names, limit) {
-    const albums = [];
-    for (const name of names.slice(0, 3)) {
-      const data = await deezer("/search/album?q=" + encodeURIComponent(name) + "&limit=6");
-      albums.push(...(data.data || []));
-    }
-    const seen = new Set();
-    return albums.filter((album) => album && album.id && album.title && !seen.has(album.id) && seen.add(album.id)).slice(0, limit);
+    return { tracks: tracks.slice(0, 12), albums: albums.slice(0, 8) };
   }
 
   function recAlbumCard(album) {
@@ -1365,25 +1428,36 @@
     const root = document.getElementById("recommendations-root");
     if (!root) return;
     root.innerHTML = '<p class="home-discovery-search-hint">Загрузка…</p>';
-    const names = recArtists(mode);
+    const source = recSource(mode === "chart" ? "all" : mode);
     const tasteTitle = mode === "liked"
       ? "По избранному"
-      : mode === "current"
-        ? "По текущему треку"
-        : mode === "wishlist"
-          ? "По «Хочу послушать»"
+      : mode === "wishlist"
+        ? "По хочу послушать"
+        : mode === "current"
+          ? "По текущему треку"
           : "По вкусу";
+    const emptyHint = mode === "liked"
+      ? "В избранном пока нет треков и артистов"
+      : mode === "wishlist"
+        ? "Список «Хочу послушать» пуст"
+        : "В библиотеке пока нет артистов";
     try {
       const chart = await deezer("/chart/0/tracks?limit=12");
       const chartTracks = (chart.data || []).map((row) => mapDeezerTrack(row)).filter(Boolean);
-      const chartArtists = [...new Set(chartTracks.map((track) => track.artist).filter(Boolean))].slice(0, 3);
-      const taste = mode === "chart" ? [] : await tracksForArtists(names, 12);
-      const albums = await albumsForArtists(mode === "chart" ? chartArtists : names, 8);
+      const catalog = mode === "chart"
+        ? await catalogForArtists([...new Set(chartTracks.map((track) => track.artist).filter(Boolean))].slice(0, 3))
+        : await catalogForArtists(source.artists);
+      const wanted = new Set(source.tracks.map((track) => `${normTrack(track.title)}\n${normTrack(track.artist)}`));
+      const taste = [...catalog.tracks].sort((a, b) => {
+        const aHit = wanted.has(`${normTrack(a.title)}\n${normTrack(a.artist)}`) ? 0 : 1;
+        const bHit = wanted.has(`${normTrack(b.title)}\n${normTrack(b.artist)}`) ? 0 : 1;
+        return aHit - bHit;
+      });
       const sections = [];
       if (mode !== "chart") {
-        sections.push({ title: tasteTitle, hint: names.length ? names.join(", ") : "Добавьте музыку в библиотеку — подборка строится по ней", tracks: taste });
+        sections.push({ title: tasteTitle, hint: source.artists.length ? source.artists.slice(0, 4).join(", ") : emptyHint, tracks: taste });
       }
-      sections.push({ title: "Альбомы", albums });
+      sections.push({ title: "Альбомы", albums: catalog.albums });
       sections.push({ title: "Чарт", hint: "Топ Deezer", tracks: chartTracks });
       root.innerHTML = sections.map((section) => {
         if (section.albums) {
