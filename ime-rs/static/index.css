@@ -1240,27 +1240,60 @@ select:focus-visible {
   gap: 6px;
 }
 
+.home-waves-inline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.home-waves-inline .home-waves-settings-label {
+  flex: 0 0 76px;
+}
+
+.waves-segment {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
 .waves-chip {
-  border: 1px solid var(--border);
-  background: var(--bg-panel);
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
   color: var(--text-secondary);
   border-radius: 999px;
-  padding: 5px 11px;
+  padding: 6px 12px;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
 
+.waves-segment .waves-chip {
+  background: transparent;
+  white-space: nowrap;
+  padding: 5px 12px;
+}
+
 .waves-chip:hover {
   color: var(--text-primary);
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--bg-hover);
 }
 
 .waves-chip.is-active {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  background: var(--accent);
+  color: #0d1117;
+}
+
+.waves-chip:focus-visible,
+.waves-text-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .home-waves-toggle {
@@ -2425,9 +2458,24 @@ select:focus-visible {
 
 .home-waves-settings-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 2px;
+}
+
+.waves-text-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 2px;
+  cursor: pointer;
+}
+
+.waves-text-btn:hover {
+  color: var(--text-secondary);
 }
 
 .recommendations-sections {

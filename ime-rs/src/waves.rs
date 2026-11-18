@@ -1,5 +1,6 @@
-//! IMe Waves pool. Matches the Electron radio: genre, language, mood, seed,
-//! and diversity, then a new shuffle on every session.
+//! IMe Waves pool. Genre, language, and source shape the next wave.
+//! Mood and diversity are kept on the saved settings so older files still
+//! load, and they no longer change the pool.
 
 use crate::model::{Song, Store, Waves};
 use serde::Serialize;
@@ -91,6 +92,25 @@ pub fn apply_setting(waves: &mut Waves, field: &str, value: &str) -> bool {
     false
 }
 
+/// Commit the filters the settings panel still shows. Retired mood and
+/// diversity values are cleared so a hidden setting cannot keep shaping the pool.
+pub fn apply_filters(waves: &mut Waves, genre: &str, language: &str, seed: &str, skip_known: &str) {
+    apply_setting(waves, "genre", genre);
+    apply_setting(waves, "language", language);
+    apply_setting(waves, "seed", seed);
+    apply_setting(waves, "mood", "any");
+    apply_setting(waves, "diversity", "normal");
+    apply_setting(waves, "skipKnown", skip_known);
+}
+
+fn style_filtered(genre: &str, language: &str) -> bool {
+    genre != "all" || language != "any"
+}
+
+fn uses_artist_radio(genre: &str, seed: &str) -> bool {
+    genre == "all" && seed != "chart"
+}
+
 /// A wave built around one artist: their own tracks, then tracks in the same lane.
 /// Settings (genre, seed, mood) stay as they are.
 pub fn build_artist_wave(name: &str, id: Option<u64>) -> Vec<WaveTrack> {
@@ -137,18 +157,18 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
     let preset = preset(&waves.genre);
     let mut raw = Vec::new();
 
-    let filtered = waves.genre != "all" || waves.language != "any" || waves.mood != "any";
+    let filtered = style_filtered(&waves.genre, &waves.language);
     if let Some(id) = preset.deezer_id {
         raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=40")));
     } else if waves.seed == "chart" && !filtered {
         raw.extend(fetch_list("/chart/0/tracks?limit=40"));
     }
-    for query in wave_queries(&waves.genre, &waves.language, &waves.mood) {
+    for query in wave_queries(&waves.genre, &waves.language) {
         let path = format!("/search/track?q={}&limit=25", urlencoding::encode(&query));
         raw.extend(fetch_list(&path));
     }
     // Artist radio ignores genre. Use it only when the listener did not pick a style.
-    if waves.genre == "all" && waves.mood == "any" && waves.seed != "chart" {
+    if uses_artist_radio(&waves.genre, &waves.seed) {
         for name in seed_artists(store).iter().take(6) {
             let Some(id) = resolve_artist(name) else { continue };
             raw.extend(fetch_list(&format!("/artist/{id}/radio?limit=12")));
@@ -178,7 +198,7 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         if waves.skip_known && known.contains(&key) {
             continue;
         }
-        if !matches_language(&item, &waves.language) || !matches_mood(&item, &waves.mood) {
+        if !matches_language(&item, &waves.language) {
             continue;
         }
         if !matches_genre(&item, &waves.genre) {
@@ -187,7 +207,7 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         mapped.push(item);
     }
 
-    arrange(&mut mapped, &heard, waves.spin, waves.diversity == "high");
+    arrange(&mut mapped, &heard, waves.spin, false);
     mapped
         .into_iter()
         .take(POOL_CAP)
@@ -356,7 +376,7 @@ fn detect_language(track: &Candidate) -> &'static str {
     }
 }
 
-fn wave_queries(genre: &str, language: &str, mood: &str) -> Vec<String> {
+fn wave_queries(genre: &str, language: &str) -> Vec<String> {
     let preset = preset(genre);
     let mut queries: Vec<String> = preset.queries.iter().map(|query| (*query).to_string()).collect();
     if queries.is_empty() {
@@ -371,18 +391,6 @@ fn wave_queries(genre: &str, language: &str, mood: &str) -> Vec<String> {
     } else if language == "en" {
         queries = queries.into_iter().map(|query| format!("{query} english")).collect();
     }
-    if mood != "any" {
-        let word = match mood {
-            "energetic" => "energetic party",
-            "chill" => "chill relax",
-            "dark" => "dark sad",
-            "happy" => "happy love",
-            _ => "",
-        };
-        if !word.is_empty() {
-            queries = queries.into_iter().map(|query| format!("{query} {word}")).collect();
-        }
-    }
     queries.into_iter().take(4).collect()
 }
 
@@ -392,18 +400,6 @@ fn matches_language(track: &Candidate, language: &str) -> bool {
         "en" => detect_language(track) == "en",
         _ => true,
     }
-}
-
-fn matches_mood(track: &Candidate, mood: &str) -> bool {
-    let blob = format!("{} {} {}", track.title, track.album, track.artist).to_lowercase();
-    let patterns: &[&str] = match mood {
-        "energetic" => &["energy", "power", "fire", "party", "club", "энерг", "огонь", "клуб"],
-        "chill" => &["chill", "lofi", "lo-fi", "ambient", "calm", "relax", "чил", "спокой"],
-        "dark" => &["dark", "night", "shadow", "doom", "sad", "тёмн", "темн", "ночь", "груст"],
-        "happy" => &["happy", "joy", "love", "summer", "sun", "счаст", "любов", "лето", "радост"],
-        _ => return true,
-    };
-    patterns.iter().any(|pattern| blob.contains(pattern))
 }
 
 fn matches_genre(track: &Candidate, genre: &str) -> bool {
@@ -485,5 +481,45 @@ mod tests {
         assert_eq!(waves.genre, "jazz");
         assert!(apply_setting(&mut waves, "skipKnown", "0"));
         assert!(!waves.skip_known);
+    }
+
+    #[test]
+    fn apply_filters_keeps_only_the_remaining_controls() {
+        let mut waves = Waves::default();
+        waves.mood = "chill".into();
+        waves.diversity = "high".into();
+        apply_filters(&mut waves, "jazz", "ru", "chart", "0");
+        assert_eq!(waves.genre, "jazz");
+        assert_eq!(waves.language, "ru");
+        assert_eq!(waves.seed, "chart");
+        assert!(!waves.skip_known);
+        assert_eq!(waves.mood, "any");
+        assert_eq!(waves.diversity, "normal");
+        assert!(!apply_setting(&mut waves, "seed", "polka"));
+        assert_eq!(waves.seed, "chart");
+    }
+
+    #[test]
+    fn queries_follow_genre_and_language() {
+        let jazz = wave_queries("jazz", "any");
+        assert!(jazz.iter().any(|query| query.contains("jazz")));
+        let russian = wave_queries("jazz", "ru");
+        assert!(russian.iter().all(|query| query.contains("русский") && query.contains("jazz")));
+        let english = wave_queries("rock", "en");
+        assert!(english.iter().all(|query| query.contains("english") && query.contains("rock")));
+        assert_ne!(wave_queries("all", "any"), wave_queries("pop", "any"));
+        assert_ne!(wave_queries("all", "ru"), wave_queries("all", "en"));
+    }
+
+    #[test]
+    fn source_changes_the_next_wave_plan() {
+        assert!(uses_artist_radio("all", "taste"));
+        assert!(uses_artist_radio("all", "liked"));
+        assert!(uses_artist_radio("all", "wishlist"));
+        assert!(!uses_artist_radio("all", "chart"));
+        assert!(!uses_artist_radio("jazz", "liked"));
+        assert!(style_filtered("jazz", "any"));
+        assert!(style_filtered("all", "ru"));
+        assert!(!style_filtered("all", "any"));
     }
 }

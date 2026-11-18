@@ -486,8 +486,6 @@
     const waveChip = event.target.closest("[data-waves-field]");
     if (waveChip && waveChip.tagName === "BUTTON") {
       event.preventDefault();
-      const field = waveChip.dataset.wavesField;
-      const value = waveChip.dataset.wavesValue;
       const row = waveChip.parentElement;
       if (row) {
         row.querySelectorAll("[data-waves-field]").forEach((node) => {
@@ -496,9 +494,6 @@
           node.setAttribute("aria-pressed", on ? "true" : "false");
         });
       }
-      post("waves-setting", { field, value }).then(() => {
-        if (waves.active) refreshWave();
-      });
       return;
     }
     const recChip = event.target.closest("[data-rec-filter]");
@@ -519,9 +514,8 @@
     if (name === "toggle") toggle();
     if (name === "next") playNext();
     if (name === "prev") playPrev();
-    if (name === "waves-save") notify("Настройки волны сохранены", "success");
+    if (name === "waves-apply") applyWaves();
     if (name === "waves-reset") resetWaves();
-    if (name === "waves-refresh") refreshWave();
     if (name === "refresh-rec") loadRecommendations(recFilter, true);
     if (name === "mute") toggleMute();
     if (name === "shuffle" || name === "repeat") {
@@ -532,12 +526,6 @@
     if (name === "queue") toggleQueue();
     if (name === "sleep") toggleSleep(act);
     if (name === "mini") toggleMini();
-  });
-
-  document.addEventListener("change", (event) => {
-    const input = event.target;
-    if (!(input instanceof HTMLInputElement) || input.dataset.wavesField !== "skipKnown") return;
-    post("waves-setting", { field: "skipKnown", value: input.checked ? "1" : "0" });
   });
 
   document.addEventListener("submit", (event) => {
@@ -1602,11 +1590,11 @@
   async function loadFallbackWaves() {
     const genre = waveChip("genre") || "all";
     const language = waveChip("language") || "any";
-    const mood = waveChip("mood") || "any";
+    const seed = waveChip("seed") || "taste";
     let term = genre === "all" || genre === "ruRap" ? "music" : genre;
     if (language === "ru") term = `русский ${term}`;
     else if (language === "en") term = `${term} english`;
-    if (mood !== "any") term = `${term} ${mood}`;
+    if (seed === "chart") term = `${term} chart`;
     const country = language === "en" ? "us" : "ru";
     const response = await fetch(
       `https://itunes.apple.com/search?entity=song&limit=40&country=${country}&term=` + encodeURIComponent(term),
@@ -1649,9 +1637,27 @@
     if (waves.active) scheduleArchive();
   }
 
+  async function applyWaves() {
+    const button = document.querySelector('[data-act="waves-apply"]');
+    if (button) button.disabled = true;
+    try {
+      const genre = waveChip("genre") || "all";
+      const language = waveChip("language") || "any";
+      const seed = waveChip("seed") || "taste";
+      const skip = document.querySelector('[data-waves-field="skipKnown"]');
+      const skipKnown = skip && skip.checked ? "1" : "0";
+      await post("waves-apply", { value: [genre, language, seed, skipKnown].join("|") });
+      await refreshWave();
+      if (waves.queue.length) notify("Волна обновлена", "success");
+      else if (!document.querySelector(".toast")) notify("По этим фильтрам нет треков", "info");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function resetWaves() {
     await post("waves-reset");
-    const defaults = { genre: "all", language: "any", mood: "any", seed: "taste", diversity: "normal" };
+    const defaults = { genre: "all", language: "any", seed: "taste" };
     for (const [field, value] of Object.entries(defaults)) {
       document.querySelectorAll(`[data-waves-field="${field}"]`).forEach((node) => {
         const on = node.dataset.wavesValue === value;

@@ -612,6 +612,15 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             store.settings.waves.spin = spin;
             message = "Настройки волны сброшены".into();
         }
+        "waves-apply" => {
+            if let Some(value) = form.value.as_deref() {
+                let parts: Vec<&str> = value.split('|').collect();
+                if parts.len() == 4 {
+                    waves::apply_filters(&mut store.settings.waves, parts[0], parts[1], parts[2], parts[3]);
+                    message = "Фильтры волны применены".into();
+                }
+            }
+        }
         "waves-setting" => {
             waves::apply_setting(
                 &mut store.settings.waves,

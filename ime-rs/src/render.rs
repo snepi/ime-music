@@ -602,98 +602,75 @@ fn waves_chip_row(i18n: &I18n, field: &str, current: &str, options: &[(&str, &st
     html
 }
 
+fn waves_inline(i18n: &I18n, label: &str, row: String) -> String {
+    let name = esc(&i18n.t(label));
+    format!(
+        r#"<div class="home-waves-inline"><div class="home-waves-settings-label">{name}</div><div class="waves-segment" role="radiogroup" aria-label="{name}">{row}</div></div>"#,
+        name = name,
+        row = row,
+    )
+}
+
 fn waves_settings(store: &Store, i18n: &I18n) -> String {
     let waves = &store.settings.waves;
-    let block = |label: &str, row: String| {
-        format!(
-            r#"<div class="home-waves-settings-block"><div class="home-waves-settings-label">{}</div><div class="waves-chip-row">{}</div></div>"#,
-            esc(&i18n.t(label)),
-            row
-        )
-    };
+    let genre = waves_chip_row(
+        i18n,
+        "genre",
+        &waves.genre,
+        &[
+            ("all", "waves.genre.all"),
+            ("rock", "waves.genre.rock"),
+            ("pop", "waves.genre.pop"),
+            ("rap", "waves.genre.rap"),
+            ("ruRap", "waves.genre.ruRap"),
+            ("electronic", "waves.genre.electronic"),
+            ("rnb", "waves.genre.rnb"),
+            ("indie", "waves.genre.indie"),
+            ("metal", "waves.genre.metal"),
+            ("dance", "waves.genre.dance"),
+            ("jazz", "waves.genre.jazz"),
+        ],
+    );
+    let language = waves_inline(
+        i18n,
+        "waves.language",
+        waves_chip_row(
+            i18n,
+            "language",
+            &waves.language,
+            &[
+                ("any", "waves.language.any"),
+                ("ru", "waves.language.ru"),
+                ("en", "waves.language.en"),
+            ],
+        ),
+    );
+    let source = waves_inline(
+        i18n,
+        "waves.seed",
+        waves_chip_row(
+            i18n,
+            "seed",
+            &waves.seed,
+            &[
+                ("taste", "waves.seed.taste"),
+                ("chart", "waves.seed.chart"),
+                ("liked", "waves.seed.liked"),
+                ("wishlist", "waves.seed.wishlist"),
+            ],
+        ),
+    );
     format!(
-        r#"<div class="home-waves-settings" id="waves-settings" hidden>{}{}{}{}{}<label class="home-waves-toggle"><input type="checkbox" data-waves-field="skipKnown"{}><span>{}</span></label><div class="home-waves-settings-actions"><button type="button" class="btn btn-primary" data-act="waves-save">{}</button><button type="button" class="btn btn-secondary" data-act="waves-reset">{}</button><button type="button" class="btn btn-secondary" data-act="waves-refresh">{}</button></div><p class="home-waves-settings-hint">{}</p></div>"#,
-        block(
-            "waves.genre",
-            waves_chip_row(
-                i18n,
-                "genre",
-                &waves.genre,
-                &[
-                    ("all", "waves.genre.all"),
-                    ("rock", "waves.genre.rock"),
-                    ("pop", "waves.genre.pop"),
-                    ("rap", "waves.genre.rap"),
-                    ("ruRap", "waves.genre.ruRap"),
-                    ("electronic", "waves.genre.electronic"),
-                    ("rnb", "waves.genre.rnb"),
-                    ("indie", "waves.genre.indie"),
-                    ("metal", "waves.genre.metal"),
-                    ("dance", "waves.genre.dance"),
-                    ("jazz", "waves.genre.jazz"),
-                ],
-            )
-        ),
-        block(
-            "waves.language",
-            waves_chip_row(
-                i18n,
-                "language",
-                &waves.language,
-                &[
-                    ("any", "waves.language.any"),
-                    ("ru", "waves.language.ru"),
-                    ("en", "waves.language.en"),
-                ],
-            )
-        ),
-        block(
-            "waves.mood",
-            waves_chip_row(
-                i18n,
-                "mood",
-                &waves.mood,
-                &[
-                    ("any", "waves.mood.any"),
-                    ("energetic", "waves.mood.energetic"),
-                    ("chill", "waves.mood.chill"),
-                    ("dark", "waves.mood.dark"),
-                    ("happy", "waves.mood.happy"),
-                ],
-            )
-        ),
-        block(
-            "waves.seed",
-            waves_chip_row(
-                i18n,
-                "seed",
-                &waves.seed,
-                &[
-                    ("taste", "waves.seed.taste"),
-                    ("chart", "waves.seed.chart"),
-                    ("liked", "waves.seed.liked"),
-                    ("wishlist", "waves.seed.wishlist"),
-                ],
-            )
-        ),
-        block(
-            "waves.diversity",
-            waves_chip_row(
-                i18n,
-                "diversity",
-                &waves.diversity,
-                &[
-                    ("normal", "waves.diversity.normal"),
-                    ("high", "waves.diversity.high"),
-                ],
-            )
-        ),
-        if waves.skip_known { " checked" } else { "" },
-        esc(&i18n.t("waves.skipKnown")),
-        esc(&i18n.t("common.save")),
-        esc(&i18n.t("common.reset")),
-        esc(&i18n.t("rec.refresh")),
-        esc(&i18n.t("waves.settingsHint")),
+        r#"<div class="home-waves-settings" id="waves-settings" hidden><div class="home-waves-settings-block"><div class="home-waves-settings-label">{genre_label}</div><div class="waves-chip-row">{genre}</div></div>{language}{source}<label class="home-waves-toggle"><input type="checkbox" data-waves-field="skipKnown"{checked}><span>{skip}</span></label><div class="home-waves-settings-actions"><button type="button" class="waves-text-btn" data-act="waves-reset">{reset}</button><button type="button" class="btn btn-primary" data-act="waves-apply">{apply}</button></div><p class="home-waves-settings-hint">{hint}</p></div>"#,
+        genre_label = esc(&i18n.t("waves.genre")),
+        genre = genre,
+        language = language,
+        source = source,
+        checked = if waves.skip_known { " checked" } else { "" },
+        skip = esc(&i18n.t("waves.skipKnown")),
+        reset = esc(&i18n.t("common.reset")),
+        apply = esc(&i18n.t("common.apply")),
+        hint = esc(&i18n.t("waves.settingsHint")),
     )
 }
 
@@ -2209,4 +2186,44 @@ fn youtube_modal(i18n: &I18n, screen: &Screen) -> String {
         esc(&i18n.t("yt.hint")),
         esc(&i18n.t("common.add"))
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Store;
+
+    #[test]
+    fn waves_panel_shows_only_the_remaining_controls() {
+        let store = Store::default();
+        let i18n = I18n::load(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static/i18n")),
+            "ru",
+        );
+        let screen = Screen {
+            view: "home".into(),
+            playlist: String::new(),
+            settings: String::new(),
+            section: String::new(),
+            search: String::new(),
+            modal: String::new(),
+        };
+        let html = render(&store, &i18n, &screen);
+        assert!(html.contains("data-act=\"waves-apply\""));
+        assert!(html.contains("Применить"));
+        assert!(html.contains("data-act=\"waves-reset\""));
+        assert!(html.contains("Сбросить"));
+        assert!(html.contains("Пропускать треки, уже есть в библиотеке"));
+        assert!(html.contains("data-waves-value=\"taste\""));
+        assert!(html.contains("data-waves-value=\"chart\""));
+        assert!(html.contains("data-waves-value=\"liked\""));
+        assert!(html.contains("data-waves-value=\"wishlist\""));
+        assert!(html.contains("waves-segment"));
+        assert!(!html.contains("data-waves-field=\"mood\""));
+        assert!(!html.contains("data-waves-field=\"diversity\""));
+        assert!(!html.contains("data-act=\"waves-save\""));
+        assert!(!html.contains("data-act=\"waves-refresh\""));
+        assert!(!html.contains(">Настроение<"));
+        assert!(!html.contains(">Разнообразие<"));
+    }
 }
