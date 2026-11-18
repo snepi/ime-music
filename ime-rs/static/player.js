@@ -8,6 +8,9 @@
   let sleep = { mode: "off", timer: 0 };
   const imports = [];
   let waves = { active: false, artist: false, queue: [], index: -1, seen: new Set() };
+  let waveToken = 0;
+  let waveUserPause = false;
+  let waveAttempt = null;
   const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
 
   const svg = (inner, size) =>
@@ -714,6 +717,15 @@
   });
   audio.addEventListener("play", () => syncPlayButton());
   audio.addEventListener("pause", () => syncPlayButton());
+  audio.addEventListener("error", () => {
+    if (!waves.active || waveUserPause || !waveAttempt) return;
+    if (audio.dataset.waveLoad !== waveAttempt.token + ":" + waveAttempt.kind) return;
+    failWaveAttempt(waveAttempt);
+  });
+  audio.addEventListener("loadedmetadata", () => {
+    if (!waves.active || waveUserPause || !waveAttempt || waveAttempt.kind !== "archive") return;
+    if (Number.isFinite(audio.duration) && audio.duration > 0 && audio.duration < 1) failWaveAttempt(waveAttempt);
+  });
   audio.addEventListener("ended", () => {
     if (sleep.mode === "track" || sleep.mode === "album") {
       finishSleep("Стоп в конце трека");
@@ -1498,17 +1510,43 @@
     else host.dataset.restore = host.innerHTML;
   }
 
-  async function startWaves() {
-    if (waves.active && audio.src && !audio.paused) {
+  function toggleWaves() {
+    if (audio.src && !audio.paused) {
+      waveUserPause = true;
       audio.pause();
       syncPlayButton();
       return;
     }
-    if (waves.active && audio.src && audio.paused) {
-      await audio.play();
+    waveUserPause = false;
+    if (audio.src) {
+      const started = audio.play();
+      if (started && typeof started.catch === "function") {
+        started.catch((err) => {
+          if (waveUserPause || (err && err.name === "AbortError")) return;
+          const index = waves.index >= 0 && waves.queue[waves.index] ? waves.index : 0;
+          if (waves.queue[index]) playWavesIndex(index);
+          else beginWaves();
+        });
+      }
       syncPlayButton();
       return;
     }
+    const index = waves.index >= 0 && waves.queue[waves.index] ? waves.index : 0;
+    if (waves.queue[index]) playWavesIndex(index);
+    else beginWaves();
+  }
+
+  async function startWaves() {
+    if (waves.active) {
+      toggleWaves();
+      return;
+    }
+    beginWaves();
+  }
+
+  async function beginWaves() {
+    const token = ++waveToken;
+    waveUserPause = false;
     waves.active = true;
     waves.artist = false;
     artistQueue = null;
@@ -1516,12 +1554,13 @@
     waves.index = -1;
     waves.seen = new Set();
     await refillWaves();
+    if (token !== waveToken || waveUserPause) return;
     if (!waves.queue.length) {
       waves.active = false;
+      syncPlayButton();
       return;
     }
     playWavesIndex(0);
-    scheduleArchive();
   }
 
   function toggleWavesSettings() {
@@ -1973,25 +2012,87 @@
     }
   }
 
-  async function playWavesIndex(index) {
-    if (index >= waves.queue.length - 3) await refillWaves();
-    const item = waves.queue[index];
-    if (!item) {
-      waves.active = false;
-      syncPlayButton();
-      return;
+  function sameMedia(left, right) {
+    try {
+      return new URL(left || "", location.href).href === new URL(right || "", location.href).href;
+    } catch {
+      return left === right;
     }
-    waves.index = index;
-    post("waves-heard", { url: item.url });
+  }
+
+  function showWaveItem(item) {
     const title = document.querySelector(".home-waves-title");
     const meta = document.querySelector(".home-waves-meta");
-    if (title) title.textContent = item.title;
-    if (meta) meta.innerHTML = artistLink(item.artist);
+    if (title) title.textContent = item.title || "IMe Waves";
+    if (meta) meta.innerHTML = artistLink(item.artist || "");
+    setNowPlaying(item.title || "", item.artist || "", { url: item.url || "", cover: "" });
+  }
+
+  function playWavesIndex(index) {
+    const token = ++waveToken;
+    waveUserPause = false;
+    if (index >= waves.queue.length - 3) refillWaves();
+    const item = waves.queue[index];
+    if (!item) {
+      if (token === waveToken) {
+        waves.active = false;
+        syncPlayButton();
+      }
+      return;
+    }
+    waves.active = true;
+    waves.index = index;
+    post("waves-heard", { url: item.url });
+    showWaveItem(item);
     const local = librarySong(item.title, item.artist);
-    const archived = local ? "" : await archiveFile(item.title, item.artist);
-    const full = local ? "/audio/" + encodeURIComponent(local.id) : archived;
-    playUrl(full || item.url, item.title, item.artist);
-    scheduleArchive();
+    let picked = false;
+    const use = (url, kind) => {
+      if (picked || token !== waveToken || waveUserPause || !url) return;
+      picked = true;
+      startWaveSource(item, token, index, url, kind);
+      scheduleArchive();
+    };
+    if (local) {
+      use("/audio/" + encodeURIComponent(local.id), "local");
+      return;
+    }
+    const timer = window.setTimeout(() => use(item.url, "preview"), 200);
+    if (item.title) {
+      archiveFile(item.title, item.artist).then((archived) => {
+        if (!archived || token !== waveToken || waveUserPause || picked) return;
+        window.clearTimeout(timer);
+        use(archived, "archive");
+      });
+    }
+  }
+
+  function startWaveSource(item, token, index, url, kind) {
+    if (!url || token !== waveToken) return;
+    const attempt = { token, index, url, kind };
+    waveAttempt = attempt;
+    clip = { id: "", start: 0, end: 0, preview: false };
+    audio.dataset.waveLoad = token + ":" + kind;
+    audio.src = url;
+    const started = audio.play();
+    if (started && typeof started.catch === "function") {
+      started.catch((err) => {
+        if (attempt !== waveAttempt || waveUserPause) return;
+        if (err && err.name === "AbortError") return;
+        failWaveAttempt(attempt);
+      });
+    }
+    syncPlayButton();
+  }
+
+  function failWaveAttempt(attempt) {
+    if (!attempt || attempt !== waveAttempt || waveUserPause || attempt.token !== waveToken) return;
+    const item = waves.queue[attempt.index];
+    if (item && attempt.kind !== "preview" && item.url && !sameMedia(attempt.url, item.url)) {
+      startWaveSource(item, attempt.token, attempt.index, item.url, "preview");
+      return;
+    }
+    const next = attempt.index + 1;
+    if (waves.queue[next]) playWavesIndex(next);
   }
 
   const archiveQueued = new Set();
@@ -2169,10 +2270,8 @@
   }
 
   function toggle() {
-    if (waves.active && audio.src) {
-      if (audio.paused) audio.play();
-      else audio.pause();
-      syncPlayButton();
+    if (waves.active) {
+      toggleWaves();
       return;
     }
     if (!audio.src && document.body.dataset.current) {
