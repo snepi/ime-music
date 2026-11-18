@@ -183,12 +183,27 @@ fn flag(on: bool) -> &'static str {
     if on { "1" } else { "0" }
 }
 
+fn saved_second(position: f64) -> i64 {
+    if position.is_finite() && position > 0.0 {
+        position.floor() as i64
+    } else {
+        0
+    }
+}
+
+fn clock(seconds: f64) -> String {
+    let whole = saved_second(seconds).max(0);
+    format!("{:02}:{:02}", whole / 60, whole % 60)
+}
+
 fn body_attrs(store: &Store) -> String {
     let wallpaper = store.settings.wallpaper_mode != "none" && !store.settings.wallpaper_path.is_empty();
     format!(
-        r#" data-volume="{volume}" data-current="{current}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-show-search="{search}" data-show-queue="{queue_btn}" data-gapless="{gapless}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}" data-archive-ahead="{ahead}" data-archive-keep="{keep}""#,
+        r#" data-volume="{volume}" data-current="{current}" data-position="{position}" data-playing="{playing}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-show-search="{search}" data-show-queue="{queue_btn}" data-gapless="{gapless}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}" data-archive-ahead="{ahead}" data-archive-keep="{keep}""#,
         volume = store.settings.volume,
         current = esc(store.player.current_id.as_deref().unwrap_or("")),
+        position = saved_second(store.player.position),
+        playing = flag(store.player.playing),
         density = esc(ui_str(store, "layout.density", "standard")),
         side = esc(ui_str(store, "layout.sidebarPosition", "left")),
         motion = flag(ui_on(store, "animations.reducedMotion", false)),
@@ -1336,6 +1351,17 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
             esc(&i18n.t("player.nothing"))
         )
     };
+    let elapsed = if store.player.position.is_finite() {
+        store.player.position.max(0.0)
+    } else {
+        0.0
+    };
+    let total = current.map(|song| song.duration.max(0.0)).unwrap_or(0.0);
+    let ratio = if total > 0.0 {
+        (elapsed.min(total) / total * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
     let queue_len = store.player.queue.len();
     let queue_badge = if queue_len > 0 {
         format!(r#"<span class="queue-badge">{queue_len}</span>"#)
@@ -1343,7 +1369,7 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         String::new()
     };
     format!(
-        r#"<div class="player-bar-wrap player-variant-{variant}"><div class="player-bar"><div class="player-track-info">{track}</div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">00:00</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div><div class="progress-thumb" style="left:0%"></div></div><span class="player-time">00:00</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" aria-label="{lyrics}" title="{lyrics}" disabled>{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
+        r#"<div class="player-bar-wrap player-variant-{variant}"><div class="player-bar"><div class="player-track-info">{track}</div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">{elapsed}</span><div class="progress-bar"><div class="progress-fill" style="width:{ratio:.0}%"></div><div class="progress-thumb" style="left:{ratio:.0}%"></div></div><span class="player-time">{total}</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" aria-label="{lyrics}" title="{lyrics}" disabled>{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
         shuffle = if store.settings.playback.shuffle { " active" } else { "" },
         shuffle_l = esc(&i18n.t("player.shuffle")),
         shuffle_i = icon("shuffle", 16),
@@ -1370,6 +1396,9 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         mini = esc(&i18n.t("player.mini")),
         mini_i = icon("pictureInPicture", 18),
         track = track,
+        elapsed = clock(elapsed),
+        total = clock(total),
+        ratio = ratio,
         queue_badge = queue_badge,
         variant = {
             let value = ui_str(store, "player.variant", "standard");
