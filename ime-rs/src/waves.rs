@@ -13,25 +13,20 @@ const POOL_CAP: usize = 80;
 
 struct Preset {
     deezer_id: Option<u32>,
-    queries: &'static [&'static str],
 }
 
 fn preset(genre: &str) -> Preset {
     match genre {
-        "rock" => Preset { deezer_id: Some(152), queries: &["rock"] },
-        "pop" => Preset { deezer_id: Some(132), queries: &["pop"] },
-        "rap" => Preset { deezer_id: Some(116), queries: &["rap", "hip hop"] },
-        "ruRap" => Preset {
-            deezer_id: Some(116),
-            queries: &["рэп", "hip hop"],
-        },
-        "electronic" => Preset { deezer_id: Some(106), queries: &["electronic", "edm"] },
-        "rnb" => Preset { deezer_id: Some(165), queries: &["r&b", "soul"] },
-        "indie" => Preset { deezer_id: Some(85), queries: &["indie", "alternative"] },
-        "metal" => Preset { deezer_id: Some(464), queries: &["metal"] },
-        "dance" => Preset { deezer_id: Some(113), queries: &["dance", "house"] },
-        "jazz" => Preset { deezer_id: Some(129), queries: &["jazz"] },
-        _ => Preset { deezer_id: None, queries: &[] },
+        "rock" => Preset { deezer_id: Some(152) },
+        "pop" => Preset { deezer_id: Some(132) },
+        "rap" | "ruRap" => Preset { deezer_id: Some(116) },
+        "electronic" => Preset { deezer_id: Some(106) },
+        "rnb" => Preset { deezer_id: Some(165) },
+        "indie" => Preset { deezer_id: Some(85) },
+        "metal" => Preset { deezer_id: Some(464) },
+        "dance" => Preset { deezer_id: Some(113) },
+        "jazz" => Preset { deezer_id: Some(129) },
+        _ => Preset { deezer_id: None },
     }
 }
 
@@ -39,7 +34,6 @@ fn preset(genre: &str) -> Preset {
 struct Candidate {
     title: String,
     artist: String,
-    album: String,
     preview: String,
     /// Came from that genre's Deezer chart, so the genre is Deezer's, not a word in the name.
     from_genre_chart: bool,
@@ -161,16 +155,12 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
 
     let filtered = style_filtered(&waves.genre, &waves.language);
     if let Some(id) = preset.deezer_id {
-        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=40"), true));
+        // Deezer's genre chart is the genre. The title is not.
+        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=80"), true));
     } else if waves.seed == "chart" && !filtered {
         raw.extend(fetch_list("/chart/0/tracks?limit=40", false));
     }
-    for query in wave_queries(&waves.genre, &waves.language) {
-        let path = format!("/search/track?q={}&limit=25", urlencoding::encode(&query));
-        raw.extend(fetch_list(&path, false));
-    }
-    // A Russian filter needs Russian titles, not the word «русский».
-    // Genre charts supply them; the title script decides the language.
+    // Russian titles come from real charts, then the title script. Not from the word «русский».
     if waves.genre == "all" && waves.language == "ru" {
         for id in [132_u32, 152, 116, 113] {
             raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=20"), false));
@@ -343,13 +333,7 @@ fn map_track(raw: &Value) -> Option<Candidate> {
         .unwrap_or("Unknown")
         .trim()
         .to_string();
-    let album = raw
-        .get("album")
-        .and_then(|album| album.get("title").and_then(|v| v.as_str()).or_else(|| album.as_str()))
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    Some(Candidate { title, artist, album, preview, from_genre_chart: false })
+    Some(Candidate { title, artist, preview, from_genre_chart: false })
 }
 
 fn artist_key(name: &str) -> String {
@@ -394,37 +378,6 @@ fn title_language(title: &str) -> &'static str {
     }
 }
 
-fn wave_queries(genre: &str, language: &str) -> Vec<String> {
-    let preset = preset(genre);
-    let mut queries: Vec<String> = preset.queries.iter().map(|query| (*query).to_string()).collect();
-    if queries.is_empty() {
-        queries.push("music".into());
-    }
-    if language == "ru" {
-        if let Some(cyrillic) = cyrillic_genre(genre) {
-            if !queries.iter().any(|query| query == cyrillic) {
-                queries.push(cyrillic.to_string());
-            }
-        }
-    }
-    queries.into_iter().take(4).collect()
-}
-
-fn cyrillic_genre(genre: &str) -> Option<&'static str> {
-    match genre {
-        "rock" => Some("рок"),
-        "pop" => Some("поп"),
-        "rap" | "ruRap" => Some("рэп"),
-        "electronic" => Some("электроника"),
-        "rnb" => Some("рнб"),
-        "indie" => Some("инди"),
-        "metal" => Some("метал"),
-        "dance" => Some("дэнс"),
-        "jazz" => Some("джаз"),
-        _ => None,
-    }
-}
-
 fn matches_language(track: &Candidate, language: &str) -> bool {
     match language {
         "ru" => title_language(&track.title) == "ru",
@@ -433,58 +386,18 @@ fn matches_language(track: &Candidate, language: &str) -> bool {
     }
 }
 
-fn words(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        if ch.is_alphanumeric() || ch == '&' {
-            current.extend(ch.to_lowercase());
-        } else if !current.is_empty() {
-            out.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
-}
-
-fn has_phrase(text: &str, phrase: &str) -> bool {
-    let haystack = words(text);
-    let needle = words(phrase);
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|window| window == needle.as_slice())
-}
-
-fn genre_phrases(genre: &str) -> &'static [&'static str] {
-    match genre {
-        "rock" => &["rock", "рок"],
-        "pop" => &["pop", "поп"],
-        "rap" | "ruRap" => &["rap", "рэп", "hip hop", "хип-хоп", "хип хоп"],
-        "electronic" => &["electronic", "edm", "электроника", "электро"],
-        "rnb" => &["r&b", "rnb", "рнб"],
-        "indie" => &["indie", "инди"],
-        "metal" => &["metal", "метал"],
-        "dance" => &["dance", "дэнс"],
-        "jazz" => &["jazz", "джаз"],
-        _ => &[],
-    }
-}
-
+/// Genre comes from Deezer's genre chart. A word in the title, album, or nickname is not a genre.
 fn matches_genre(track: &Candidate, genre: &str) -> bool {
     if genre == "all" || genre.is_empty() {
         return true;
     }
+    if !track.from_genre_chart {
+        return false;
+    }
     if genre == "ruRap" && title_language(&track.title) != "ru" {
         return false;
     }
-    if track.from_genre_chart {
-        return true;
-    }
-    let text = format!("{} {}", track.title, track.album);
-    genre_phrases(genre).iter().any(|phrase| has_phrase(&text, phrase))
+    true
 }
 
 #[cfg(test)]
@@ -495,7 +408,6 @@ mod tests {
         Candidate {
             title: preview.into(),
             artist: artist.into(),
-            album: String::new(),
             preview: preview.into(),
             from_genre_chart: false,
         }
@@ -535,14 +447,12 @@ mod tests {
         let russian = Candidate {
             title: "Младшая сестра".into(),
             artist: "дора".into(),
-            album: String::new(),
             preview: "ru".into(),
             from_genre_chart: false,
         };
         let english = Candidate {
             title: "Creep".into(),
             artist: "Radiohead".into(),
-            album: String::new(),
             preview: "en".into(),
             from_genre_chart: false,
         };
@@ -558,7 +468,6 @@ mod tests {
         let nickname = Candidate {
             title: "Creep".into(),
             artist: "Русский".into(),
-            album: "Best Of".into(),
             preview: "nick".into(),
             from_genre_chart: false,
         };
@@ -567,7 +476,6 @@ mod tests {
         let mixed = Candidate {
             title: "Best русский remix".into(),
             artist: "DJ".into(),
-            album: String::new(),
             preview: "mix".into(),
             from_genre_chart: false,
         };
@@ -576,7 +484,6 @@ mod tests {
         let russian_title = Candidate {
             title: "Русский размер".into(),
             artist: "Rockwell".into(),
-            album: String::new(),
             preview: "ru-title".into(),
             from_genre_chart: false,
         };
@@ -589,32 +496,45 @@ mod tests {
         let nickname = Candidate {
             title: "Somebody's Watching Me".into(),
             artist: "Rockwell".into(),
-            album: String::new(),
             preview: "nick".into(),
             from_genre_chart: false,
         };
         assert!(!matches_genre(&nickname, "rock"));
-        let inside = Candidate {
-            title: "Therapy".into(),
-            artist: "Rap".into(),
-            album: "Trap".into(),
-            preview: "inside".into(),
-            from_genre_chart: false,
-        };
-        assert!(!matches_genre(&inside, "rap"));
-        let titled = Candidate {
-            title: "Ночной джаз".into(),
-            artist: "Кто-то".into(),
-            album: String::new(),
-            preview: "jazz".into(),
-            from_genre_chart: false,
-        };
-        assert!(matches_genre(&titled, "jazz"));
-        assert!(!matches_genre(&titled, "rock"));
+        let labels = [
+            ("rock", "Рок"),
+            ("pop", "Поп"),
+            ("rap", "Рэп"),
+            ("ruRap", "Русский рэп"),
+            ("electronic", "Электроника"),
+            ("rnb", "R&B"),
+            ("indie", "Инди"),
+            ("metal", "Metal"),
+            ("dance", "Дэнс"),
+            ("jazz", "Джаз"),
+        ];
+        for (genre, word) in labels {
+            let titled = Candidate {
+                title: word.into(),
+                artist: format!("Ник {word}"),
+                preview: genre.into(),
+                from_genre_chart: false,
+            };
+            assert!(!matches_genre(&titled, genre), "{word}");
+            let classified = Candidate {
+                title: "Песня без ярлыка".into(),
+                artist: "Кто-то".into(),
+                preview: format!("chart-{genre}"),
+                from_genre_chart: true,
+            };
+            if genre == "ruRap" {
+                assert!(matches_genre(&classified, genre));
+            } else {
+                assert!(matches_genre(&classified, genre));
+            }
+        }
         let chart = Candidate {
             title: "Свобода".into(),
             artist: "Кино".into(),
-            album: String::new(),
             preview: "chart".into(),
             from_genre_chart: true,
         };
@@ -623,7 +543,6 @@ mod tests {
         let english_rap = Candidate {
             title: "Creep".into(),
             artist: "Radiohead".into(),
-            album: String::new(),
             preview: "en-rap".into(),
             from_genre_chart: true,
         };
@@ -668,18 +587,14 @@ mod tests {
     }
 
     #[test]
-    fn queries_follow_genre_and_language() {
-        let jazz = wave_queries("jazz", "any");
-        assert!(jazz.iter().any(|query| query == "jazz"));
-        assert!(jazz.iter().all(|query| !query.contains("русский") && !query.contains("english")));
-        let russian = wave_queries("jazz", "ru");
-        assert!(russian.iter().any(|query| query == "jazz"));
-        assert!(russian.iter().any(|query| query == "джаз"));
-        assert!(russian.iter().all(|query| !query.split_whitespace().any(|word| word == "русский")));
-        let english = wave_queries("rock", "en");
-        assert!(english.iter().all(|query| query == "rock"));
-        assert_ne!(wave_queries("all", "any"), wave_queries("pop", "any"));
-        assert_eq!(wave_queries("all", "ru"), wave_queries("all", "en"));
+    fn filters_do_not_search_for_their_own_labels() {
+        for genre in ["rock", "pop", "rap", "ruRap", "electronic", "rnb", "indie", "metal", "dance", "jazz"] {
+            assert!(preset(genre).deezer_id.is_some());
+        }
+        assert!(uses_artist_radio("all", "taste"));
+        assert!(!uses_artist_radio("all", "chart"));
+        assert!(!uses_artist_radio("rock", "chart"));
+        assert!(!uses_artist_radio("jazz", "liked"));
     }
 
     #[test]
