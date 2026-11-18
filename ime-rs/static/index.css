@@ -3319,6 +3319,59 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 
+.player-waves-actions {
+  display: none;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.player-waves-actions:has(.player-waves-btn:not([hidden])) {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.player-waves-btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  width: auto;
+}
+
+.player-waves-btn[data-act="waves-dislike"] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.player-waves-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.track-wave-btn {
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.track-wave-btn:hover {
+  color: var(--text-primary);
+}
+
+.artist-track-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
 .player-track-title {
   font-size: 14px;
   font-weight: 600;

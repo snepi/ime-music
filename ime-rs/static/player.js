@@ -10,7 +10,7 @@
   let lastSecondSent = -1;
   const savedSecond = Math.max(0, Math.floor(Number(document.body.dataset.position) || 0));
   const imports = [];
-  let waves = { active: false, artist: false, queue: [], index: -1, seen: new Set() };
+  let waves = { active: false, artist: false, track: false, seed: null, queue: [], index: -1, seen: new Set() };
   const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
 
   const svg = (inner, size) =>
@@ -77,6 +77,13 @@
       document.querySelectorAll("[data-color-reset]").forEach((btn) => applyColor(btn.dataset.colorReset, btn.dataset.colorDefault));
       return;
     }
+    const trackWave = event.target.closest("[data-track-wave]");
+    if (trackWave) {
+      event.preventDefault();
+      event.stopPropagation();
+      startTrackWave(trackWave.dataset.title || "", trackWave.dataset.artist || "", trackWave.dataset.deezer || "", trackWave.dataset.preview || "");
+      return;
+    }
     const libraryMix = event.target.closest("[data-library-mix]");
     if (libraryMix) {
       event.preventDefault();
@@ -89,7 +96,7 @@
       listQueue = { items, index: 0 };
       artistQueue = null;
       waves.active = false;
-      waves.artist = false;
+      waves.artist = false; waves.track = false;
       playId(items[0].id, items[0].title, items[0].artist, true);
       return;
     }
@@ -517,6 +524,8 @@
     if (name === "prev") playPrev();
     if (name === "waves-apply") applyWaves();
     if (name === "waves-reset") resetWaves();
+    if (name === "waves-dislike") dislikeWave();
+    if (name === "track-wave") similarToCurrent();
     if (name === "refresh-rec") loadRecommendations(recFilter, true);
     if (name === "mute") toggleMute();
     if (name === "shuffle" || name === "repeat") {
@@ -790,7 +799,7 @@
     listQueue = { items, index };
     artistQueue = null;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
   }
 
   function playQueued(index) {
@@ -851,10 +860,15 @@
     return `data-play-query="1"`;
   }
 
+  function trackWaveButton(track) {
+    const id = track.id || track.deezerId || "";
+    return `<button type="button" class="track-wave-btn" data-track-wave="1" data-title="${escapeAttr(track.title || "")}" data-artist="${escapeAttr(track.artist || "")}" data-deezer="${escapeAttr(id)}" data-preview="${escapeAttr(track.preview || "")}">Похожее на это</button>`;
+  }
+
   function trackCard(track) {
     const play = playAttrs(track);
     const cover = track.cover ? `<img src="${escapeAttr(track.cover)}" alt="">` : "";
-    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}</div></li>`;
+    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}${trackWaveButton(track)}</div></li>`;
   }
 
   function deezerCover(row) {
@@ -1012,7 +1026,7 @@
   async function startArtistWave(name, id) {
     artistQueue = null;
     waves.active = true;
-    waves.artist = true;
+    waves.artist = true; waves.track = false;
     waves.queue = [];
     waves.index = -1;
     waves.seen = new Set();
@@ -1037,7 +1051,7 @@
     } catch { /* offline */ }
     if (!waves.queue.length) {
       waves.active = false;
-      waves.artist = false;
+      waves.artist = false; waves.track = false;
       notify("Для этой волны нет демо", "error");
       return;
     }
@@ -1105,7 +1119,7 @@
     const artist = track.artist
       ? `<span class="artist-track-artist">${escapeHtml(track.artist)}</span>`
       : "";
-    return `<li class="artist-track-row" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-main" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-cover-wrap">${cover}<span class="artist-track-glyph"></span></span><span class="artist-track-text"><span class="artist-track-title">${escapeHtml(track.title)}</span>${artist}</span></button>${wishButton(track)}</li>`;
+    return `<li class="artist-track-row" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-main" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-cover-wrap">${cover}<span class="artist-track-glyph"></span></span><span class="artist-track-text"><span class="artist-track-title">${escapeHtml(track.title)}</span>${artist}</span></button><div class="artist-track-side">${wishButton(track)}${trackWaveButton(track)}</div></li>`;
   }
 
   function featureList(items) {
@@ -1116,7 +1130,7 @@
     const track = artistPage && artistPage.tracks[index];
     if (!track) return;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     listQueue = null;
     artistQueue = { items: artistPage.tracks, index };
     const local = librarySong(track.title, track.artist || artistPage.name);
@@ -1507,7 +1521,7 @@
       return;
     }
     waves.active = true;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     artistQueue = null;
     waves.queue = [];
     waves.index = -1;
@@ -1593,8 +1607,166 @@
     );
   }
 
+  function waveArtistKey(name) {
+    return String(name || "").trim().toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+  }
+
+  function waveArtistNames(name) {
+    const names = [];
+    const push = (value) => {
+      const key = waveArtistKey(value);
+      if (key && !names.includes(key)) names.push(key);
+    };
+    push(name);
+    let text = String(name || "");
+    for (const token of [" feat. ", " feat ", " Feat. ", " Feat ", " & "]) text = text.split(token).join(",");
+    text.split(",").map((part) => part.trim()).filter(Boolean).slice(0, 2).forEach(push);
+    return names;
+  }
+
+  function syncWaveActions() {
+    const dislike = document.querySelector('[data-act="waves-dislike"]');
+    const similar = document.querySelector('[data-act="track-wave"]');
+    const onWave = Boolean(waves.active && waves.queue[waves.index]);
+    if (dislike) dislike.hidden = !onWave;
+    if (similar) similar.hidden = !(onWave || now.title);
+  }
+
+  async function appendTrackWave() {
+    const seed = waves.seed;
+    if (!seed) return;
+    let batch = [];
+    try {
+      const params = new URLSearchParams({
+        track: seed.title,
+        artist: seed.artist || "",
+        id: seed.id || "",
+        preview: seed.preview || "",
+      });
+      const response = await fetch("/api/waves?" + params.toString());
+      if (response.ok) {
+        const data = await response.json();
+        batch = (data.items || [])
+          .filter((item) => item && item.title)
+          .map((item) => ({
+            url: item.previewUrl || "",
+            title: item.title,
+            artist: item.artist || seed.artist || "",
+          }));
+      }
+    } catch { /* offline */ }
+    if (!batch.length) {
+      batch = [{ url: seed.preview || "", title: seed.title, artist: seed.artist || "" }];
+    }
+    for (const item of batch) {
+      const mark = item.url || `${normTrack(item.title)}\n${normTrack(item.artist)}`;
+      if (!mark || waves.seen.has(mark)) continue;
+      waves.seen.add(mark);
+      waves.queue.push(item);
+    }
+  }
+
+  async function startTrackWave(title, artist, id, preview) {
+    title = String(title || "").trim();
+    artist = String(artist || "").trim();
+    if (!title) {
+      notify("Нет трека для волны", "info");
+      return;
+    }
+    artistQueue = null;
+    listQueue = null;
+    waves.active = true;
+    waves.artist = false;
+    waves.track = true;
+    waves.seed = {
+      title,
+      artist,
+      id: /^\d+$/.test(String(id || "")) ? String(id) : "",
+      preview: String(preview || ""),
+    };
+    waves.queue = [];
+    waves.index = -1;
+    waves.seen = new Set();
+    notify(`Похожее на это: ${title}`, "info");
+    await refillWaves();
+    if (!waves.queue.length) {
+      waves.active = false;
+      waves.track = false;
+      syncPlayButton();
+      notify("Похожих треков с этими фильтрами нет", "info");
+      return;
+    }
+    playWavesIndex(0);
+    scheduleArchive();
+  }
+
+  function similarToCurrent() {
+    const item = waves.active ? waves.queue[waves.index] : null;
+    if (item && item.title) {
+      startTrackWave(item.title, item.artist, "", item.url || "");
+      return;
+    }
+    if (now.title) startTrackWave(now.title, now.artist, "", now.url || "");
+  }
+
+  function blockedByDislike(entry, artists, previews, keys) {
+    const key = `${waveArtistKey(entry.artist)}|${waveArtistKey(entry.title)}`;
+    if ((entry.url && previews.has(entry.url)) || keys.has(key)) return true;
+    return waveArtistNames(entry.artist).some((name) => artists.has(name));
+  }
+
+  async function dislikeWave() {
+    if (!waves.active) return;
+    const item = waves.queue[waves.index];
+    if (!item) return;
+    const button = document.querySelector('[data-act="waves-dislike"]');
+    if (button) button.disabled = true;
+    let data = {};
+    try {
+      data = await post("waves-dislike", { title: item.title || "", artist: item.artist || "", url: item.url || "" });
+    } catch {
+      data = {};
+    } finally {
+      if (button) button.disabled = false;
+    }
+    const artists = new Set((data.detail && data.detail.artists) || []);
+    const previews = new Set((data.detail && data.detail.previews) || []);
+    if (item.url) previews.add(item.url);
+    const keys = new Set([`${waveArtistKey(item.artist)}|${waveArtistKey(item.title)}`]);
+    if (!artists.size) waveArtistNames(item.artist).forEach((name) => artists.add(name));
+    const current = waves.index;
+    let nextIndex = -1;
+    const kept = [];
+    waves.queue.forEach((entry, index) => {
+      if (blockedByDislike(entry, artists, previews, keys)) {
+        if (entry.url) waves.seen.add(entry.url);
+        return;
+      }
+      if (index > current && nextIndex < 0) nextIndex = kept.length;
+      kept.push(entry);
+    });
+    waves.queue = kept;
+    notify((data && data.message) || "Этот трек и похожие больше не вернутся", "info");
+    if (!waves.queue.length) {
+      await refillWaves();
+      if (waves.queue.length) {
+        playWavesIndex(0);
+        return;
+      }
+      waves.active = false;
+      waves.artist = false;
+      waves.track = false;
+      syncPlayButton();
+      notify("По этим фильтрам нет треков", "info");
+      return;
+    }
+    playWavesIndex(nextIndex >= 0 ? nextIndex : Math.min(Math.max(current, 0), waves.queue.length - 1));
+  }
+
   async function refillWaves() {
-    if (!waves.artist) {
+    if (waves.track) {
+      await appendTrackWave();
+    } else if (!waves.artist) {
       let batch = [];
       try {
         batch = await loadServerWaves();
@@ -2095,7 +2267,7 @@
     listQueue = { items, index: 0 };
     artistQueue = null;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     const first = items[0];
     if (first.id) playId(first.id, first.title, first.artist, true);
     else playQuery(first.title, first.artist);
@@ -2137,7 +2309,7 @@
 
   function scheduleArchive() {
     if (!waves.active) return;
-    // Main IMe Waves and the artist wave share this prefetch and the archive limits.
+    // The main wave, the artist wave, and «Похожее на это» share this prefetch.
     const ahead = Math.min(20, Math.max(2, Number(document.body.dataset.archiveAhead || 3)));
     const from = waves.index < 0 ? 0 : waves.index;
     for (const item of waves.queue.slice(from, from + ahead)) {
@@ -2173,7 +2345,7 @@
   async function playId(id, title, artist, keepQueue) {
     if (!id) return;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     if (!keepQueue) {
       artistQueue = null;
       listQueue = null;
@@ -2262,6 +2434,9 @@
     }
     const wavesIcon = document.querySelector(".home-waves-play");
     if (wavesIcon) wavesIcon.innerHTML = svg(waves.active && playing ? PAUSE : PLAY, 22);
+    const brand = document.querySelector(".home-waves-brand");
+    if (brand) brand.textContent = waves.active && waves.track ? "Похожее на это" : "IMe Waves";
+    syncWaveActions();
     syncRowGlyphs(playing);
   }
 
@@ -2361,7 +2536,12 @@
     if (!box) return;
     const link = artistLink(now.artist, "player-track-artist");
     const heart = now.title ? wishButton({ title: now.title, artist: now.artist, preview: now.url, cover: now.cover }) : "";
+    const actions = box.querySelector(".player-waves-actions");
     box.innerHTML = `<div class="player-track-names"><div class="player-track-text"><div class="player-track-title">${escapeHtml(now.title || "Ничего не играет")}</div>${link}</div>${heart}</div>`;
+    const text = box.querySelector(".player-track-text");
+    if (actions && text) text.appendChild(actions);
+    else if (actions) box.appendChild(actions);
+    syncWaveActions();
   }
 
   function markCurrent(id) {
@@ -2910,6 +3090,7 @@
     const act = menuItem.dataset.menuAct;
     document.querySelectorAll(".context-menu").forEach((node) => node.remove());
     if (act === "play") playId(id, menuItem.dataset.title || "", menuItem.dataset.artist || "");
+    if (act === "track-wave") startTrackWave(menuItem.dataset.title || "", menuItem.dataset.artist || "", "", "");
     if (act === "next") post("queue-next", { id }).then((data) => toast(data.message, "info"));
     if (act === "queue") post("queue-add", { id }).then((data) => toast(data.message, "info"));
     if (act === "like") post("like", { id });
@@ -3101,6 +3282,7 @@
     const attrs = `data-id="${escapeAttr(id)}" data-title="${escapeAttr(button.dataset.title || "")}" data-artist="${escapeAttr(button.dataset.artist || "")}" data-album="${escapeAttr(button.dataset.album || "")}"`;
     menu.innerHTML =
       `<button type="button" class="context-menu-item" data-menu-act="play" ${attrs}>Воспроизвести сейчас</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="track-wave" ${attrs}>Похожее на это</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="next" ${attrs}>Добавить следующим</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="queue" ${attrs}>Добавить в очередь</button>` +
       (playlists ? `<div class="context-menu-header">В плейлист</div>${playlists}` : "") +

@@ -917,6 +917,8 @@
   "waves.diversity.high": "更多艺人",
   "waves.skipKnown": "跳过库中已有曲目",
   "waves.settingsHint": "“应用”会保存筛选并刷新电台。",
+  "waves.dislike": "不喜欢",
+  "waves.similar": "相似的",
   "tools.updates": "更新",
   "tools.updatesHint": "从 GitHub Releases 检查新版本。安装包会自动下载并启动。",
   "tools.currentVersion": "当前版本：{version}",

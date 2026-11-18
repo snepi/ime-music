@@ -158,6 +158,26 @@ pub struct Waves {
     /// Increments every time a queue is built so the shuffle changes between sessions.
     #[serde(default)]
     pub spin: u64,
+    /// Recordings marked «Не нравится». The track itself never returns.
+    #[serde(default)]
+    pub disliked_keys: Vec<String>,
+    /// Preview URLs of those recordings, so a renamed copy does not slip back in.
+    #[serde(default)]
+    pub disliked_previews: Vec<String>,
+    /// Recent dislikes, including the artists that count as “like this track”.
+    #[serde(default)]
+    pub dislikes: Vec<WaveDislike>,
+}
+
+/// One «Не нравится». `like_artists` are the seed artist and the artists Deezer
+/// put next to that track, so tracks like it stay out of later waves.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WaveDislike {
+    pub key: String,
+    pub preview: String,
+    pub artist: String,
+    #[serde(default)]
+    pub like_artists: Vec<String>,
 }
 
 impl Default for Waves {
@@ -172,6 +192,9 @@ impl Default for Waves {
             active: false,
             heard: Vec::new(),
             spin: 0,
+            disliked_keys: Vec::new(),
+            disliked_previews: Vec::new(),
+            dislikes: Vec::new(),
         }
     }
 }
