@@ -917,6 +917,8 @@
   "waves.diversity.high": "Більше артистів",
   "waves.skipKnown": "Пропускати треки, що вже є в бібліотеці",
   "waves.settingsHint": "«Застосувати» зберігає фільтри й оновлює хвилю.",
+  "waves.dislike": "Не подобається",
+  "waves.similar": "Схоже на це",
   "tools.updates": "Оновлення",
   "tools.updatesHint": "Перевірка нової версії на GitHub Releases. Інсталятор завантажиться й запуститься сам.",
   "tools.currentVersion": "Поточна версія: {version}",

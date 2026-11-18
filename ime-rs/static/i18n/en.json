@@ -958,6 +958,8 @@
   "waves.diversity.high": "More artists",
   "waves.skipKnown": "Skip tracks already in library",
   "waves.settingsHint": "Apply saves these filters and refreshes the wave.",
+  "waves.dislike": "Don't like",
+  "waves.similar": "Similar to this",
   "tools.updates": "Updates",
   "tools.updatesHint": "Check GitHub Releases for a newer build. The installer will download and launch.",
   "tools.currentVersion": "Current version: {version}",

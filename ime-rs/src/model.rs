@@ -158,6 +158,26 @@ pub struct Waves {
     /// Increments every time a queue is built so the shuffle changes between sessions.
     #[serde(default)]
     pub spin: u64,
+    /// Recordings marked «Не нравится». The track itself never returns.
+    #[serde(default)]
+    pub disliked_keys: Vec<String>,
+    /// Preview URLs of those recordings, so a renamed copy does not slip back in.
+    #[serde(default)]
+    pub disliked_previews: Vec<String>,
+    /// Recent dislikes, including the artists that count as “like this track”.
+    #[serde(default)]
+    pub dislikes: Vec<WaveDislike>,
+}
+
+/// One «Не нравится». `like_artists` are the seed artist and the artists Deezer
+/// put next to that track, so tracks like it stay out of later waves.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WaveDislike {
+    pub key: String,
+    pub preview: String,
+    pub artist: String,
+    #[serde(default)]
+    pub like_artists: Vec<String>,
 }
 
 impl Default for Waves {
@@ -172,6 +192,9 @@ impl Default for Waves {
             active: false,
             heard: Vec::new(),
             spin: 0,
+            disliked_keys: Vec::new(),
+            disliked_previews: Vec::new(),
+            dislikes: Vec::new(),
         }
     }
 }
@@ -983,6 +1006,48 @@ impl Store {
             if self.song(&id).is_some() {
                 self.player.queue.push(id);
             }
+        }
+    }
+
+    /// Puts the queue in `ids` order. The current track stays the current track, so the next play follows the new order.
+    pub fn queue_reorder(&mut self, ids: &[String]) {
+        if ids.is_empty() || self.player.queue.is_empty() {
+            return;
+        }
+        let mut next = Vec::new();
+        for id in ids {
+            if self.player.queue.iter().any(|item| item == id) && !next.iter().any(|item| item == id) {
+                next.push(id.clone());
+            }
+        }
+        if next.is_empty() {
+            return;
+        }
+        for id in &self.player.queue {
+            if !next.iter().any(|item| item == id) {
+                next.push(id.clone());
+            }
+        }
+        self.player.queue = next;
+        if let Some(current) = &self.player.current_id {
+            if let Some(idx) = self.player.queue.iter().position(|id| id == current) {
+                self.player.queue_index = idx;
+                return;
+            }
+        }
+        if self.player.queue_index >= self.player.queue.len() {
+            self.player.queue_index = self.player.queue.len() - 1;
+        }
+    }
+
+    /// Remembers the second inside the current track. A different track is left alone.
+    pub fn set_position(&mut self, id: &str, seconds: f64, playing: Option<bool>) {
+        if self.player.current_id.as_deref() != Some(id) || !seconds.is_finite() {
+            return;
+        }
+        self.player.position = seconds.max(0.0).floor();
+        if let Some(playing) = playing {
+            self.player.playing = playing;
         }
     }
 
@@ -1838,6 +1903,55 @@ mod tests {
         assert!(song_matches_kind(&songs[5], MixClass::Often, &songs));
         assert!(song_matches_kind(&songs[0], MixClass::Liked, &songs));
         assert!(!song_matches_kind(&songs[1], MixClass::Liked, &songs));
+    }
+
+    #[test]
+    fn reordered_queue_plays_in_the_new_order_and_keeps_the_second() {
+        let mut store = Store::default();
+        store.songs = vec![
+            sample("A", "One", "", false, 0),
+            sample("B", "Two", "", false, 0),
+            sample("C", "Three", "", false, 0),
+        ];
+        store.play("A-One");
+        store.enqueue("B-Two");
+        store.enqueue("C-Three");
+        store.set_position("A-One", 83.8, Some(true));
+        store.queue_reorder(&["A-One".into(), "C-Three".into(), "B-Two".into()]);
+        assert_eq!(
+            store.player.queue,
+            vec!["A-One".to_string(), "C-Three".to_string(), "B-Two".to_string()]
+        );
+        assert_eq!(store.player.queue_index, 0);
+        assert_eq!(store.player.position, 83.0);
+        assert_eq!(store.next().as_deref(), Some("C-Three"));
+        assert_eq!(store.player.position, 0.0);
+
+        store.set_position("C-Three", 12.2, Some(false));
+        store.set_position("A-One", 99.0, Some(true));
+        assert_eq!(store.player.position, 12.0);
+        assert!(!store.player.playing);
+        store.queue_reorder(&["B-Two".into(), "C-Three".into(), "A-One".into()]);
+        assert_eq!(store.player.queue_index, 1);
+        assert_eq!(store.prev().as_deref(), Some("B-Two"));
+    }
+
+    #[test]
+    fn reopening_keeps_the_second_inside_the_current_track() {
+        let dir = std::env::temp_dir().join(format!("ime-pos-{}", now_ms()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::default();
+        store.songs.push(sample("A", "One", "", false, 0));
+        store.play("A-One");
+        store.set_position("A-One", 41.9, Some(true));
+        let path = dir.join("library.json");
+        store.save(&path);
+        let loaded = Store::load(&path);
+        assert_eq!(loaded.player.current_id.as_deref(), Some("A-One"));
+        assert_eq!(loaded.player.position, 41.0);
+        assert!(loaded.player.playing);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

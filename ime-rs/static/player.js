@@ -1,13 +1,22 @@
 (() => {
-  const audio = new Audio();
+  const audio = document.createElement("audio");
+  audio.id = "player-audio";
+  audio.preload = "auto";
+  audio.setAttribute("playsinline", "");
+  audio.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none";
+  document.body.appendChild(audio);
   let now = { title: "", artist: "", album: "", url: "", cover: "" };
+  let lyricView = { open: false, id: "", lines: [], synced: false, token: 0 };
   const rawVolume = document.body.dataset.volume;
   const parsedVolume = Number(rawVolume);
   audio.volume = rawVolume != null && rawVolume !== "" && Number.isFinite(parsedVolume) ? Math.min(1, Math.max(0, parsedVolume)) : 0.8;
   let drag = null;
   let sleep = { mode: "off", timer: 0 };
+  let positionReady = !document.body.dataset.current;
+  let lastSecondSent = -1;
+  const savedSecond = Math.max(0, Math.floor(Number(document.body.dataset.position) || 0));
   const imports = [];
-  let waves = { active: false, artist: false, queue: [], index: -1, seen: new Set() };
+  let waves = { active: false, artist: false, track: false, seed: null, queue: [], index: -1, seen: new Set() };
   const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
 
   const svg = (inner, size) =>
@@ -49,6 +58,7 @@
   });
   document.addEventListener("pointerup", () => {
     if (drag && drag.kind === "volume") post("volume", { value: String(audio.volume) });
+    if (drag && drag.kind === "seek") rememberSecond(true);
     drag = null;
   });
   document.addEventListener("pointercancel", () => {
@@ -56,6 +66,11 @@
   });
 
   document.addEventListener("click", (event) => {
+    if (event.target.closest("[data-lyrics-close]")) {
+      event.preventDefault();
+      closeLyrics();
+      return;
+    }
     const scrim = event.target.closest(".modal-overlay-dismiss");
     if (scrim) {
       event.preventDefault();
@@ -73,6 +88,13 @@
       document.querySelectorAll("[data-color-reset]").forEach((btn) => applyColor(btn.dataset.colorReset, btn.dataset.colorDefault));
       return;
     }
+    const trackWave = event.target.closest("[data-track-wave]");
+    if (trackWave) {
+      event.preventDefault();
+      event.stopPropagation();
+      startTrackWave(trackWave.dataset.title || "", trackWave.dataset.artist || "", trackWave.dataset.deezer || "", trackWave.dataset.preview || "");
+      return;
+    }
     const libraryMix = event.target.closest("[data-library-mix]");
     if (libraryMix) {
       event.preventDefault();
@@ -85,7 +107,7 @@
       listQueue = { items, index: 0 };
       artistQueue = null;
       waves.active = false;
-      waves.artist = false;
+      waves.artist = false; waves.track = false;
       playId(items[0].id, items[0].title, items[0].artist, true);
       return;
     }
@@ -513,6 +535,8 @@
     if (name === "prev") playPrev();
     if (name === "waves-apply") applyWaves();
     if (name === "waves-reset") resetWaves();
+    if (name === "waves-dislike") dislikeWave();
+    if (name === "track-wave") similarToCurrent();
     if (name === "refresh-rec") loadRecommendations(recFilter, true);
     if (name === "mute") toggleMute();
     if (name === "shuffle" || name === "repeat") {
@@ -523,6 +547,7 @@
     if (name === "queue") toggleQueue();
     if (name === "sleep") toggleSleep(act);
     if (name === "mini") toggleMini();
+    if (name === "lyrics") toggleLyrics();
   });
 
   document.addEventListener("submit", (event) => {
@@ -693,15 +718,24 @@
       }
     }
     if (drag && drag.kind === "seek") return;
+    if (!positionReady) return;
     paintProgress();
+    rememberSecond(false);
+    paintLyrics();
     const fade = Number(document.body.dataset.crossfade || 0);
     if (document.body.dataset.gapless !== "1" && fade > 0 && audio.duration && audio.duration - audio.currentTime < fade) {
       const left = Math.max(0, audio.duration - audio.currentTime);
       audio.volume = Math.max(0.05, (left / fade) * Number(document.body.dataset.volume || 0.8));
     }
   });
-  audio.addEventListener("play", () => syncPlayButton());
-  audio.addEventListener("pause", () => syncPlayButton());
+  audio.addEventListener("play", () => {
+    tuneEq();
+    syncPlayButton();
+  });
+  audio.addEventListener("pause", () => {
+    syncPlayButton();
+    rememberSecond(true);
+  });
   audio.addEventListener("ended", () => {
     if (sleep.mode === "track" || sleep.mode === "album") {
       finishSleep("Стоп в конце трека");
@@ -781,7 +815,7 @@
     listQueue = { items, index };
     artistQueue = null;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
   }
 
   function playQueued(index) {
@@ -842,10 +876,15 @@
     return `data-play-query="1"`;
   }
 
+  function trackWaveButton(track) {
+    const id = track.id || track.deezerId || "";
+    return `<button type="button" class="track-wave-btn" data-track-wave="1" data-title="${escapeAttr(track.title || "")}" data-artist="${escapeAttr(track.artist || "")}" data-deezer="${escapeAttr(id)}" data-preview="${escapeAttr(track.preview || "")}">Похожее на это</button>`;
+  }
+
   function trackCard(track) {
     const play = playAttrs(track);
     const cover = track.cover ? `<img src="${escapeAttr(track.cover)}" alt="">` : "";
-    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}</div></li>`;
+    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}${trackWaveButton(track)}</div></li>`;
   }
 
   function deezerCover(row) {
@@ -1003,7 +1042,7 @@
   async function startArtistWave(name, id) {
     artistQueue = null;
     waves.active = true;
-    waves.artist = true;
+    waves.artist = true; waves.track = false;
     waves.queue = [];
     waves.index = -1;
     waves.seen = new Set();
@@ -1028,7 +1067,7 @@
     } catch { /* offline */ }
     if (!waves.queue.length) {
       waves.active = false;
-      waves.artist = false;
+      waves.artist = false; waves.track = false;
       notify("Для этой волны нет демо", "error");
       return;
     }
@@ -1096,7 +1135,7 @@
     const artist = track.artist
       ? `<span class="artist-track-artist">${escapeHtml(track.artist)}</span>`
       : "";
-    return `<li class="artist-track-row" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-main" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-cover-wrap">${cover}<span class="artist-track-glyph"></span></span><span class="artist-track-text"><span class="artist-track-title">${escapeHtml(track.title)}</span>${artist}</span></button>${wishButton(track)}</li>`;
+    return `<li class="artist-track-row" data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-rank">${index + 1}</span><button type="button" class="artist-track-main" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}"><span class="artist-track-cover-wrap">${cover}<span class="artist-track-glyph"></span></span><span class="artist-track-text"><span class="artist-track-title">${escapeHtml(track.title)}</span>${artist}</span></button><div class="artist-track-side">${wishButton(track)}${trackWaveButton(track)}</div></li>`;
   }
 
   function featureList(items) {
@@ -1107,7 +1146,7 @@
     const track = artistPage && artistPage.tracks[index];
     if (!track) return;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     listQueue = null;
     artistQueue = { items: artistPage.tracks, index };
     const local = librarySong(track.title, track.artist || artistPage.name);
@@ -1498,7 +1537,7 @@
       return;
     }
     waves.active = true;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     artistQueue = null;
     waves.queue = [];
     waves.index = -1;
@@ -1584,8 +1623,166 @@
     );
   }
 
+  function waveArtistKey(name) {
+    return String(name || "").trim().toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+  }
+
+  function waveArtistNames(name) {
+    const names = [];
+    const push = (value) => {
+      const key = waveArtistKey(value);
+      if (key && !names.includes(key)) names.push(key);
+    };
+    push(name);
+    let text = String(name || "");
+    for (const token of [" feat. ", " feat ", " Feat. ", " Feat ", " & "]) text = text.split(token).join(",");
+    text.split(",").map((part) => part.trim()).filter(Boolean).slice(0, 2).forEach(push);
+    return names;
+  }
+
+  function syncWaveActions() {
+    const dislike = document.querySelector('[data-act="waves-dislike"]');
+    const similar = document.querySelector('[data-act="track-wave"]');
+    const onWave = Boolean(waves.active && waves.queue[waves.index]);
+    if (dislike) dislike.hidden = !onWave;
+    if (similar) similar.hidden = !(onWave || now.title);
+  }
+
+  async function appendTrackWave() {
+    const seed = waves.seed;
+    if (!seed) return;
+    let batch = [];
+    try {
+      const params = new URLSearchParams({
+        track: seed.title,
+        artist: seed.artist || "",
+        id: seed.id || "",
+        preview: seed.preview || "",
+      });
+      const response = await fetch("/api/waves?" + params.toString());
+      if (response.ok) {
+        const data = await response.json();
+        batch = (data.items || [])
+          .filter((item) => item && item.title)
+          .map((item) => ({
+            url: item.previewUrl || "",
+            title: item.title,
+            artist: item.artist || seed.artist || "",
+          }));
+      }
+    } catch { /* offline */ }
+    if (!batch.length) {
+      batch = [{ url: seed.preview || "", title: seed.title, artist: seed.artist || "" }];
+    }
+    for (const item of batch) {
+      const mark = item.url || `${normTrack(item.title)}\n${normTrack(item.artist)}`;
+      if (!mark || waves.seen.has(mark)) continue;
+      waves.seen.add(mark);
+      waves.queue.push(item);
+    }
+  }
+
+  async function startTrackWave(title, artist, id, preview) {
+    title = String(title || "").trim();
+    artist = String(artist || "").trim();
+    if (!title) {
+      notify("Нет трека для волны", "info");
+      return;
+    }
+    artistQueue = null;
+    listQueue = null;
+    waves.active = true;
+    waves.artist = false;
+    waves.track = true;
+    waves.seed = {
+      title,
+      artist,
+      id: /^\d+$/.test(String(id || "")) ? String(id) : "",
+      preview: String(preview || ""),
+    };
+    waves.queue = [];
+    waves.index = -1;
+    waves.seen = new Set();
+    notify(`Похожее на это: ${title}`, "info");
+    await refillWaves();
+    if (!waves.queue.length) {
+      waves.active = false;
+      waves.track = false;
+      syncPlayButton();
+      notify("Похожих треков с этими фильтрами нет", "info");
+      return;
+    }
+    playWavesIndex(0);
+    scheduleArchive();
+  }
+
+  function similarToCurrent() {
+    const item = waves.active ? waves.queue[waves.index] : null;
+    if (item && item.title) {
+      startTrackWave(item.title, item.artist, "", item.url || "");
+      return;
+    }
+    if (now.title) startTrackWave(now.title, now.artist, "", now.url || "");
+  }
+
+  function blockedByDislike(entry, artists, previews, keys) {
+    const key = `${waveArtistKey(entry.artist)}|${waveArtistKey(entry.title)}`;
+    if ((entry.url && previews.has(entry.url)) || keys.has(key)) return true;
+    return waveArtistNames(entry.artist).some((name) => artists.has(name));
+  }
+
+  async function dislikeWave() {
+    if (!waves.active) return;
+    const item = waves.queue[waves.index];
+    if (!item) return;
+    const button = document.querySelector('[data-act="waves-dislike"]');
+    if (button) button.disabled = true;
+    let data = {};
+    try {
+      data = await post("waves-dislike", { title: item.title || "", artist: item.artist || "", url: item.url || "" });
+    } catch {
+      data = {};
+    } finally {
+      if (button) button.disabled = false;
+    }
+    const artists = new Set((data.detail && data.detail.artists) || []);
+    const previews = new Set((data.detail && data.detail.previews) || []);
+    if (item.url) previews.add(item.url);
+    const keys = new Set([`${waveArtistKey(item.artist)}|${waveArtistKey(item.title)}`]);
+    if (!artists.size) waveArtistNames(item.artist).forEach((name) => artists.add(name));
+    const current = waves.index;
+    let nextIndex = -1;
+    const kept = [];
+    waves.queue.forEach((entry, index) => {
+      if (blockedByDislike(entry, artists, previews, keys)) {
+        if (entry.url) waves.seen.add(entry.url);
+        return;
+      }
+      if (index > current && nextIndex < 0) nextIndex = kept.length;
+      kept.push(entry);
+    });
+    waves.queue = kept;
+    notify((data && data.message) || "Этот трек и похожие больше не вернутся", "info");
+    if (!waves.queue.length) {
+      await refillWaves();
+      if (waves.queue.length) {
+        playWavesIndex(0);
+        return;
+      }
+      waves.active = false;
+      waves.artist = false;
+      waves.track = false;
+      syncPlayButton();
+      notify("По этим фильтрам нет треков", "info");
+      return;
+    }
+    playWavesIndex(nextIndex >= 0 ? nextIndex : Math.min(Math.max(current, 0), waves.queue.length - 1));
+  }
+
   async function refillWaves() {
-    if (!waves.artist) {
+    if (waves.track) {
+      await appendTrackWave();
+    } else if (!waves.artist) {
       let batch = [];
       try {
         batch = await loadServerWaves();
@@ -2086,7 +2283,7 @@
     listQueue = { items, index: 0 };
     artistQueue = null;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     const first = items[0];
     if (first.id) playId(first.id, first.title, first.artist, true);
     else playQuery(first.title, first.artist);
@@ -2128,7 +2325,7 @@
 
   function scheduleArchive() {
     if (!waves.active) return;
-    // Main IMe Waves and the artist wave share this prefetch and the archive limits.
+    // The main wave, the artist wave, and «Похожее на это» share this prefetch.
     const ahead = Math.min(20, Math.max(2, Number(document.body.dataset.archiveAhead || 3)));
     const from = waves.index < 0 ? 0 : waves.index;
     for (const item of waves.queue.slice(from, from + ahead)) {
@@ -2154,6 +2351,7 @@
   }
 
   async function playUrl(url, title, artist) {
+    tuneEq();
     clip = { id: "", start: 0, end: 0, preview: false };
     audio.src = url;
     try { await audio.play(); } catch { /* autoplay */ }
@@ -2162,9 +2360,10 @@
   }
 
   async function playId(id, title, artist, keepQueue) {
+    tuneEq();
     if (!id) return;
     waves.active = false;
-    waves.artist = false;
+    waves.artist = false; waves.track = false;
     if (!keepQueue) {
       artistQueue = null;
       listQueue = null;
@@ -2180,6 +2379,7 @@
   }
 
   function toggle() {
+    tuneEq();
     if (waves.active && audio.src) {
       if (audio.paused) audio.play();
       else audio.pause();
@@ -2193,6 +2393,7 @@
     }
     if (!audio.src) return;
     if (audio.paused) {
+      tuneEq();
       audio.play();
       post("resume");
     } else {
@@ -2203,6 +2404,7 @@
   }
 
   async function playNext() {
+    tuneEq();
     if (stepList(1)) return;
     const data = await post("next");
     if (!data.id) return;
@@ -2220,6 +2422,7 @@
   }
 
   async function playPrev() {
+    tuneEq();
     if (stepList(-1)) return;
     const data = await post("prev");
     if (!data.id) return;
@@ -2253,6 +2456,9 @@
     }
     const wavesIcon = document.querySelector(".home-waves-play");
     if (wavesIcon) wavesIcon.innerHTML = svg(waves.active && playing ? PAUSE : PLAY, 22);
+    const brand = document.querySelector(".home-waves-brand");
+    if (brand) brand.textContent = waves.active && waves.track ? "Похожее на это" : "IMe Waves";
+    syncWaveActions();
     syncRowGlyphs(playing);
   }
 
@@ -2296,6 +2502,23 @@
     });
   }
 
+  function libraryAudioOpen() {
+    const id = document.body.dataset.current || "";
+    if (!id) return false;
+    const src = audio.currentSrc || audio.src || "";
+    return src.includes("/audio/") && src.includes(encodeURIComponent(id));
+  }
+
+  function rememberSecond(force) {
+    if (!positionReady || !libraryAudioOpen()) return;
+    const second = Math.floor(audio.currentTime || 0);
+    if (!Number.isFinite(second) || second < 0) return;
+    if (!force && second === lastSecondSent) return;
+    lastSecondSent = second;
+    document.body.dataset.position = String(second);
+    post("position", { id: document.body.dataset.current, value: String(second), field: audio.paused ? "0" : "1" });
+  }
+
   function paintProgress(at) {
     const duration = audio.duration || 0;
     const time = typeof at === "number" ? at : audio.currentTime || 0;
@@ -2335,7 +2558,13 @@
     if (!box) return;
     const link = artistLink(now.artist, "player-track-artist");
     const heart = now.title ? wishButton({ title: now.title, artist: now.artist, preview: now.url, cover: now.cover }) : "";
+    const actions = box.querySelector(".player-waves-actions");
     box.innerHTML = `<div class="player-track-names"><div class="player-track-text"><div class="player-track-title">${escapeHtml(now.title || "Ничего не играет")}</div>${link}</div>${heart}</div>`;
+    const text = box.querySelector(".player-track-text");
+    if (actions && text) text.appendChild(actions);
+    else if (actions) box.appendChild(actions);
+    syncWaveActions();
+    noteLyricsTrack();
   }
 
   function markCurrent(id) {
@@ -2562,6 +2791,7 @@
     const app = document.querySelector(".app");
     if (nextApp && app) app.className = nextApp.className;
     tuneEq();
+    syncTrayPref();
     if (document.body.dataset.normalize === "1") audio.volume = Math.min(audio.volume, 0.82);
   }
 
@@ -2660,34 +2890,225 @@
   }
 
   let eqNodes = null;
-  function tuneEq() {
-    if (document.body.dataset.eq !== "1") return;
+  let eqBroken = false;
+
+  function bandDb(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    return Math.max(-12, Math.min(12, number));
+  }
+
+  function setAudioParam(param, value) {
+    const now = eqNodes.context.currentTime;
     try {
-    if (!eqNodes) {
-      const context = new AudioContext();
-      const bass = context.createBiquadFilter();
-      bass.type = "lowshelf";
-      bass.frequency.value = 140;
-      const mid = context.createBiquadFilter();
-      mid.type = "peaking";
-      mid.frequency.value = 1000;
-      mid.Q.value = 0.9;
-      const treble = context.createBiquadFilter();
-      treble.type = "highshelf";
-      treble.frequency.value = 4500;
-      const source = context.createMediaElementSource(audio);
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(value, now);
+    } catch {
+      param.value = value;
+    }
+  }
+
+  function createEqGraph() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    let context;
+    try {
+      context = new Ctx({ latencyHint: "playback" });
+    } catch {
+      try { context = new Ctx(); } catch { return null; }
+    }
+    let source;
+    try {
+      source = context.createMediaElementSource(audio);
+    } catch {
+      try { context.close(); } catch { /* leave the element on its own output */ }
+      return null;
+    }
+    const bass = context.createBiquadFilter();
+    bass.type = "lowshelf";
+    bass.frequency.value = 200;
+    bass.gain.value = 0;
+    const mid = context.createBiquadFilter();
+    mid.type = "peaking";
+    mid.frequency.value = 1000;
+    mid.Q.value = 1;
+    mid.gain.value = 0;
+    const treble = context.createBiquadFilter();
+    treble.type = "highshelf";
+    treble.frequency.value = 3200;
+    treble.gain.value = 0;
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = 0;
+    compressor.knee.value = 0;
+    compressor.ratio.value = 1;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.25;
+    try {
       source.connect(bass);
       bass.connect(mid);
       mid.connect(treble);
-      treble.connect(context.destination);
-      eqNodes = { context, bass, mid, treble };
+      treble.connect(compressor);
+      compressor.connect(context.destination);
+    } catch {
+      try { source.connect(context.destination); } catch { /* the element stays captured */ }
+      eqBroken = true;
+      return null;
     }
-    eqNodes.bass.gain.value = Number(document.body.dataset.eqBass || 0);
-    eqNodes.mid.gain.value = Number(document.body.dataset.eqMid || 0);
-    eqNodes.treble.gain.value = Number(document.body.dataset.eqTreble || 0);
-    eqNodes.context.resume().catch(() => {});
-    } catch { /* equalizer is unavailable in this window */ }
+    return { context, bass, mid, treble, compressor };
   }
+
+  function tuneEq() {
+    const enabled = document.body.dataset.eq === "1";
+    if (eqBroken) return;
+    if (!enabled && !eqNodes) return;
+    if (!eqNodes) eqNodes = createEqGraph();
+    if (!eqNodes) return;
+    const bass = enabled ? bandDb(document.body.dataset.eqBass) : 0;
+    const mid = enabled ? bandDb(document.body.dataset.eqMid) : 0;
+    const treble = enabled ? bandDb(document.body.dataset.eqTreble) : 0;
+    setAudioParam(eqNodes.bass.gain, bass);
+    setAudioParam(eqNodes.mid.gain, mid);
+    setAudioParam(eqNodes.treble.gain, treble);
+    if (document.body.dataset.normalize === "1") {
+      eqNodes.compressor.threshold.value = -24;
+      eqNodes.compressor.knee.value = 30;
+      eqNodes.compressor.ratio.value = 3.5;
+      eqNodes.compressor.attack.value = 0.01;
+      eqNodes.compressor.release.value = 0.25;
+    } else {
+      eqNodes.compressor.threshold.value = 0;
+      eqNodes.compressor.knee.value = 0;
+      eqNodes.compressor.ratio.value = 1;
+      eqNodes.compressor.attack.value = 0.003;
+      eqNodes.compressor.release.value = 0.25;
+    }
+    if (eqNodes.context.state === "suspended") eqNodes.context.resume().catch(() => {});
+  }
+
+  function syncTrayPref() {
+    if (!(window.ipc && window.ipc.postMessage)) return;
+    window.ipc.postMessage(document.body.dataset.tray === "1" ? "tray-on" : "tray-off");
+  }
+
+  function lyricText(key, fallback) {
+    const value = document.body.dataset[key];
+    return value == null || value === "" ? fallback : value;
+  }
+
+  function lyricsTrack() {
+    const src = audio.currentSrc || audio.src || "";
+    if (src) {
+      try {
+        const url = new URL(src, location.origin);
+        if (url.origin === location.origin && url.pathname.startsWith("/audio/")) {
+          const id = url.pathname.slice("/audio/".length);
+          if (id) return { id, preview: false };
+        }
+      } catch { /* the src is not a track in the library */ }
+      return { id: "", preview: true };
+    }
+    if (document.body.dataset.current) return { id: document.body.dataset.current, preview: false };
+    return { id: "", preview: false };
+  }
+
+  function closeLyrics() {
+    lyricView.open = false;
+    lyricView.token += 1;
+    document.querySelector(".lyrics-panel")?.remove();
+    document.querySelector('[data-act="lyrics"]')?.classList.remove("active");
+  }
+
+  function paintLyrics() {
+    if (!lyricView.open || !lyricView.synced) return;
+    const panel = document.querySelector(".lyrics-panel-body");
+    if (!panel) return;
+    const time = audio.currentTime || 0;
+    let active = -1;
+    lyricView.lines.forEach((line, index) => {
+      if (line.time <= time + 0.05) active = index;
+    });
+    let moved = false;
+    panel.querySelectorAll(".lyrics-line").forEach((node, index) => {
+      const on = index === active;
+      if (on && !node.classList.contains("is-active")) moved = true;
+      node.classList.toggle("is-active", on);
+      if (on && moved) node.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }
+
+  function renderLyrics(message, lines, sourceLabel) {
+    let panel = document.querySelector(".lyrics-panel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.className = "lyrics-panel lyrics-panel-fixed";
+      panel.setAttribute("role", "dialog");
+      document.body.appendChild(panel);
+    }
+    const title = lyricText("lyricsTitle", document.querySelector('[data-act="lyrics"]')?.getAttribute("aria-label") || "Текст песни");
+    panel.setAttribute("aria-label", title);
+    const rows = Array.isArray(lines) ? lines.filter((line) => line && String(line.text || "").trim()) : [];
+    const body = rows.length
+      ? rows.map((line) => `<div class="lyrics-line">${escapeHtml(line.text)}</div>`).join("")
+      : `<p class="lyrics-panel-empty">${escapeHtml(message || lyricText("lyricsEmpty", "Текст не найден."))}</p>`;
+    const source = sourceLabel ? `<p class="lyrics-panel-source">${escapeHtml(sourceLabel)}</p>` : "";
+    panel.innerHTML = `<div class="lyrics-panel-head"><div><h3 class="lyrics-panel-title">${escapeHtml(title)}</h3>${source}</div><button type="button" class="icon-btn" data-lyrics-close="1" aria-label="${escapeAttr(lyricText("lyricsHide", "Скрыть"))}">×</button></div><div class="lyrics-panel-body">${body}</div>`;
+    document.querySelector('[data-act="lyrics"]')?.classList.add("active");
+    paintLyrics();
+  }
+
+  async function loadLyrics() {
+    if (!lyricView.open) return;
+    const track = lyricsTrack();
+    const token = ++lyricView.token;
+    lyricView.id = track.preview ? "" : track.id;
+    lyricView.lines = [];
+    lyricView.synced = false;
+    if (track.preview) {
+      renderLyrics(lyricText("lyricsPreview", "Текст доступен для треков из вашей библиотеки"), [], "");
+      return;
+    }
+    if (!track.id) {
+      renderLyrics(lyricText("lyricsEmpty", "Текст не найден."), [], "");
+      return;
+    }
+    renderLyrics(lyricText("lyricsLoading", "Загрузка…"), [], "");
+    let data = { empty: true };
+    try {
+      const res = await fetch("/api/lyrics?id=" + encodeURIComponent(track.id));
+      data = await res.json();
+    } catch { /* the panel says the text was not found */ }
+    if (!lyricView.open || token !== lyricView.token) return;
+    const lines = Array.isArray(data.lines) ? data.lines.filter((line) => line && String(line.text || "").trim()) : [];
+    lyricView.lines = lines.map((line) => ({ time: Number(line.time) || 0, text: String(line.text) }));
+    lyricView.synced = Boolean(data.synced) && lyricView.lines.length > 0;
+    if (!lyricView.lines.length) {
+      renderLyrics(data.message || lyricText("lyricsEmpty", "Текст не найден."), [], "");
+      return;
+    }
+    const template = lyricText("lyricsSource", "");
+    const sourceLabel = data.source && template ? template.replace("{source}", String(data.source)) : "";
+    renderLyrics("", lyricView.lines, sourceLabel);
+  }
+
+  function noteLyricsTrack() {
+    if (!lyricView.open) return;
+    const track = lyricsTrack();
+    const id = track.preview ? "" : track.id;
+    if (track.preview || id !== lyricView.id) loadLyrics();
+  }
+
+  function toggleLyrics() {
+    if (lyricView.open) {
+      closeLyrics();
+      return;
+    }
+    lyricView.open = true;
+    loadLyrics();
+  }
+
+  document.addEventListener("pointerdown", () => {
+    if (eqNodes && eqNodes.context.state === "suspended") eqNodes.context.resume().catch(() => {});
+  }, true);
 
   function applyColor(key, hex, force) {
     if (!key || !hex) return;
@@ -2884,6 +3305,7 @@
     const act = menuItem.dataset.menuAct;
     document.querySelectorAll(".context-menu").forEach((node) => node.remove());
     if (act === "play") playId(id, menuItem.dataset.title || "", menuItem.dataset.artist || "");
+    if (act === "track-wave") startTrackWave(menuItem.dataset.title || "", menuItem.dataset.artist || "", "", "");
     if (act === "next") post("queue-next", { id }).then((data) => toast(data.message, "info"));
     if (act === "queue") post("queue-add", { id }).then((data) => toast(data.message, "info"));
     if (act === "like") post("like", { id });
@@ -2898,6 +3320,11 @@
       post("update-meta", { id, title, artist, album }).then(() => navigate(location.pathname + location.search));
     }
     if (act === "reveal") post("reveal", { id }).then((data) => toast(data.message || "Файл", "info"));
+    if (act === "open-folder") {
+      post("open-folder", { id }).then((data) => {
+        if (data.message) toast(data.message, "error");
+      });
+    }
     if (act === "delete") {
       if (document.body.dataset.confirmDelete === "1" && !window.confirm("Удалить трек из библиотеки?")) return;
       post("delete-song", { id }).then(() => navigate(location.pathname + location.search));
@@ -3058,7 +3485,7 @@
   async function openTrackMenu(button) {
     document.querySelectorAll(".context-menu").forEach((node) => node.remove());
     const id = button.dataset.menu;
-    const meta = await fetch("/api/queue").then((res) => res.json()).catch(() => ({ playlists: [] }));
+    const meta = await fetch("/api/queue", { cache: "no-store" }).then((res) => res.json()).catch(() => ({ playlists: [] }));
     const playlists = (meta.playlists || [])
       .map((pl) => `<button type="button" class="context-menu-item" data-menu-act="playlist" data-id="${escapeAttr(id)}" data-playlist="${escapeAttr(pl.id)}">${escapeHtml(pl.name)}</button>`)
       .join("");
@@ -3070,6 +3497,7 @@
     const attrs = `data-id="${escapeAttr(id)}" data-title="${escapeAttr(button.dataset.title || "")}" data-artist="${escapeAttr(button.dataset.artist || "")}" data-album="${escapeAttr(button.dataset.album || "")}"`;
     menu.innerHTML =
       `<button type="button" class="context-menu-item" data-menu-act="play" ${attrs}>Воспроизвести сейчас</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="track-wave" ${attrs}>Похожее на это</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="next" ${attrs}>Добавить следующим</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="queue" ${attrs}>Добавить в очередь</button>` +
       (playlists ? `<div class="context-menu-header">В плейлист</div>${playlists}` : "") +
@@ -3078,24 +3506,94 @@
       `<button type="button" class="context-menu-item" data-menu-act="research" ${attrs}>Найти снова</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="edit" ${attrs}>Редактировать метаданные</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="reveal" ${attrs}>Открыть расположение</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="open-folder" ${attrs}>Открыть папку</button>` +
       `<button type="button" class="context-menu-item danger" data-menu-act="delete" ${attrs}>Удалить из библиотеки</button>`;
     document.body.appendChild(menu);
   }
+  const QUEUE_GRIP = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>';
+
+  function queueRow(item, index, currentId) {
+    const current = item.id === currentId ? " queue-row-current" : "";
+    const cover = item.cover
+      ? `<img class="queue-cover" src="/cover/${encodeURIComponent(item.id)}" alt="">`
+      : `<div class="queue-cover queue-cover-placeholder" aria-hidden="true"></div>`;
+    return `<li class="queue-row${current}" data-id="${escapeAttr(item.id)}"><button type="button" class="queue-drag-handle" data-queue-drag="1" aria-label="Перетащить">${QUEUE_GRIP}</button><span class="queue-index">${index + 1}</span>${cover}<button type="button" class="queue-row-text" data-menu-act="play" data-id="${escapeAttr(item.id)}" data-title="${escapeAttr(item.title)}" data-artist="${escapeAttr(item.artist)}"><span class="queue-row-title">${escapeHtml(item.title)}</span><span class="queue-row-artist">${escapeHtml(item.artist)}</span></button><span class="queue-row-duration">${fmt(item.duration || 0)}</span><button type="button" class="icon-btn queue-remove" data-queue-remove="${escapeAttr(item.id)}" aria-label="Удалить из очереди">×</button></li>`;
+  }
+
+  function renumberQueue(list) {
+    list.querySelectorAll(".queue-index").forEach((node, index) => {
+      node.textContent = String(index + 1);
+    });
+  }
+
+  function commitQueueOrder(ids) {
+    listQueue = null;
+    artistQueue = null;
+    post("queue-reorder", { value: ids.join(",") });
+  }
+
+  function bindQueueReorder(list) {
+    list.addEventListener("pointerdown", (event) => {
+      const handle = event.target.closest("[data-queue-drag]");
+      if (!handle || event.button !== 0) return;
+      const row = handle.closest(".queue-row");
+      if (!row) return;
+      event.preventDefault();
+      event.stopPropagation();
+      row.classList.add("dragging");
+      const pointer = event.pointerId;
+      try { handle.setPointerCapture(pointer); } catch { /* capture */ }
+      const move = (ev) => {
+        if (ev.pointerId !== pointer) return;
+        const rows = [...list.querySelectorAll(".queue-row")].filter((item) => item !== row);
+        let before = null;
+        for (const item of rows) {
+          const rect = item.getBoundingClientRect();
+          if (ev.clientY < rect.top + rect.height / 2) {
+            before = item;
+            break;
+          }
+        }
+        if (before !== row.nextSibling) list.insertBefore(row, before);
+        renumberQueue(list);
+      };
+      let done = false;
+      const finish = (ev) => {
+        if (done) return;
+        if (ev && ev.pointerId != null && ev.type !== "mouseup" && ev.pointerId !== pointer) return;
+        done = true;
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", finish);
+        handle.removeEventListener("pointercancel", finish);
+        document.removeEventListener("mouseup", finish);
+        row.classList.remove("dragging");
+        const ids = [...list.querySelectorAll(".queue-row")].map((item) => item.dataset.id).filter(Boolean);
+        if (ids.length > 1) commitQueueOrder(ids);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", finish);
+      handle.addEventListener("pointercancel", finish);
+      document.addEventListener("mouseup", finish);
+    });
+  }
+
   async function toggleQueue() {
     const existing = document.querySelector(".queue-overlay");
     if (existing) {
       existing.remove();
       return;
     }
-    const data = await fetch("/api/queue").then((res) => res.json());
+    const data = await fetch("/api/queue", { cache: "no-store" }).then((res) => res.json());
     const rows = (data.items || [])
-      .map((item) => `<li class="queue-row"><button type="button" class="context-menu-item" data-menu-act="play" data-id="${escapeAttr(item.id)}" data-title="${escapeAttr(item.title)}" data-artist="${escapeAttr(item.artist)}">${escapeHtml(item.title)} — ${escapeHtml(item.artist)}</button><button type="button" class="icon-btn" data-queue-remove="${escapeAttr(item.id)}" aria-label="Удалить из очереди">×</button></li>`)
+      .map((item, index) => queueRow(item, index, data.current || ""))
       .join("");
     const panel = document.createElement("div");
     panel.className = "queue-overlay";
     panel.dataset.sticky = "1";
-    panel.innerHTML = `<aside class="queue-panel" role="dialog" aria-label="Очередь"><div class="queue-panel-header"><h3>Очередь</h3><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div><p class="queue-hint">Сюда попадают треки из меню «Добавить в очередь».</p>${rows ? `<ul class="queue-list">${rows}</ul>` : '<p class="queue-hint">Очередь пуста</p>'}<div class="queue-panel-footer"><button type="button" class="btn btn-ghost" data-queue-clear="1">Очистить очередь</button></div></aside>`;
+    panel.innerHTML = `<aside class="queue-panel" role="dialog" aria-label="Очередь"><div class="queue-panel-header"><h3>Очередь</h3><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div><p class="queue-hint">Сюда попадают треки из меню «Добавить в очередь». Потяните строку, чтобы изменить порядок.</p>${rows ? `<ul class="queue-list">${rows}</ul>` : '<p class="queue-hint">Очередь пуста</p>'}<div class="queue-panel-footer"><button type="button" class="btn btn-ghost" data-queue-clear="1">Очистить очередь</button></div></aside>`;
     document.body.appendChild(panel);
+    const list = panel.querySelector(".queue-list");
+    if (list) bindQueueReorder(list);
   }
   document.addEventListener("click", (event) => {
     const remove = event.target.closest("[data-queue-remove]");
@@ -3190,13 +3688,71 @@
   paintMuteIcon();
   syncPlayButton();
   tuneEq();
+  syncTrayPref();
   if (document.body.dataset.normalize === "1") audio.volume = Math.min(audio.volume, 0.82);
   if (document.body.dataset.focusSearch === "1") document.querySelector(".search-input")?.focus();
-  if (document.body.dataset.autoResume === "1" && document.body.dataset.current) {
+  function continueFromSavedSecond() {
     const id = document.body.dataset.current;
+    if (!id) {
+      positionReady = true;
+      return;
+    }
     const row = document.querySelector(`[data-play="${cssEscape(id)}"]`);
-    playId(id, row?.dataset.title || "", row?.dataset.artist || "");
+    const titleNode = document.querySelector(".player-track-title");
+    const artistNode = document.querySelector(".player-track-artist");
+    const title = row?.dataset.title || (titleNode && titleNode.textContent !== "Ничего не играет" ? titleNode.textContent : "") || "";
+    const artist = row?.dataset.artist || artistNode?.textContent || "";
+    clip = savedClip(id);
+    audio.src = "/audio/" + encodeURIComponent(id);
+    const place = () => {
+      if (!(audio.src || "").includes(encodeURIComponent(id))) return;
+      let at = savedSecond;
+      const trim = clip.start > 0 ? clip.start : 0;
+      if (trim > at) at = trim;
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        at = Math.min(at, Math.max(0, audio.duration - 0.25));
+      }
+      if (clip.end > clip.start && at >= clip.end - 0.05) at = trim;
+      try { audio.currentTime = at; } catch { /* seek */ }
+      paintProgress(at);
+      positionReady = true;
+      lastSecondSent = Math.floor(at);
+      const shouldPlay = savedSecond > 0 || document.body.dataset.playing === "1" || document.body.dataset.autoResume === "1";
+      if (!shouldPlay) {
+        syncPlayButton();
+        return;
+      }
+      audio.play().then(() => {
+        post("resume");
+        syncPlayButton();
+      }).catch(() => syncPlayButton());
+    };
+    if (audio.readyState >= 1) place();
+    else audio.addEventListener("loadedmetadata", place, { once: true });
+    setNowPlaying(title, artist, { url: "", cover: "" });
+    markCurrent(id);
+    syncPlayButton();
   }
+  continueFromSavedSecond();
+  window.setInterval(() => {
+    if (!audio.paused) rememberSecond(false);
+  }, 2000);
+  window.addEventListener("pagehide", () => {
+    if (!positionReady || !libraryAudioOpen()) return;
+    const body = new URLSearchParams({
+      action: "position",
+      ajax: "1",
+      id: document.body.dataset.current || "",
+      value: String(Math.floor(audio.currentTime || 0)),
+      field: audio.paused ? "0" : "1",
+    });
+    fetch("/act", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  });
   document.addEventListener("dblclick", (event) => {
     const row = event.target.closest(".song-row");
     if (!row || document.body.dataset.doubleClick !== "editMetadata") return;

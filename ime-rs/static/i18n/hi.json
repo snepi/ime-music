@@ -917,6 +917,8 @@
   "waves.diversity.high": "ज़्यादा कलाकार",
   "waves.skipKnown": "लाइब्रेरी में मौजूद ट्रैक छोड़ें",
   "waves.settingsHint": "आवेदन करना फ़िल्टर सहेजता है और वेव को ताज़ा करता है।",
+  "waves.dislike": "पसंद नहीं",
+  "waves.similar": "इसके जैसा",
   "tools.updates": "अपडेट",
   "tools.updatesHint": "GitHub Releases से नया वर्शन जाँचें। इंस्टॉलर खुद डाउनलोड होकर चलेगा।",
   "tools.currentVersion": "वर्तमान संस्करण: {version}",

@@ -3319,6 +3319,59 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 
+.player-waves-actions {
+  display: none;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.player-waves-actions:has(.player-waves-btn:not([hidden])) {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.player-waves-btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  width: auto;
+}
+
+.player-waves-btn[data-act="waves-dislike"] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.player-waves-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.track-wave-btn {
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.track-wave-btn:hover {
+  color: var(--text-primary);
+}
+
+.artist-track-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
 .player-track-title {
   font-size: 14px;
   font-weight: 600;
@@ -3763,7 +3816,8 @@ select:focus-visible {
 }
 
 .queue-row.dragging {
-  opacity: 0.5;
+  opacity: 0.45;
+  background: var(--bg-hover);
 }
 
 .queue-row-current {
@@ -3775,6 +3829,32 @@ select:focus-visible {
   color: var(--text-muted);
   cursor: grab;
   display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 28px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  flex: none;
+  touch-action: none;
+}
+
+.queue-drag-handle:active {
+  cursor: grabbing;
+}
+
+button.queue-row-text {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .queue-index {
@@ -5303,6 +5383,13 @@ body {
 .archive-list .song-artist {
   display: block;
   color: var(--text-secondary);
+}
+
+.archive-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .archive-move {

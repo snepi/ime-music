@@ -1,6 +1,10 @@
 //! IMe Waves pool. Genre, language, and source shape the next wave.
 //! Mood and diversity are kept on the saved settings so older files still
 //! load, and they no longer change the pool.
+//!
+//! «Не нравится» drops that recording for good, and the artists next to it.
+//! «Похожее на это» is a wave that starts on one track. It is not the artist wave:
+//! the artist's other songs stay out, and the genre and language filters stay on.
 
 use crate::model::{Song, Store, Waves};
 use serde::Serialize;
@@ -39,6 +43,7 @@ struct Candidate {
     catalog_genre: Option<u32>,
     /// Taken from this genre's chart, albums, or radio. A missing genre field does not drop these.
     from_genre_catalog: bool,
+    album_id: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -110,8 +115,9 @@ fn uses_artist_radio(genre: &str, seed: &str) -> bool {
 }
 
 /// A wave built around one artist: their own tracks, then tracks in the same lane.
-/// Settings (genre, seed, mood) stay as they are.
-pub fn build_artist_wave(name: &str, id: Option<u64>) -> Vec<WaveTrack> {
+/// Settings (genre, seed, mood) stay as they are. A disliked recording stays out.
+/// Other songs by that artist stay, because this wave was asked for by name.
+pub fn build_artist_wave(waves: &Waves, name: &str, id: Option<u64>) -> Vec<WaveTrack> {
     let Some(id) = id.or_else(|| resolve_artist(name)) else {
         return Vec::new();
     };
@@ -131,6 +137,9 @@ pub fn build_artist_wave(name: &str, id: Option<u64>) -> Vec<WaveTrack> {
     let mut mapped = Vec::new();
     for item in own.drain(..).chain(similar) {
         if item.preview.is_empty() || !seen.insert(item.preview.clone()) {
+            continue;
+        }
+        if !keep_artist_wave_track(waves, name, &item) {
             continue;
         }
         mapped.push(item);
@@ -204,6 +213,9 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         if !matches_genre(&item, &waves.genre) {
             continue;
         }
+        if blocked_exact(waves, &item) || blocked_like(waves, &item) {
+            continue;
+        }
         mapped.push(item);
     }
 
@@ -217,6 +229,344 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
             artist: item.artist,
         })
         .collect()
+}
+
+struct Resolved {
+    artist_id: u64,
+    title: String,
+    artist: String,
+    preview: String,
+    catalog_genre: Option<u32>,
+}
+
+/// Artists and recordings that count as “like this track”.
+/// Related artists come first, then whoever the radio put next to the song.
+/// The track list is the recordings themselves, so those copies stay out
+/// even when the artist list is already full.
+pub fn tracks_like(title: &str, artist: &str) -> (Vec<String>, Vec<(String, String, String)>) {
+    let mut names = Vec::new();
+    push_artist(&mut names, artist);
+    let Some(resolved) = resolve_track(title, artist, None) else {
+        return (names, Vec::new());
+    };
+    if names.is_empty() {
+        push_artist(&mut names, &resolved.artist);
+    }
+    let artist_id = if resolved.artist_id > 0 {
+        resolved.artist_id
+    } else {
+        resolve_artist(&resolved.artist).unwrap_or(0)
+    };
+    if artist_id > 0 {
+        if let Ok(body) = http_get(&format!("{DEEZER}/artist/{artist_id}/related?limit=8")) {
+            if let Ok(value) = serde_json::from_str::<Value>(&body) {
+                if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
+                    for row in rows.iter().take(6) {
+                        if let Some(name) = row.get("name").and_then(|value| value.as_str()) {
+                            push_artist(&mut names, name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut tracks = Vec::new();
+    for item in similar_of(&resolved) {
+        if names.len() < 12 {
+            push_artist(&mut names, &item.artist);
+        }
+        if tracks.len() < 40 && !item.preview.is_empty() {
+            tracks.push((item.title.clone(), item.artist.clone(), item.preview.clone()));
+        }
+        if names.len() >= 12 && tracks.len() >= 40 {
+            break;
+        }
+    }
+    (names, tracks)
+}
+
+/// Remember a disliked Waves track. The recording never returns. `like_artists`
+/// are stored with it so tracks in that neighborhood do not return either.
+pub fn remember_dislike(
+    waves: &mut Waves,
+    title: &str,
+    artist: &str,
+    preview: &str,
+    like_artists: &[String],
+    like_tracks: &[(String, String, String)],
+) -> (String, Vec<String>) {
+    let title = title.trim();
+    let artist = artist.trim();
+    if title.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    let key = track_key(artist, title);
+    let preview = preview.trim().to_string();
+    let mut artists = Vec::new();
+    push_artist(&mut artists, artist);
+    for name in like_artists {
+        push_artist(&mut artists, name);
+        if artists.len() >= 12 {
+            break;
+        }
+    }
+    waves.disliked_keys.retain(|item| item != &key);
+    waves.disliked_keys.push(key.clone());
+    trim_front(&mut waves.disliked_keys, 400);
+    if !preview.is_empty() {
+        waves.disliked_previews.retain(|item| item != &preview);
+        waves.disliked_previews.push(preview.clone());
+    }
+    for (like_title, like_artist, like_preview) in like_tracks {
+        let like_key = track_key(like_artist, like_title);
+        if like_key != "|" && !waves.disliked_keys.contains(&like_key) {
+            waves.disliked_keys.push(like_key);
+        }
+        if !like_preview.is_empty() && !waves.disliked_previews.contains(like_preview) {
+            waves.disliked_previews.push(like_preview.clone());
+        }
+    }
+    trim_front(&mut waves.disliked_keys, 400);
+    trim_front(&mut waves.disliked_previews, 400);
+    waves.dislikes.retain(|item| item.key != key);
+    waves.dislikes.push(crate::model::WaveDislike {
+        key: key.clone(),
+        preview,
+        artist: artist_key(artist),
+        like_artists: artists.clone(),
+    });
+    if waves.dislikes.len() > 40 {
+        let extra = waves.dislikes.len() - 40;
+        waves.dislikes.drain(0..extra);
+    }
+    (key, artists)
+}
+
+pub fn known_track_keys(store: &Store) -> HashSet<String> {
+    if !store.settings.waves.skip_known {
+        return HashSet::new();
+    }
+    store.songs.iter().map(|song| track_key(&song.artist, &song.title)).collect()
+}
+
+/// «Похожее на это»: the chosen track first, then tracks like it.
+/// Genre and language filters apply to everything after the seed.
+/// The seed artist’s other songs are left out — that queue is the artist wave.
+pub fn build_track_wave(waves: &Waves, known: &HashSet<String>, title: &str, artist: &str, id: Option<u64>, preview: &str) -> Vec<WaveTrack> {
+    let resolved = resolve_track(title, artist, id);
+    let mut similar = resolved.as_ref().map(similar_of).unwrap_or_default();
+    if waves.genre != "all" && !waves.genre.is_empty() {
+        fill_album_genres(&mut similar);
+    }
+    if waves.skip_known {
+        similar.retain(|item| !known.contains(&track_key(&item.artist, &item.title)));
+    }
+    let seed = seed_candidate(title, artist, preview, resolved.as_ref());
+    finish_track_wave(seed, similar, waves)
+        .into_iter()
+        .take(POOL_CAP)
+        .map(|item| WaveTrack {
+            preview_url: item.preview,
+            title: item.title,
+            artist: item.artist,
+        })
+        .collect()
+}
+
+fn push_artist(names: &mut Vec<String>, artist: &str) {
+    let key = artist_key(artist);
+    if key.is_empty() || names.iter().any(|have| have == &key) {
+        return;
+    }
+    names.push(key);
+}
+
+fn trim_front(items: &mut Vec<String>, cap: usize) {
+    if items.len() > cap {
+        let extra = items.len() - cap;
+        items.drain(0..extra);
+    }
+}
+
+fn seed_candidate(title: &str, artist: &str, preview: &str, resolved: Option<&Resolved>) -> Option<Candidate> {
+    let title = resolved
+        .map(|item| item.title.clone())
+        .filter(|item| !item.trim().is_empty())
+        .unwrap_or_else(|| title.trim().to_string());
+    if title.is_empty() {
+        return None;
+    }
+    let artist = resolved
+        .map(|item| item.artist.clone())
+        .filter(|item| !item.trim().is_empty())
+        .unwrap_or_else(|| artist.trim().to_string());
+    let from_api = resolved.map(|item| item.preview.clone()).unwrap_or_default();
+    let preview = if from_api.is_empty() { preview.trim().to_string() } else { from_api };
+    Some(Candidate {
+        title,
+        artist,
+        preview,
+        catalog_genre: resolved.and_then(|item| item.catalog_genre),
+        from_genre_catalog: false,
+            album_id: None,
+    })
+}
+
+/// Similar tracks for one recording: the artist’s radio and a few related artists,
+/// without that artist’s own songs.
+fn similar_of(resolved: &Resolved) -> Vec<Candidate> {
+    let seed_artist = artist_key(&resolved.artist);
+    let seed_key = track_key(&resolved.artist, &resolved.title);
+    let mut found = Vec::new();
+    let artist_id = if resolved.artist_id > 0 {
+        resolved.artist_id
+    } else {
+        resolve_artist(&resolved.artist).unwrap_or(0)
+    };
+    if artist_id > 0 {
+        found.extend(fetch_list(&format!("/artist/{artist_id}/radio?limit=30"), false));
+        if let Ok(body) = http_get(&format!("{DEEZER}/artist/{artist_id}/related?limit=6")) {
+            if let Ok(value) = serde_json::from_str::<Value>(&body) {
+                if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
+                    for row in rows.iter().take(4) {
+                        let Some(related) = row.get("id").and_then(|value| value.as_u64()) else { continue };
+                        found.extend(fetch_list(&format!("/artist/{related}/top?limit=5"), false));
+                    }
+                }
+            }
+        }
+    }
+    found.retain(|item| artist_key(&item.artist) != seed_artist && track_key(&item.artist, &item.title) != seed_key);
+    found
+}
+
+fn finish_track_wave(seed: Option<Candidate>, mut similar: Vec<Candidate>, waves: &Waves) -> Vec<Candidate> {
+    let seed_artist = seed.as_ref().map(|item| artist_key(&item.artist)).unwrap_or_default();
+    let seed_key = seed.as_ref().map(|item| track_key(&item.artist, &item.title)).unwrap_or_default();
+    similar.retain(|item| {
+        if !seed_artist.is_empty() && artist_names(&item.artist).iter().any(|name| name == &seed_artist) {
+            return false;
+        }
+        if !seed_key.is_empty() && track_key(&item.artist, &item.title) == seed_key {
+            return false;
+        }
+        matches_language(item, &waves.language) && matches_genre(item, &waves.genre) && !blocked_exact(waves, item) && !blocked_like(waves, item)
+    });
+    let heard: HashSet<String> = waves.heard.iter().cloned().collect();
+    arrange(&mut similar, &heard, waves.spin, false);
+    if let Some(seed) = seed {
+        if !blocked_exact(waves, &seed) {
+            similar.insert(0, seed);
+        }
+    }
+    similar
+}
+
+fn keep_artist_wave_track(waves: &Waves, artist_name: &str, item: &Candidate) -> bool {
+    if blocked_exact(waves, item) {
+        return false;
+    }
+    if artist_names(&item.artist).iter().any(|name| name == &artist_key(artist_name)) {
+        return true;
+    }
+    !blocked_like(waves, item)
+}
+
+fn blocked_exact(waves: &Waves, item: &Candidate) -> bool {
+    if !item.preview.is_empty() && waves.disliked_previews.iter().any(|url| url == &item.preview) {
+        return true;
+    }
+    let key = track_key(&item.artist, &item.title);
+    waves.disliked_keys.iter().any(|saved| saved == &key)
+}
+
+fn blocked_like(waves: &Waves, item: &Candidate) -> bool {
+    let names = artist_names(&item.artist);
+    waves.dislikes.iter().any(|dislike| {
+        names.iter().any(|name| dislike.like_artists.iter().any(|blocked| blocked == name))
+    })
+}
+
+fn artist_names(artist: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    push_artist(&mut names, artist);
+    for part in split_artists(artist) {
+        push_artist(&mut names, &part);
+    }
+    names
+}
+
+fn resolve_track(title: &str, artist: &str, id: Option<u64>) -> Option<Resolved> {
+    if title.trim().is_empty() && id.is_none() {
+        return None;
+    }
+    if let Some(id) = id {
+        if let Some(found) = fetch_track(id) {
+            return Some(found);
+        }
+    }
+    if title.trim().is_empty() {
+        return None;
+    }
+    // Deezer's fielded query (artist:"…" track:"…") comes back empty.
+    // A plain search still lets us keep the result whose title and artist match.
+    let query = format!("{} {}", artist.trim(), title.trim()).trim().to_string();
+    let path = format!("/search/track?q={}&limit=8", urlencoding::encode(&query));
+    let body = http_get(&format!("{DEEZER}{path}")).ok()?;
+    let value: Value = serde_json::from_str(&body).ok()?;
+    let rows = value.get("data")?.as_array()?;
+    let want_title = artist_key(title);
+    let want_artist = artist_key(artist);
+    let mut fallback = None;
+    for row in rows {
+        let Some(found) = resolved_from(row) else { continue };
+        let title_ok = artist_key(&found.title) == want_title;
+        let artist_ok = want_artist.is_empty() || artist_names(&found.artist).iter().any(|name| name == &want_artist);
+        if title_ok && artist_ok {
+            return Some(found);
+        }
+        if fallback.is_none() && title_ok {
+            fallback = Some(found);
+        }
+    }
+    fallback
+}
+
+fn fetch_track(id: u64) -> Option<Resolved> {
+    let body = http_get(&format!("{DEEZER}/track/{id}")).ok()?;
+    let value: Value = serde_json::from_str(&body).ok()?;
+    if value.get("error").is_some() {
+        return None;
+    }
+    resolved_from(&value)
+}
+
+fn resolved_from(raw: &Value) -> Option<Resolved> {
+    let title = raw
+        .get("title")
+        .or_else(|| raw.get("title_short"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let artist = raw
+        .get("artist")
+        .and_then(|artist| artist.get("name").and_then(|value| value.as_str()).or_else(|| artist.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let artist_id = raw.get("artist").and_then(|artist| artist.get("id")).and_then(|value| value.as_u64()).unwrap_or(0);
+    let preview = raw.get("preview").and_then(|value| value.as_str()).unwrap_or("").trim().to_string();
+    Some(Resolved {
+        artist_id,
+        title,
+        artist,
+        preview,
+        catalog_genre: read_catalog_genre(raw),
+    })
 }
 
 fn seed_artists(store: &Store) -> Vec<String> {
@@ -363,6 +713,7 @@ fn map_track(raw: &Value) -> Option<Candidate> {
         preview,
         catalog_genre: read_catalog_genre(raw),
         from_genre_catalog: false,
+        album_id: raw.get("album").and_then(|album| album.get("id")).and_then(|value| value.as_u64()),
     })
 }
 
@@ -431,6 +782,42 @@ fn matches_language(track: &Candidate, language: &str) -> bool {
     }
 }
 
+/// Radio and related-artist tracks often omit genre_id. The album document has it,
+/// so a chosen genre can still reject tracks that are not that genre.
+fn fill_album_genres(items: &mut [Candidate]) {
+    let mut ids = Vec::new();
+    for item in items.iter() {
+        let Some(id) = item.album_id else { continue };
+        if item.catalog_genre.is_some() || ids.contains(&id) {
+            continue;
+        }
+        ids.push(id);
+        if ids.len() >= 16 {
+            break;
+        }
+    }
+    let mut found = HashMap::new();
+    for id in ids {
+        found.insert(id, fetch_album_genre(id));
+    }
+    for item in items.iter_mut() {
+        if item.catalog_genre.is_some() {
+            continue;
+        }
+        if let Some(id) = item.album_id {
+            if let Some(genre) = found.get(&id).copied().flatten() {
+                item.catalog_genre = Some(genre);
+            }
+        }
+    }
+}
+
+fn fetch_album_genre(id: u64) -> Option<u32> {
+    let body = http_get(&format!("{DEEZER}/album/{id}")).ok()?;
+    let value: Value = serde_json::from_str(&body).ok()?;
+    value.get("genre_id").and_then(|item| item.as_u64()).map(|item| item as u32).or_else(|| read_catalog_genre(&value))
+}
+
 /// Genre is the catalog id (album genre, or the genre chart/radio that supplied the track).
 /// A missing genre field does not throw away a track that already came from that catalog.
 /// The word in the title, album, or nickname is not a genre.
@@ -465,6 +852,7 @@ mod tests {
             preview: preview.into(),
             catalog_genre: None,
             from_genre_catalog: false,
+            album_id: None,
         }
     }
 
@@ -505,6 +893,7 @@ mod tests {
             preview: "ru".into(),
             catalog_genre: None,
             from_genre_catalog: false,
+            album_id: None,
         };
         let english = Candidate {
             title: "Creep".into(),
@@ -512,6 +901,7 @@ mod tests {
             preview: "en".into(),
             catalog_genre: None,
             from_genre_catalog: false,
+            album_id: None,
         };
         assert!(matches_language(&russian, "ru"));
         assert!(!matches_language(&english, "ru"));
@@ -528,6 +918,7 @@ mod tests {
             preview: "nick".into(),
             catalog_genre: None,
             from_genre_catalog: false,
+            album_id: None,
         };
         assert!(!matches_language(&nickname, "ru"));
         assert!(matches_language(&nickname, "en"));
@@ -537,6 +928,7 @@ mod tests {
             preview: "mix".into(),
             catalog_genre: None,
             from_genre_catalog: false,
+            album_id: None,
         };
         assert_eq!(title_language(&mixed.title), "en");
         assert!(!matches_language(&mixed, "ru"));
@@ -546,6 +938,7 @@ mod tests {
             preview: "ru-title".into(),
             catalog_genre: None,
             from_genre_catalog: false,
+            album_id: None,
         };
         assert!(matches_language(&russian_title, "ru"));
         assert!(!matches_language(&russian_title, "en"));
@@ -559,6 +952,7 @@ mod tests {
             preview: "nick".into(),
             catalog_genre: None,
             from_genre_catalog: false,
+            album_id: None,
         };
         assert!(!matches_genre(&nickname, "rock"));
         let labels = [
@@ -580,6 +974,7 @@ mod tests {
                 preview: genre.into(),
                 catalog_genre: None,
                 from_genre_catalog: false,
+            album_id: None,
             };
             assert!(!matches_genre(&titled, genre), "{word}");
             let classified = Candidate {
@@ -588,6 +983,7 @@ mod tests {
                 preview: format!("chart-{genre}"),
                 catalog_genre: None,
                 from_genre_catalog: true,
+            album_id: None,
             };
             if genre == "ruRap" {
                 assert!(matches_genre(&classified, genre));
@@ -601,6 +997,7 @@ mod tests {
             preview: "chart".into(),
             catalog_genre: None,
             from_genre_catalog: true,
+            album_id: None,
         };
         assert!(matches_genre(&chart, "rock"));
         assert!(matches_language(&chart, "ru"));
@@ -610,6 +1007,7 @@ mod tests {
             preview: "by-id".into(),
             catalog_genre: Some(152),
             from_genre_catalog: false,
+            album_id: None,
         };
         assert!(matches_genre(&by_id, "rock"));
         assert!(!matches_genre(&by_id, "pop"));
@@ -619,6 +1017,7 @@ mod tests {
             preview: "en-rap".into(),
             catalog_genre: Some(116),
             from_genre_catalog: true,
+            album_id: None,
         };
         assert!(matches_genre(&english_rap, "rap"));
         assert!(!matches_genre(&english_rap, "ruRap"));
@@ -682,5 +1081,77 @@ mod tests {
         assert!(style_filtered("jazz", "any"));
         assert!(style_filtered("all", "ru"));
         assert!(!style_filtered("all", "any"));
+    }
+
+    fn classified(title: &str, artist: &str, preview: &str, genre: Option<u32>) -> Candidate {
+        Candidate {
+            title: title.into(),
+            artist: artist.into(),
+            preview: preview.into(),
+            catalog_genre: genre,
+            from_genre_catalog: genre.is_some(),
+            album_id: None,
+        }
+    }
+
+    #[test]
+    fn dislike_drops_that_track_and_tracks_like_it() {
+        let mut waves = Waves::default();
+        let (key, artists) = remember_dislike(
+            &mut waves,
+            "Creep",
+            "Radiohead",
+            "http://preview/creep",
+            &["Radiohead".into(), "Muse".into(), "Jeff Buckley".into()],
+            &[],
+        );
+        assert_eq!(key, track_key("Radiohead", "Creep"));
+        assert!(artists.iter().any(|name| name == "radiohead"));
+        assert!(artists.iter().any(|name| name == "muse"));
+        let creep = classified("Creep", "Radiohead", "http://preview/creep", Some(152));
+        let other = classified("Karma Police", "Radiohead", "http://preview/karma", Some(152));
+        let featured = classified("Map of the Problematique", "Muse feat. Someone", "http://preview/muse", Some(152));
+        let elsewhere = classified("Yellow", "Coldplay", "http://preview/yellow", Some(132));
+        let same_file = classified("Creep (Remaster)", "Someone", "http://preview/creep", None);
+        assert!(blocked_exact(&waves, &creep));
+        assert!(blocked_like(&waves, &other));
+        assert!(blocked_like(&waves, &featured));
+        assert!(!blocked_exact(&waves, &elsewhere));
+        assert!(!blocked_like(&waves, &elsewhere));
+        assert!(blocked_exact(&waves, &same_file));
+        assert!(keep_artist_wave_track(&waves, "Radiohead", &other));
+        assert!(!keep_artist_wave_track(&waves, "Radiohead", &creep));
+        assert!(!keep_artist_wave_track(&waves, "Radiohead", &featured));
+    }
+
+    #[test]
+    fn track_wave_starts_at_the_seed_and_keeps_genre_and_language() {
+        let mut waves = Waves::default();
+        waves.genre = "rock".into();
+        waves.language = "en".into();
+        let seed = classified("Группа крови", "Кино", "seed", Some(152));
+        let rock = classified("Starlight", "Muse", "rock", Some(152));
+        let same_artist = classified("Звезда по имени Солнце", "Кино", "own", Some(152));
+        let pop = classified("Yellow", "Coldplay", "pop", Some(132));
+        let russian = classified("Свобода", "Другой", "ru", Some(152));
+        let queued = finish_track_wave(
+            Some(seed),
+            vec![pop, same_artist, russian, rock],
+            &waves,
+        );
+        assert_eq!(queued[0].preview, "seed");
+        assert_eq!(queued.iter().filter(|item| item.preview == "rock").count(), 1);
+        assert!(queued.iter().all(|item| item.preview != "pop" && item.preview != "ru" && item.preview != "own"));
+    }
+
+    #[test]
+    fn a_disliked_recording_does_not_open_the_next_track_wave() {
+        let mut waves = Waves::default();
+        remember_dislike(&mut waves, "Creep", "Radiohead", "seed", &[], &[]);
+        let seed = classified("Creep", "Radiohead", "seed", Some(152));
+        let other = classified("Yellow", "Coldplay", "other", None);
+        let queued = finish_track_wave(Some(seed), vec![other], &waves);
+        assert!(queued.iter().all(|item| item.preview != "seed"));
+        assert_eq!(queued.first().map(|item| item.preview.as_str()), Some("other"));
     }
 }

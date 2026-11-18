@@ -5,8 +5,10 @@ mod bundle;
 mod window;
 mod i18n;
 mod icons;
+mod lyrics;
 mod model;
 mod render;
+mod tray;
 mod ytdlp;
 mod waves;
 
@@ -88,6 +90,8 @@ fn main() {
     bundle::ensure_static(&static_dir);
     let data_path = data_file(&data_dir);
     let store = Store::load(&data_path);
+    #[cfg(target_os = "windows")]
+    let close_to_tray = store.settings.playback.close_to_tray;
     let state = Arc::new(AppState {
         store: Mutex::new(store),
         data_path,
@@ -123,6 +127,7 @@ fn main() {
         .route("/api/track/replace", post(track_replace))
         .route("/import-status", get(import_status))
         .route("/audio/:id", get(audio))
+        .route("/api/lyrics", get(lyrics))
         .route("/cover/:id", get(cover_file))
         .route("/api/state", get(api_state))
         .route("/api/queue", get(api_queue))
@@ -183,7 +188,7 @@ fn main() {
     }
 
     #[cfg(target_os = "windows")]
-    window::open(&url);
+    window::open(&url, close_to_tray);
     #[cfg(not(target_os = "windows"))]
     std::thread::park();
 }
@@ -485,12 +490,43 @@ async fn trim_song(state: Arc<AppState>, form: ActForm) -> Response {
     trim_json(true, "Отрезок сохранён", new_duration, &id)
 }
 
+async fn dislike_wave(state: Arc<AppState>, form: ActForm) -> Response {
+    let title = form.title.clone().unwrap_or_default();
+    let artist = form.artist.clone().unwrap_or_default();
+    let preview = form.url.clone().unwrap_or_default();
+    let title_job = title.clone();
+    let artist_job = artist.clone();
+    let found = tokio::task::spawn_blocking(move || waves::tracks_like(&title_job, &artist_job)).await;
+    let (like, like_tracks) = found.unwrap_or_default();
+    let mut store = state.store.lock().expect("store");
+    let (key, artists) = waves::remember_dislike(&mut store.settings.waves, &title, &artist, &preview, &like, &like_tracks);
+    save(&state, &store);
+    let previews: Vec<String> = if preview.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![preview.trim().to_string()]
+    };
+    let body = serde_json::json!({
+        "ok": !key.is_empty(),
+        "message": if key.is_empty() { "Не удалось отметить трек" } else { "Этот трек и похожие больше не вернутся" },
+        "detail": { "key": key, "artists": artists, "previews": previews },
+    });
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        body.to_string(),
+    )
+        .into_response()
+}
+
 async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {
     let back = form.back.clone().unwrap_or_else(|| "/".into());
     let ajax = form.ajax.as_deref() == Some("1");
     let action = form.action.clone().unwrap_or_default();
     if action == "trim" {
         return trim_song(state, form).await;
+    }
+    if action == "waves-dislike" {
+        return dislike_wave(state, form).await;
     }
     let mut store = state.store.lock().expect("store");
     let i18n = i18n::I18n::load(&state.static_dir.join("i18n"), &store.settings.locale);
@@ -607,9 +643,15 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
         "waves-reset" => {
             let heard = store.settings.waves.heard.clone();
             let spin = store.settings.waves.spin;
+            let disliked_keys = store.settings.waves.disliked_keys.clone();
+            let disliked_previews = store.settings.waves.disliked_previews.clone();
+            let dislikes = store.settings.waves.dislikes.clone();
             store.settings.waves = model::Waves::default();
             store.settings.waves.heard = heard;
             store.settings.waves.spin = spin;
+            store.settings.waves.disliked_keys = disliked_keys;
+            store.settings.waves.disliked_previews = disliked_previews;
+            store.settings.waves.dislikes = dislikes;
             message = "Настройки волны сброшены".into();
         }
         "waves-apply" => {
@@ -683,6 +725,9 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             let favorites = store.settings.favorite_artists.clone();
             let heard = store.settings.waves.heard.clone();
             let spin = store.settings.waves.spin;
+            let disliked_keys = store.settings.waves.disliked_keys.clone();
+            let disliked_previews = store.settings.waves.disliked_previews.clone();
+            let dislikes = store.settings.waves.dislikes.clone();
             store.settings = model::Settings::default();
             store.settings.ytdlp_path = ytdlp_path;
             store.settings.ytdlp_proxy = ytdlp_proxy;
@@ -690,6 +735,9 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             store.settings.favorite_artists = favorites;
             store.settings.waves.heard = heard;
             store.settings.waves.spin = spin;
+            store.settings.waves.disliked_keys = disliked_keys;
+            store.settings.waves.disliked_previews = disliked_previews;
+            store.settings.waves.dislikes = dislikes;
             store.settings.onboarding_done = true;
         }
         "reset-preset" | "reset-section" => store.apply_preset("default"),
@@ -780,6 +828,29 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             }
         }
         "queue-clear" => store.queue_clear(),
+        "queue-reorder" => {
+            if let Some(value) = form.value.as_deref() {
+                let ids: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                store.queue_reorder(&ids);
+            }
+        }
+        "position" => {
+            if let (Some(id), Some(value)) = (form.id.as_deref(), form.value.as_deref()) {
+                if let Ok(seconds) = value.parse::<f64>() {
+                    let playing = match form.field.as_deref() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    };
+                    store.set_position(id, seconds, playing);
+                }
+            }
+        }
         "delete-song" => {
             if let Some(id) = form.id.as_deref() {
                 store.remove_song(id);
@@ -815,6 +886,19 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                         let _ = std::process::Command::new("xdg-open").arg(folder).spawn();
                     }
                 }
+            }
+        }
+        "open-folder" => {
+            let path = form.id.as_deref().and_then(|id| track_file_path(&store, id));
+            match path.as_deref().map(containing_folder) {
+                Some(Ok(folder)) => {
+                    detail = serde_json::json!({ "folder": folder.display().to_string() });
+                    if let Err(err) = open_in_explorer(&folder) {
+                        message = err;
+                    }
+                }
+                Some(Err(err)) => message = err.into(),
+                None => message = "У этого трека нет файла".into(),
             }
         }
         "refresh" | "check-updates" | "export-backup" | "youtube" | "enrich" => {}
@@ -1212,6 +1296,60 @@ fn external_url(raw: &str) -> Option<String> {
     }
 }
 
+fn track_file_path(store: &Store, id: &str) -> Option<String> {
+    store
+        .song(id)
+        .map(|song| song.path.clone())
+        .or_else(|| store.archive.iter().find(|item| item.id == id).map(|item| item.path.clone()))
+        .filter(|path| !path.trim().is_empty())
+}
+
+/// Directory that actually holds the track file. An empty or missing file is reported as such.
+fn containing_folder(path: &str) -> Result<std::path::PathBuf, &'static str> {
+    let raw = std::path::Path::new(path.trim());
+    if path.trim().is_empty() || !raw.is_file() {
+        return Err("У этого трека нет файла");
+    }
+    let file = std::fs::canonicalize(raw).map_err(|_| "У этого трека нет файла")?;
+    match file.parent() {
+        Some(dir) if dir.is_dir() => Ok(dir.to_path_buf()),
+        _ => Err("У этого трека нет файла"),
+    }
+}
+
+/// Open `folder` in the system file manager. On Windows that is Explorer.
+fn open_in_explorer(folder: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let text = folder.to_string_lossy();
+        let path = text.strip_prefix(r"\\?\").unwrap_or(text.as_ref()).to_string();
+        // `start` hands a directory to Explorer. An empty title keeps a spaced path from being read as the window name.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("Не удалось открыть папку: {err}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(folder)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("Не удалось открыть папку: {err}"))
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("Не удалось открыть папку: {err}"))
+    }
+}
+
 fn open_external(url: &str) {
     #[cfg(target_os = "windows")]
     {
@@ -1450,6 +1588,48 @@ async fn archive_match(State(state): State<Arc<AppState>>, Query(query): Query<A
     ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
 
+#[derive(Deserialize)]
+struct LyricsQuery {
+    id: Option<String>,
+}
+
+async fn lyrics(State(state): State<Arc<AppState>>, Query(query): Query<LyricsQuery>) -> Response {
+    let data_dir = state
+        .data_path
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let (id, path, locale) = {
+        let store = state.store.lock().expect("store");
+        let id = query
+            .id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| store.player.current_id.clone().unwrap_or_default());
+        let path = store
+            .song(&id)
+            .map(|song| song.path.clone())
+            .or_else(|| store.archive.iter().find(|item| item.id == id).map(|item| item.path.clone()))
+            .unwrap_or_default();
+        (id, path, store.settings.locale.clone())
+    };
+    let found = if id.is_empty() {
+        lyrics::Lyrics::none()
+    } else {
+        lyrics::load(&id, &path, &data_dir)
+    };
+    let i18n = i18n::I18n::load(&state.static_dir.join("i18n"), &locale);
+    let mut body = serde_json::to_value(&found).unwrap_or_else(|_| serde_json::json!({ "empty": true, "lines": [] }));
+    body["ok"] = serde_json::json!(true);
+    if found.empty {
+        body["empty"] = serde_json::json!(true);
+        body["lines"] = serde_json::json!([]);
+        body["synced"] = serde_json::json!(false);
+        body["source"] = serde_json::Value::Null;
+        body["message"] = serde_json::json!(i18n.t("lyrics.empty"));
+    }
+    json_response(body)
+}
+
 async fn audio(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -1518,13 +1698,36 @@ async fn audio(
 struct WavesQuery {
     artist: Option<String>,
     id: Option<String>,
+    track: Option<String>,
+    preview: Option<String>,
 }
 
 async fn waves_pool(State(state): State<Arc<AppState>>, Query(query): Query<WavesQuery>) -> Response {
+    if let Some(title) = query.track.as_deref().map(str::trim).filter(|title| !title.is_empty()) {
+        let title = title.to_string();
+        let artist = query.artist.clone().unwrap_or_default();
+        let preview = query.preview.clone().unwrap_or_default();
+        let id = query.id.as_deref().and_then(|value| value.parse::<u64>().ok());
+        let (waves, known) = {
+            let store = state.store.lock().expect("store");
+            (store.settings.waves.clone(), waves::known_track_keys(&store))
+        };
+        let built = tokio::task::spawn_blocking(move || waves::build_track_wave(&waves, &known, &title, &artist, id, &preview)).await;
+        let items = built.unwrap_or_default();
+        return (
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            serde_json::json!({ "ok": true, "items": items }).to_string(),
+        )
+            .into_response();
+    }
     if let Some(name) = query.artist.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
         let id = query.id.as_deref().and_then(|value| value.parse::<u64>().ok());
         let name = name.to_string();
-        let built = tokio::task::spawn_blocking(move || waves::build_artist_wave(&name, id)).await;
+        let waves = {
+            let store = state.store.lock().expect("store");
+            store.settings.waves.clone()
+        };
+        let built = tokio::task::spawn_blocking(move || waves::build_artist_wave(&waves, &name, id)).await;
         let items = built.unwrap_or_default();
         return (
             [(header::CONTENT_TYPE, "application/json")],
@@ -1553,6 +1756,7 @@ async fn api_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let body = serde_json::json!({
         "current": store.player.current_id,
         "playing": store.player.playing,
+        "position": store.player.position,
         "volume": store.settings.volume,
         "songs": store.songs.len(),
     });
@@ -1633,6 +1837,8 @@ async fn api_queue(State(state): State<Arc<AppState>>) -> Response {
                 "title": song.title,
                 "artist": song.artist,
                 "album": song.album,
+                "duration": song.duration,
+                "cover": !song.cover_path.is_empty(),
             })
         })
         .collect();
@@ -1659,7 +1865,7 @@ async fn api_updates() -> Response {
             .and_then(|response| response.into_string().map_err(|err| err.to_string()))
     })
     .await;
-    let current = "1.3.5.1";
+    let current = "1.3.6.1";
     let body = match fetched {
         Ok(Ok(text)) => text,
         _ => {
@@ -2319,5 +2525,28 @@ async fn file_response(path: &std::path::Path, mime: &'static str) -> Response {
     match tokio::fs::read(path).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::containing_folder;
+
+    #[test]
+    fn open_folder_uses_the_directory_that_holds_the_file() {
+        let dir = std::env::temp_dir().join("ime-open-folder-proof");
+        let nested = dir.join("album");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("track.mp3");
+        std::fs::write(&file, b"not really audio").unwrap();
+        let folder = containing_folder(&file.to_string_lossy()).unwrap();
+        assert_eq!(folder, std::fs::canonicalize(&nested).unwrap());
+        assert_eq!(containing_folder(""), Err("У этого трека нет файла"));
+        assert_eq!(
+            containing_folder(dir.join("missing.mp3").to_string_lossy().as_ref()),
+            Err("У этого трека нет файла")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

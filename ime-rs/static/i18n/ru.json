@@ -958,6 +958,8 @@
   "waves.diversity.high": "Больше артистов",
   "waves.skipKnown": "Пропускать треки, уже есть в библиотеке",
   "waves.settingsHint": "«Применить» сохраняет фильтры и обновляет волну.",
+  "waves.dislike": "Не нравится",
+  "waves.similar": "Похожее на это",
   "tools.updates": "Обновления",
   "tools.updatesHint": "Проверка новой версии на GitHub Releases. Установщик скачается и запустится сам.",
   "tools.currentVersion": "Текущая версия: {version}",
