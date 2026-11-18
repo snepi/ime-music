@@ -88,7 +88,7 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         html.push_str(&css);
     }
     html.push_str("</head><body");
-    html.push_str(&body_attrs(store));
+    html.push_str(&body_attrs(store, i18n));
     html.push_str(r#"><div id="root"><div class=""#);
     html.push_str(&app_class);
     html.push_str(r#"">"#);
@@ -183,9 +183,9 @@ fn flag(on: bool) -> &'static str {
     if on { "1" } else { "0" }
 }
 
-fn body_attrs(store: &Store) -> String {
+fn body_attrs(store: &Store, i18n: &I18n) -> String {
     let wallpaper = store.settings.wallpaper_mode != "none" && !store.settings.wallpaper_path.is_empty();
-    format!(
+    let mut attrs = format!(
         r#" data-volume="{volume}" data-current="{current}" data-density="{density}" data-sidebar-pos="{side}" data-reduced-motion="{motion}" data-wallpaper="{wallpaper}" data-confirm-delete="{confirm_delete}" data-confirm-queue="{confirm_queue}" data-space="{space}" data-focus-search="{focus}" data-auto-resume="{resume}" data-double-click="{dbl}" data-player-art="{art}" data-player-title="{title}" data-player-artist="{artist}" data-player-prev="{prev}" data-player-next="{next}" data-player-play="{play}" data-player-volume="{vol}" data-player-progress="{progress}" data-player-time="{time}" data-player-queue="{queue}" data-player-like="{like}" data-list-art="{list_art}" data-list-index="{list_index}" data-animations="{anim}" data-show-search="{search}" data-show-queue="{queue_btn}" data-gapless="{gapless}" data-crossfade="{crossfade}" data-eq="{eq}" data-normalize="{normalize}" data-eq-bass="{bass}" data-eq-mid="{mid}" data-eq-treble="{treble}" data-archive-ahead="{ahead}" data-archive-keep="{keep}""#,
         volume = store.settings.volume,
         current = esc(store.player.current_id.as_deref().unwrap_or("")),
@@ -224,7 +224,18 @@ fn body_attrs(store: &Store) -> String {
         treble = store.settings.playback.eq_treble,
         ahead = store.settings.archive_ahead.clamp(2, 20),
         keep = store.settings.archive_keep.clamp(10, 250),
-    )
+    );
+    attrs.push_str(&format!(
+        r#" data-tray="{tray}" data-lyrics-title="{lyrics_title}" data-lyrics-empty="{lyrics_empty}" data-lyrics-preview="{lyrics_preview}" data-lyrics-loading="{lyrics_loading}" data-lyrics-source="{lyrics_source}" data-lyrics-hide="{lyrics_hide}""#,
+        tray = flag(store.settings.playback.close_to_tray),
+        lyrics_title = esc(&i18n.t("lyrics.title")),
+        lyrics_empty = esc(&i18n.t("lyrics.empty")),
+        lyrics_preview = esc(&i18n.t("lyrics.previewOnly")),
+        lyrics_loading = esc(&i18n.t("common.loading")),
+        lyrics_source = esc(&i18n.t("lyrics.source")),
+        lyrics_hide = esc(&i18n.t("common.hide")),
+    ));
+    attrs
 }
 
 fn appearance_style(store: &Store) -> String {
@@ -1343,7 +1354,7 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         String::new()
     };
     format!(
-        r#"<div class="player-bar-wrap player-variant-{variant}"><div class="player-bar"><div class="player-track-info">{track}</div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">00:00</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div><div class="progress-thumb" style="left:0%"></div></div><span class="player-time">00:00</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" aria-label="{lyrics}" title="{lyrics}" disabled>{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
+        r#"<div class="player-bar-wrap player-variant-{variant}"><div class="player-bar"><div class="player-track-info">{track}</div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">00:00</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div><div class="progress-thumb" style="left:0%"></div></div><span class="player-time">00:00</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" data-act="lyrics" aria-label="{lyrics}" title="{lyrics}">{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
         shuffle = if store.settings.playback.shuffle { " active" } else { "" },
         shuffle_l = esc(&i18n.t("player.shuffle")),
         shuffle_i = icon("shuffle", 16),
@@ -2225,5 +2236,38 @@ mod tests {
         assert!(!html.contains("data-act=\"waves-refresh\""));
         assert!(!html.contains(">Настроение<"));
         assert!(!html.contains(">Разнообразие<"));
+    }
+
+    #[test]
+    fn lyrics_button_tray_flag_and_equalizer_bands_are_in_the_page() {
+        let mut store = Store::default();
+        let i18n = I18n::load(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static/i18n")),
+            "ru",
+        );
+        let screen = Screen {
+            view: "home".into(),
+            playlist: String::new(),
+            settings: "behavior".into(),
+            section: String::new(),
+            search: String::new(),
+            modal: String::new(),
+        };
+        let html = render(&store, &i18n, &screen);
+        assert!(html.contains("data-act=\"lyrics\""));
+        assert!(!html.contains("data-act=\"lyrics\" disabled"));
+        assert!(html.contains("data-tray=\"1\""));
+        assert!(html.contains("Закрытие — свернуть в трей"));
+        assert!(!html.contains("data-set-field=\"eq_bass\""));
+        store.settings.playback.eq_enabled = true;
+        store.settings.playback.eq_bass = 4;
+        store.settings.playback.close_to_tray = false;
+        let html = render(&store, &i18n, &screen);
+        assert!(html.contains("data-set-field=\"eq_bass\""));
+        assert!(html.contains("data-set-field=\"eq_mid\""));
+        assert!(html.contains("data-set-field=\"eq_treble\""));
+        assert!(html.contains("value=\"4\""));
+        assert!(html.contains("data-tray=\"0\""));
+        assert!(html.contains("Текст не найден"));
     }
 }

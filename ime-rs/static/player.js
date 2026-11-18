@@ -1,6 +1,12 @@
 (() => {
-  const audio = new Audio();
+  const audio = document.createElement("audio");
+  audio.id = "player-audio";
+  audio.preload = "auto";
+  audio.setAttribute("playsinline", "");
+  audio.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none";
+  document.body.appendChild(audio);
   let now = { title: "", artist: "", album: "", url: "", cover: "" };
+  let lyricView = { open: false, id: "", lines: [], synced: false, token: 0 };
   const rawVolume = document.body.dataset.volume;
   const parsedVolume = Number(rawVolume);
   audio.volume = rawVolume != null && rawVolume !== "" && Number.isFinite(parsedVolume) ? Math.min(1, Math.max(0, parsedVolume)) : 0.8;
@@ -56,6 +62,11 @@
   });
 
   document.addEventListener("click", (event) => {
+    if (event.target.closest("[data-lyrics-close]")) {
+      event.preventDefault();
+      closeLyrics();
+      return;
+    }
     const scrim = event.target.closest(".modal-overlay-dismiss");
     if (scrim) {
       event.preventDefault();
@@ -523,6 +534,7 @@
     if (name === "queue") toggleQueue();
     if (name === "sleep") toggleSleep(act);
     if (name === "mini") toggleMini();
+    if (name === "lyrics") toggleLyrics();
   });
 
   document.addEventListener("submit", (event) => {
@@ -694,13 +706,17 @@
     }
     if (drag && drag.kind === "seek") return;
     paintProgress();
+    paintLyrics();
     const fade = Number(document.body.dataset.crossfade || 0);
     if (document.body.dataset.gapless !== "1" && fade > 0 && audio.duration && audio.duration - audio.currentTime < fade) {
       const left = Math.max(0, audio.duration - audio.currentTime);
       audio.volume = Math.max(0.05, (left / fade) * Number(document.body.dataset.volume || 0.8));
     }
   });
-  audio.addEventListener("play", () => syncPlayButton());
+  audio.addEventListener("play", () => {
+    tuneEq();
+    syncPlayButton();
+  });
   audio.addEventListener("pause", () => syncPlayButton());
   audio.addEventListener("ended", () => {
     if (sleep.mode === "track" || sleep.mode === "album") {
@@ -2154,6 +2170,7 @@
   }
 
   async function playUrl(url, title, artist) {
+    tuneEq();
     clip = { id: "", start: 0, end: 0, preview: false };
     audio.src = url;
     try { await audio.play(); } catch { /* autoplay */ }
@@ -2162,6 +2179,7 @@
   }
 
   async function playId(id, title, artist, keepQueue) {
+    tuneEq();
     if (!id) return;
     waves.active = false;
     waves.artist = false;
@@ -2180,6 +2198,7 @@
   }
 
   function toggle() {
+    tuneEq();
     if (waves.active && audio.src) {
       if (audio.paused) audio.play();
       else audio.pause();
@@ -2193,6 +2212,7 @@
     }
     if (!audio.src) return;
     if (audio.paused) {
+      tuneEq();
       audio.play();
       post("resume");
     } else {
@@ -2203,6 +2223,7 @@
   }
 
   async function playNext() {
+    tuneEq();
     if (stepList(1)) return;
     const data = await post("next");
     if (!data.id) return;
@@ -2220,6 +2241,7 @@
   }
 
   async function playPrev() {
+    tuneEq();
     if (stepList(-1)) return;
     const data = await post("prev");
     if (!data.id) return;
@@ -2336,6 +2358,7 @@
     const link = artistLink(now.artist, "player-track-artist");
     const heart = now.title ? wishButton({ title: now.title, artist: now.artist, preview: now.url, cover: now.cover }) : "";
     box.innerHTML = `<div class="player-track-names"><div class="player-track-text"><div class="player-track-title">${escapeHtml(now.title || "Ничего не играет")}</div>${link}</div>${heart}</div>`;
+    noteLyricsTrack();
   }
 
   function markCurrent(id) {
@@ -2562,6 +2585,7 @@
     const app = document.querySelector(".app");
     if (nextApp && app) app.className = nextApp.className;
     tuneEq();
+    syncTrayPref();
     if (document.body.dataset.normalize === "1") audio.volume = Math.min(audio.volume, 0.82);
   }
 
@@ -2660,34 +2684,225 @@
   }
 
   let eqNodes = null;
-  function tuneEq() {
-    if (document.body.dataset.eq !== "1") return;
+  let eqBroken = false;
+
+  function bandDb(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    return Math.max(-12, Math.min(12, number));
+  }
+
+  function setAudioParam(param, value) {
+    const now = eqNodes.context.currentTime;
     try {
-    if (!eqNodes) {
-      const context = new AudioContext();
-      const bass = context.createBiquadFilter();
-      bass.type = "lowshelf";
-      bass.frequency.value = 140;
-      const mid = context.createBiquadFilter();
-      mid.type = "peaking";
-      mid.frequency.value = 1000;
-      mid.Q.value = 0.9;
-      const treble = context.createBiquadFilter();
-      treble.type = "highshelf";
-      treble.frequency.value = 4500;
-      const source = context.createMediaElementSource(audio);
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(value, now);
+    } catch {
+      param.value = value;
+    }
+  }
+
+  function createEqGraph() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    let context;
+    try {
+      context = new Ctx({ latencyHint: "playback" });
+    } catch {
+      try { context = new Ctx(); } catch { return null; }
+    }
+    let source;
+    try {
+      source = context.createMediaElementSource(audio);
+    } catch {
+      try { context.close(); } catch { /* leave the element on its own output */ }
+      return null;
+    }
+    const bass = context.createBiquadFilter();
+    bass.type = "lowshelf";
+    bass.frequency.value = 200;
+    bass.gain.value = 0;
+    const mid = context.createBiquadFilter();
+    mid.type = "peaking";
+    mid.frequency.value = 1000;
+    mid.Q.value = 1;
+    mid.gain.value = 0;
+    const treble = context.createBiquadFilter();
+    treble.type = "highshelf";
+    treble.frequency.value = 3200;
+    treble.gain.value = 0;
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = 0;
+    compressor.knee.value = 0;
+    compressor.ratio.value = 1;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.25;
+    try {
       source.connect(bass);
       bass.connect(mid);
       mid.connect(treble);
-      treble.connect(context.destination);
-      eqNodes = { context, bass, mid, treble };
+      treble.connect(compressor);
+      compressor.connect(context.destination);
+    } catch {
+      try { source.connect(context.destination); } catch { /* the element stays captured */ }
+      eqBroken = true;
+      return null;
     }
-    eqNodes.bass.gain.value = Number(document.body.dataset.eqBass || 0);
-    eqNodes.mid.gain.value = Number(document.body.dataset.eqMid || 0);
-    eqNodes.treble.gain.value = Number(document.body.dataset.eqTreble || 0);
-    eqNodes.context.resume().catch(() => {});
-    } catch { /* equalizer is unavailable in this window */ }
+    return { context, bass, mid, treble, compressor };
   }
+
+  function tuneEq() {
+    const enabled = document.body.dataset.eq === "1";
+    if (eqBroken) return;
+    if (!enabled && !eqNodes) return;
+    if (!eqNodes) eqNodes = createEqGraph();
+    if (!eqNodes) return;
+    const bass = enabled ? bandDb(document.body.dataset.eqBass) : 0;
+    const mid = enabled ? bandDb(document.body.dataset.eqMid) : 0;
+    const treble = enabled ? bandDb(document.body.dataset.eqTreble) : 0;
+    setAudioParam(eqNodes.bass.gain, bass);
+    setAudioParam(eqNodes.mid.gain, mid);
+    setAudioParam(eqNodes.treble.gain, treble);
+    if (document.body.dataset.normalize === "1") {
+      eqNodes.compressor.threshold.value = -24;
+      eqNodes.compressor.knee.value = 30;
+      eqNodes.compressor.ratio.value = 3.5;
+      eqNodes.compressor.attack.value = 0.01;
+      eqNodes.compressor.release.value = 0.25;
+    } else {
+      eqNodes.compressor.threshold.value = 0;
+      eqNodes.compressor.knee.value = 0;
+      eqNodes.compressor.ratio.value = 1;
+      eqNodes.compressor.attack.value = 0.003;
+      eqNodes.compressor.release.value = 0.25;
+    }
+    if (eqNodes.context.state === "suspended") eqNodes.context.resume().catch(() => {});
+  }
+
+  function syncTrayPref() {
+    if (!(window.ipc && window.ipc.postMessage)) return;
+    window.ipc.postMessage(document.body.dataset.tray === "1" ? "tray-on" : "tray-off");
+  }
+
+  function lyricText(key, fallback) {
+    const value = document.body.dataset[key];
+    return value == null || value === "" ? fallback : value;
+  }
+
+  function lyricsTrack() {
+    const src = audio.currentSrc || audio.src || "";
+    if (src) {
+      try {
+        const url = new URL(src, location.origin);
+        if (url.origin === location.origin && url.pathname.startsWith("/audio/")) {
+          const id = url.pathname.slice("/audio/".length);
+          if (id) return { id, preview: false };
+        }
+      } catch { /* the src is not a track in the library */ }
+      return { id: "", preview: true };
+    }
+    if (document.body.dataset.current) return { id: document.body.dataset.current, preview: false };
+    return { id: "", preview: false };
+  }
+
+  function closeLyrics() {
+    lyricView.open = false;
+    lyricView.token += 1;
+    document.querySelector(".lyrics-panel")?.remove();
+    document.querySelector('[data-act="lyrics"]')?.classList.remove("active");
+  }
+
+  function paintLyrics() {
+    if (!lyricView.open || !lyricView.synced) return;
+    const panel = document.querySelector(".lyrics-panel-body");
+    if (!panel) return;
+    const time = audio.currentTime || 0;
+    let active = -1;
+    lyricView.lines.forEach((line, index) => {
+      if (line.time <= time + 0.05) active = index;
+    });
+    let moved = false;
+    panel.querySelectorAll(".lyrics-line").forEach((node, index) => {
+      const on = index === active;
+      if (on && !node.classList.contains("is-active")) moved = true;
+      node.classList.toggle("is-active", on);
+      if (on && moved) node.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }
+
+  function renderLyrics(message, lines, sourceLabel) {
+    let panel = document.querySelector(".lyrics-panel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.className = "lyrics-panel lyrics-panel-fixed";
+      panel.setAttribute("role", "dialog");
+      document.body.appendChild(panel);
+    }
+    const title = lyricText("lyricsTitle", document.querySelector('[data-act="lyrics"]')?.getAttribute("aria-label") || "Текст песни");
+    panel.setAttribute("aria-label", title);
+    const rows = Array.isArray(lines) ? lines.filter((line) => line && String(line.text || "").trim()) : [];
+    const body = rows.length
+      ? rows.map((line) => `<div class="lyrics-line">${escapeHtml(line.text)}</div>`).join("")
+      : `<p class="lyrics-panel-empty">${escapeHtml(message || lyricText("lyricsEmpty", "Текст не найден."))}</p>`;
+    const source = sourceLabel ? `<p class="lyrics-panel-source">${escapeHtml(sourceLabel)}</p>` : "";
+    panel.innerHTML = `<div class="lyrics-panel-head"><div><h3 class="lyrics-panel-title">${escapeHtml(title)}</h3>${source}</div><button type="button" class="icon-btn" data-lyrics-close="1" aria-label="${escapeAttr(lyricText("lyricsHide", "Скрыть"))}">×</button></div><div class="lyrics-panel-body">${body}</div>`;
+    document.querySelector('[data-act="lyrics"]')?.classList.add("active");
+    paintLyrics();
+  }
+
+  async function loadLyrics() {
+    if (!lyricView.open) return;
+    const track = lyricsTrack();
+    const token = ++lyricView.token;
+    lyricView.id = track.preview ? "" : track.id;
+    lyricView.lines = [];
+    lyricView.synced = false;
+    if (track.preview) {
+      renderLyrics(lyricText("lyricsPreview", "Текст доступен для треков из вашей библиотеки"), [], "");
+      return;
+    }
+    if (!track.id) {
+      renderLyrics(lyricText("lyricsEmpty", "Текст не найден."), [], "");
+      return;
+    }
+    renderLyrics(lyricText("lyricsLoading", "Загрузка…"), [], "");
+    let data = { empty: true };
+    try {
+      const res = await fetch("/api/lyrics?id=" + encodeURIComponent(track.id));
+      data = await res.json();
+    } catch { /* the panel says the text was not found */ }
+    if (!lyricView.open || token !== lyricView.token) return;
+    const lines = Array.isArray(data.lines) ? data.lines.filter((line) => line && String(line.text || "").trim()) : [];
+    lyricView.lines = lines.map((line) => ({ time: Number(line.time) || 0, text: String(line.text) }));
+    lyricView.synced = Boolean(data.synced) && lyricView.lines.length > 0;
+    if (!lyricView.lines.length) {
+      renderLyrics(data.message || lyricText("lyricsEmpty", "Текст не найден."), [], "");
+      return;
+    }
+    const template = lyricText("lyricsSource", "");
+    const sourceLabel = data.source && template ? template.replace("{source}", String(data.source)) : "";
+    renderLyrics("", lyricView.lines, sourceLabel);
+  }
+
+  function noteLyricsTrack() {
+    if (!lyricView.open) return;
+    const track = lyricsTrack();
+    const id = track.preview ? "" : track.id;
+    if (track.preview || id !== lyricView.id) loadLyrics();
+  }
+
+  function toggleLyrics() {
+    if (lyricView.open) {
+      closeLyrics();
+      return;
+    }
+    lyricView.open = true;
+    loadLyrics();
+  }
+
+  document.addEventListener("pointerdown", () => {
+    if (eqNodes && eqNodes.context.state === "suspended") eqNodes.context.resume().catch(() => {});
+  }, true);
 
   function applyColor(key, hex, force) {
     if (!key || !hex) return;
@@ -3190,6 +3405,7 @@
   paintMuteIcon();
   syncPlayButton();
   tuneEq();
+  syncTrayPref();
   if (document.body.dataset.normalize === "1") audio.volume = Math.min(audio.volume, 0.82);
   if (document.body.dataset.focusSearch === "1") document.querySelector(".search-input")?.focus();
   if (document.body.dataset.autoResume === "1" && document.body.dataset.current) {

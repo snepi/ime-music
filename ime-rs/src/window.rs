@@ -2,28 +2,52 @@
 //! This is the app window, the same role as the Electron `BrowserWindow`.
 
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     WebMessageReceivedEventHandler,
 };
-use windows::core::{w, PWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateSolidBrush, HBRUSH};
+use windows::core::{w, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    CreateBitmap, CreateDIBSection, CreateSolidBrush, DeleteObject, GetDC, ReleaseDC, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBRUSH, RGBQUAD,
+};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwareness, PROCESS_PER_MONITOR_DPI_AWARE};
+use windows::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION,
+    NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
+};
 use windows::Win32::UI::WindowsAndMessaging;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-    GetMessageW, GetSystemMetrics, GetWindowLongPtrW, PostQuitMessage, RegisterClassW,
-    SendMessageW, SetWindowLongPtrW, ShowWindow, TranslateMessage, GWLP_USERDATA, MSG,
-    SM_CXSCREEN, SM_CYSCREEN, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WNDCLASSW,
-    WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_THICKFRAME,
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW,
+    GetSystemMetrics, GetWindowLongPtrW, IsIconic, LoadIconW, PostMessageW, PostQuitMessage,
+    RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
+    TrackPopupMenu, TranslateMessage, GWLP_USERDATA, HICON, ICONINFO, IDI_APPLICATION, MF_SEPARATOR,
+    MF_STRING, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_THICKFRAME,
 };
 
-pub fn open(url: &str) {
+use crate::tray::{close_action, CloseAction};
+
+const WM_TRAY: u32 = 0x8001;
+const NIN_SELECT: u32 = 0x0400;
+const NIN_KEYSELECT: u32 = 0x0401;
+
+static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
+static QUITTING: AtomicBool = AtomicBool::new(false);
+static TRAY_ADDED: AtomicBool = AtomicBool::new(false);
+static TRAY_ICON: AtomicIsize = AtomicIsize::new(0);
+
+pub fn open(url: &str, close_to_tray: bool) {
+    CLOSE_TO_TRAY.store(close_to_tray, Ordering::SeqCst);
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
@@ -222,28 +246,246 @@ fn show_player(webview: &ICoreWebView2, hwnd: HWND, url: &str) -> windows::core:
 }
 
 fn handle_command(hwnd: HWND, command: &str) {
-    unsafe {
-        match command {
-            "minimize" => {
-                ShowWindow(hwnd, SW_MINIMIZE);
+    match command {
+        "minimize" => unsafe {
+            ShowWindow(hwnd, SW_MINIMIZE);
+        },
+        "maximize" => unsafe {
+            if WindowsAndMessaging::IsZoomed(hwnd).as_bool() {
+                ShowWindow(hwnd, SW_RESTORE);
+            } else {
+                ShowWindow(hwnd, SW_MAXIMIZE);
             }
-            "maximize" => {
-                if WindowsAndMessaging::IsZoomed(hwnd).as_bool() {
-                    ShowWindow(hwnd, SW_RESTORE);
-                } else {
-                    ShowWindow(hwnd, SW_MAXIMIZE);
-                }
-            }
-            "close" => {
+        },
+        "close" => on_close_request(hwnd),
+        "quit" => {
+            QUITTING.store(true, Ordering::SeqCst);
+            on_close_request(hwnd);
+        }
+        "tray-on" => CLOSE_TO_TRAY.store(true, Ordering::SeqCst),
+        "tray-off" => CLOSE_TO_TRAY.store(false, Ordering::SeqCst),
+        "drag" => unsafe {
+            release_capture();
+            SendMessageW(hwnd, 0x00A1, WPARAM(2), LPARAM(0));
+        },
+        _ => {}
+    }
+}
+
+fn on_close_request(hwnd: HWND) {
+    match close_action(
+        CLOSE_TO_TRAY.load(Ordering::SeqCst),
+        QUITTING.load(Ordering::SeqCst),
+    ) {
+        CloseAction::Hide => hide_to_tray(hwnd),
+        CloseAction::Quit => {
+            QUITTING.store(true, Ordering::SeqCst);
+            remove_tray(hwnd);
+            unsafe {
                 let _ = DestroyWindow(hwnd);
             }
-            "drag" => {
-                release_capture();
-                SendMessageW(hwnd, 0x00A1, WPARAM(2), LPARAM(0));
+        }
+    }
+}
+
+fn hide_to_tray(hwnd: HWND) {
+    if !ensure_tray(hwnd) {
+        return;
+    }
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+fn show_main(hwnd: HWND) {
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+fn ensure_tray(hwnd: HWND) -> bool {
+    if TRAY_ADDED.load(Ordering::SeqCst) {
+        return true;
+    }
+    unsafe {
+        let icon = tray_icon();
+        if icon.is_invalid() {
+            return false;
+        }
+        let mut tip = [0u16; 128];
+        for (index, unit) in "IMe Music".encode_utf16().take(127).enumerate() {
+            tip[index] = unit;
+        }
+        let mut data: NOTIFYICONDATAW = std::mem::zeroed();
+        data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        data.hWnd = hwnd;
+        data.uID = 1;
+        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        data.uCallbackMessage = WM_TRAY;
+        data.hIcon = icon;
+        data.szTip = tip;
+        if !Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
+            let _ = DestroyIcon(icon);
+            return false;
+        }
+        data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        let _ = Shell_NotifyIconW(NIM_SETVERSION, &data);
+        TRAY_ICON.store(icon.0, Ordering::SeqCst);
+        TRAY_ADDED.store(true, Ordering::SeqCst);
+        true
+    }
+}
+
+fn remove_tray(hwnd: HWND) {
+    if !TRAY_ADDED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    unsafe {
+        let mut data: NOTIFYICONDATAW = std::mem::zeroed();
+        data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        data.hWnd = hwnd;
+        data.uID = 1;
+        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+        let icon = TRAY_ICON.swap(0, Ordering::SeqCst);
+        if icon != 0 {
+            let _ = DestroyIcon(HICON(icon));
+        }
+    }
+}
+
+fn tray_icon() -> HICON {
+    unsafe {
+        if let Some(icon) = draw_tray_icon() {
+            return icon;
+        }
+        LoadIconW(None, IDI_APPLICATION).unwrap_or_default()
+    }
+}
+
+fn draw_tray_icon() -> Option<HICON> {
+    unsafe {
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: 16,
+                biHeight: -16,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [RGBQUAD {
+                rgbBlue: 0,
+                rgbGreen: 0,
+                rgbRed: 0,
+                rgbReserved: 0,
+            }],
+        };
+        let mut bits: *mut std::ffi::c_void = ptr::null_mut();
+        let screen = GetDC(None);
+        let color = CreateDIBSection(
+            screen,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            None::<windows::Win32::Foundation::HANDLE>,
+            0,
+        )
+        .ok()?;
+        let _ = ReleaseDC(None, screen);
+        if bits.is_null() {
+            let _ = DeleteObject(color);
+            return None;
+        }
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u8, 16 * 16 * 4);
+        for y in 0..16 {
+            for x in 0..16 {
+                let dx = x as i32 - 8;
+                let dy = y as i32 - 8;
+                let offset = (y * 16 + x) * 4;
+                if dx * dx + dy * dy <= 49 {
+                    pixels[offset] = 0xfe;
+                    pixels[offset + 1] = 0xa8;
+                    pixels[offset + 2] = 0x6e;
+                    pixels[offset + 3] = 0xff;
+                }
+            }
+        }
+        // A small white bar so the circle reads as the player mark.
+        for y in 4..12 {
+            for x in 6..8 {
+                let offset = (y * 16 + x) * 4;
+                pixels[offset] = 0xff;
+                pixels[offset + 1] = 0xff;
+                pixels[offset + 2] = 0xff;
+                pixels[offset + 3] = 0xff;
+            }
+        }
+        let mask_bits = [0u8; 32];
+        let mask = CreateBitmap(16, 16, 1, 1, Some(mask_bits.as_ptr() as *const _));
+        if mask.is_invalid() {
+            let _ = DeleteObject(color);
+            return None;
+        }
+        let icon_info = ICONINFO {
+            fIcon: windows::Win32::Foundation::BOOL(1),
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask,
+            hbmColor: color,
+        };
+        let icon = CreateIconIndirect(&icon_info).ok();
+        let _ = DeleteObject(color);
+        let _ = DeleteObject(mask);
+        icon
+    }
+}
+
+fn show_tray_menu(hwnd: HWND) {
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        let show = wide("Показать");
+        let quit = wide("Выход");
+        let _ = AppendMenuW(menu, MF_STRING, 1, PCWSTR(show.as_ptr()));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, 2, PCWSTR(quit.as_ptr()));
+        let mut point = POINT::default();
+        let _ = GetCursorPos(&mut point);
+        let _ = SetForegroundWindow(hwnd);
+        let picked = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+            point.x,
+            point.y,
+            0,
+            hwnd,
+            None,
+        );
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        match picked.0 as usize {
+            1 => show_main(hwnd),
+            2 => {
+                QUITTING.store(true, Ordering::SeqCst);
+                on_close_request(hwnd);
             }
             _ => {}
         }
     }
+}
+
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn release_capture() {
@@ -294,7 +536,21 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, w_param: WPARAM, l_param: L
             resize_to_client(hwnd);
             LRESULT(0)
         }
+        WM_CLOSE => {
+            on_close_request(hwnd);
+            LRESULT(0)
+        }
+        WM_TRAY => {
+            let event = (l_param.0 as u32) & 0xffff;
+            match event {
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_SELECT | NIN_KEYSELECT => show_main(hwnd),
+                WM_RBUTTONUP | WM_CONTEXTMENU => show_tray_menu(hwnd),
+                _ => {}
+            }
+            LRESULT(0)
+        }
         WindowsAndMessaging::WM_DESTROY => {
+            remove_tray(hwnd);
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
