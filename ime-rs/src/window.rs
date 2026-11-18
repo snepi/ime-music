@@ -396,7 +396,7 @@ fn draw_tray_icon() -> Option<HICON> {
             &info,
             DIB_RGB_COLORS,
             &mut bits,
-            None::<windows::Win32::Foundation::HANDLE>,
+            windows::Win32::Foundation::HANDLE(0),
             0,
         )
         .ok()?;
@@ -471,7 +471,7 @@ fn show_tray_menu(hwnd: HWND) {
             hwnd,
             None,
         );
-        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
         match picked.0 as usize {
             1 => show_main(hwnd),
