@@ -1659,7 +1659,7 @@ async fn api_updates() -> Response {
             .and_then(|response| response.into_string().map_err(|err| err.to_string()))
     })
     .await;
-    let current = "1.2.0";
+    let current = "1.3.5.1";
     let body = match fetched {
         Ok(Ok(text)) => text,
         _ => {
