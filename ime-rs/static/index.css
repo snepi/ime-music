@@ -5305,6 +5305,13 @@ body {
   color: var(--text-secondary);
 }
 
+.archive-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .archive-move {
   justify-self: end;
 }
