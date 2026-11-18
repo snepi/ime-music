@@ -16,11 +16,12 @@ const FILES: &[(&str, &[u8])] = &[
     ("i18n/zh.json", include_bytes!("../static/i18n/zh.json")),
 ];
 
-/// Write bundled UI files when they are not already on disk.
+/// Write bundled UI files next to the exe. Always refresh them so an updated
+/// exe does not keep a stale player.js from the previous version.
 pub fn ensure_static(dir: &std::path::Path) {
     for (rel, bytes) in FILES {
         let path = dir.join(rel);
-        if path.is_file() {
+        if path.is_file() && std::fs::read(&path).ok().as_deref() == Some(*bytes) {
             continue;
         }
         if let Some(parent) = path.parent() {
