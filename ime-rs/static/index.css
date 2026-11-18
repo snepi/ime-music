@@ -3763,7 +3763,8 @@ select:focus-visible {
 }
 
 .queue-row.dragging {
-  opacity: 0.5;
+  opacity: 0.45;
+  background: var(--bg-hover);
 }
 
 .queue-row-current {
@@ -3775,6 +3776,32 @@ select:focus-visible {
   color: var(--text-muted);
   cursor: grab;
   display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 28px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  flex: none;
+  touch-action: none;
+}
+
+.queue-drag-handle:active {
+  cursor: grabbing;
+}
+
+button.queue-row-text {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .queue-index {
