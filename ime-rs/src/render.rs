@@ -549,7 +549,7 @@ fn archive_view(store: &Store, _screen: &Screen) -> String {
     }
     for (index, item) in store.archive.iter().rev().enumerate() {
         rows.push_str(&format!(
-            r#"<li class="song-row" data-archive-id="{id}"><span class="song-index"><span class="index-num">{n}</span></span><div class="song-cover-cell"><div class="song-cover song-cover-fallback">{disc}</div></div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name" data-archive-play="1" data-id="{id}" data-title="{title}" data-artist="{artist}">{title}</button><span class="song-artist">{artist}</span></div></div><button type="button" class="btn btn-secondary archive-move" data-archive-library="1" data-id="{id}">В библиотеку</button></li>"#,
+            r#"<li class="song-row" data-archive-id="{id}"><span class="song-index"><span class="index-num">{n}</span></span><div class="song-cover-cell"><div class="song-cover song-cover-fallback">{disc}</div></div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name" data-archive-play="1" data-id="{id}" data-title="{title}" data-artist="{artist}">{title}</button><span class="song-artist">{artist}</span></div></div><div class="archive-actions"><button type="button" class="btn btn-ghost" data-menu-act="open-folder" data-id="{id}">Открыть папку</button><button type="button" class="btn btn-secondary archive-move" data-archive-library="1" data-id="{id}">В библиотеку</button></div></li>"#,
             n = index + 1,
             id = esc(&item.id),
             title = esc(&item.title),

@@ -817,6 +817,19 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 }
             }
         }
+        "open-folder" => {
+            let path = form.id.as_deref().and_then(|id| track_file_path(&store, id));
+            match path.as_deref().map(containing_folder) {
+                Some(Ok(folder)) => {
+                    detail = serde_json::json!({ "folder": folder.display().to_string() });
+                    if let Err(err) = open_in_explorer(&folder) {
+                        message = err;
+                    }
+                }
+                Some(Err(err)) => message = err.into(),
+                None => message = "У этого трека нет файла".into(),
+            }
+        }
         "refresh" | "check-updates" | "export-backup" | "youtube" | "enrich" => {}
         _ => {}
     }
@@ -1209,6 +1222,60 @@ fn external_url(raw: &str) -> Option<String> {
         Some(url.to_string())
     } else {
         None
+    }
+}
+
+fn track_file_path(store: &Store, id: &str) -> Option<String> {
+    store
+        .song(id)
+        .map(|song| song.path.clone())
+        .or_else(|| store.archive.iter().find(|item| item.id == id).map(|item| item.path.clone()))
+        .filter(|path| !path.trim().is_empty())
+}
+
+/// Directory that actually holds the track file. An empty or missing file is reported as such.
+fn containing_folder(path: &str) -> Result<std::path::PathBuf, &'static str> {
+    let raw = std::path::Path::new(path.trim());
+    if path.trim().is_empty() || !raw.is_file() {
+        return Err("У этого трека нет файла");
+    }
+    let file = std::fs::canonicalize(raw).map_err(|_| "У этого трека нет файла")?;
+    match file.parent() {
+        Some(dir) if dir.is_dir() => Ok(dir.to_path_buf()),
+        _ => Err("У этого трека нет файла"),
+    }
+}
+
+/// Open `folder` in the system file manager. On Windows that is Explorer.
+fn open_in_explorer(folder: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let text = folder.to_string_lossy();
+        let path = text.strip_prefix(r"\\?\").unwrap_or(text.as_ref()).to_string();
+        // `start` hands a directory to Explorer. An empty title keeps a spaced path from being read as the window name.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("Не удалось открыть папку: {err}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(folder)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("Не удалось открыть папку: {err}"))
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("Не удалось открыть папку: {err}"))
     }
 }
 
@@ -2319,5 +2386,28 @@ async fn file_response(path: &std::path::Path, mime: &'static str) -> Response {
     match tokio::fs::read(path).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::containing_folder;
+
+    #[test]
+    fn open_folder_uses_the_directory_that_holds_the_file() {
+        let dir = std::env::temp_dir().join("ime-open-folder-proof");
+        let nested = dir.join("album");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("track.mp3");
+        std::fs::write(&file, b"not really audio").unwrap();
+        let folder = containing_folder(&file.to_string_lossy()).unwrap();
+        assert_eq!(folder, std::fs::canonicalize(&nested).unwrap());
+        assert_eq!(containing_folder(""), Err("У этого трека нет файла"));
+        assert_eq!(
+            containing_folder(dir.join("missing.mp3").to_string_lossy().as_ref()),
+            Err("У этого трека нет файла")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

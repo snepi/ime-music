@@ -2898,6 +2898,11 @@
       post("update-meta", { id, title, artist, album }).then(() => navigate(location.pathname + location.search));
     }
     if (act === "reveal") post("reveal", { id }).then((data) => toast(data.message || "Файл", "info"));
+    if (act === "open-folder") {
+      post("open-folder", { id }).then((data) => {
+        if (data.message) toast(data.message, "error");
+      });
+    }
     if (act === "delete") {
       if (document.body.dataset.confirmDelete === "1" && !window.confirm("Удалить трек из библиотеки?")) return;
       post("delete-song", { id }).then(() => navigate(location.pathname + location.search));
@@ -3078,6 +3083,7 @@
       `<button type="button" class="context-menu-item" data-menu-act="research" ${attrs}>Найти снова</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="edit" ${attrs}>Редактировать метаданные</button>` +
       `<button type="button" class="context-menu-item" data-menu-act="reveal" ${attrs}>Открыть расположение</button>` +
+      `<button type="button" class="context-menu-item" data-menu-act="open-folder" ${attrs}>Открыть папку</button>` +
       `<button type="button" class="context-menu-item danger" data-menu-act="delete" ${attrs}>Удалить из библиотеки</button>`;
     document.body.appendChild(menu);
   }
