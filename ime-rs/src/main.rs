@@ -5,8 +5,10 @@ mod bundle;
 mod window;
 mod i18n;
 mod icons;
+mod lyrics;
 mod model;
 mod render;
+mod tray;
 mod ytdlp;
 mod waves;
 
@@ -88,6 +90,8 @@ fn main() {
     bundle::ensure_static(&static_dir);
     let data_path = data_file(&data_dir);
     let store = Store::load(&data_path);
+    #[cfg(target_os = "windows")]
+    let close_to_tray = store.settings.playback.close_to_tray;
     let state = Arc::new(AppState {
         store: Mutex::new(store),
         data_path,
@@ -123,6 +127,7 @@ fn main() {
         .route("/api/track/replace", post(track_replace))
         .route("/import-status", get(import_status))
         .route("/audio/:id", get(audio))
+        .route("/api/lyrics", get(lyrics))
         .route("/cover/:id", get(cover_file))
         .route("/api/state", get(api_state))
         .route("/api/queue", get(api_queue))
@@ -183,7 +188,7 @@ fn main() {
     }
 
     #[cfg(target_os = "windows")]
-    window::open(&url);
+    window::open(&url, close_to_tray);
     #[cfg(not(target_os = "windows"))]
     std::thread::park();
 }
@@ -1448,6 +1453,48 @@ async fn archive_match(State(state): State<Arc<AppState>>, Query(query): Query<A
         serde_json::json!({ "ok": false })
     };
     ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
+}
+
+#[derive(Deserialize)]
+struct LyricsQuery {
+    id: Option<String>,
+}
+
+async fn lyrics(State(state): State<Arc<AppState>>, Query(query): Query<LyricsQuery>) -> Response {
+    let data_dir = state
+        .data_path
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let (id, path, locale) = {
+        let store = state.store.lock().expect("store");
+        let id = query
+            .id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| store.player.current_id.clone().unwrap_or_default());
+        let path = store
+            .song(&id)
+            .map(|song| song.path.clone())
+            .or_else(|| store.archive.iter().find(|item| item.id == id).map(|item| item.path.clone()))
+            .unwrap_or_default();
+        (id, path, store.settings.locale.clone())
+    };
+    let found = if id.is_empty() {
+        lyrics::Lyrics::none()
+    } else {
+        lyrics::load(&id, &path, &data_dir)
+    };
+    let i18n = i18n::I18n::load(&state.static_dir.join("i18n"), &locale);
+    let mut body = serde_json::to_value(&found).unwrap_or_else(|_| serde_json::json!({ "empty": true, "lines": [] }));
+    body["ok"] = serde_json::json!(true);
+    if found.empty {
+        body["empty"] = serde_json::json!(true);
+        body["lines"] = serde_json::json!([]);
+        body["synced"] = serde_json::json!(false);
+        body["source"] = serde_json::Value::Null;
+        body["message"] = serde_json::json!(i18n.t("lyrics.empty"));
+    }
+    json_response(body)
 }
 
 async fn audio(
