@@ -917,6 +917,8 @@
   "waves.diversity.high": "Plus d’artistes",
   "waves.skipKnown": "Ignorer les titres déjà en bibliothèque",
   "waves.settingsHint": "Appliquer enregistre ces filtres et rafraîchit la radio.",
+  "waves.dislike": "Je n'aime pas",
+  "waves.similar": "Similaire à celui-ci",
   "tools.updates": "Mises à jour",
   "tools.updatesHint": "Vérifie GitHub Releases. L’installateur se télécharge et se lance.",
   "tools.currentVersion": "Version actuelle : {version}",

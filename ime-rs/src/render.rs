@@ -1343,7 +1343,7 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         String::new()
     };
     format!(
-        r#"<div class="player-bar-wrap player-variant-{variant}"><div class="player-bar"><div class="player-track-info">{track}</div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">00:00</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div><div class="progress-thumb" style="left:0%"></div></div><span class="player-time">00:00</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" aria-label="{lyrics}" title="{lyrics}" disabled>{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
+        r#"<div class="player-bar-wrap player-variant-{variant}"><div class="player-bar"><div class="player-track-info">{track}<div class="player-waves-actions"><button type="button" class="player-waves-btn" data-act="waves-dislike" hidden>{dislike}</button><button type="button" class="player-waves-btn" data-act="track-wave" hidden>{similar_to}</button></div></div><div class="player-center"><div class="player-controls"><button type="button" class="player-btn{shuffle}" data-act="shuffle" aria-label="{shuffle_l}" title="{shuffle_l}">{shuffle_i}</button><button type="button" class="player-btn" data-act="prev" aria-label="{prev}" title="{prev}">{prev_i}</button><button type="button" class="player-btn play-pause" data-act="toggle" aria-label="{play}" title="{play}">{play_i}</button><button type="button" class="player-btn" data-act="next" aria-label="{next}" title="{next}">{next_i}</button><button type="button" class="player-btn{repeat}" data-act="repeat" aria-label="{repeat_l}" title="{repeat_l}">{repeat_i}</button><button type="button" class="player-btn" data-act="similar" aria-label="{similar}" title="{similar}" disabled>{similar_i}</button><div class="player-sleep-wrap"><button type="button" class="player-btn" data-act="sleep" aria-label="{sleep}" title="{sleep}">{sleep_i}</button></div></div><div class="player-progress"><span class="player-time">00:00</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div><div class="progress-thumb" style="left:0%"></div></div><span class="player-time">00:00</span></div></div><div class="player-right"><div class="player-volume"><button type="button" class="player-btn" data-act="mute" aria-label="{mute}" title="{mute}">{vol_i}</button><div class="volume-bar"><div class="volume-fill" style="width:{vol_pct}%"></div><div class="volume-thumb" style="left:{vol_pct}%"></div></div></div><button type="button" class="player-btn queue-toggle" data-act="queue" aria-label="{queue}" title="{queue}">{queue_i}{queue_badge}</button><button type="button" class="player-btn" aria-label="{lyrics}" title="{lyrics}" disabled>{lyrics_i}</button><button type="button" class="player-btn" data-act="mini" aria-label="{mini}" title="{mini}">{mini_i}</button></div></div></div>"#,
         shuffle = if store.settings.playback.shuffle { " active" } else { "" },
         shuffle_l = esc(&i18n.t("player.shuffle")),
         shuffle_i = icon("shuffle", 16),
@@ -1358,6 +1358,8 @@ fn player_bar(store: &Store, i18n: &I18n) -> String {
         repeat_i = icon(repeat_icon, 16),
         similar = esc(&i18n.t("player.similar")),
         similar_i = icon("similar", 16),
+        dislike = esc(&i18n.t("waves.dislike")),
+        similar_to = esc(&i18n.t("waves.similar")),
         sleep = esc(&i18n.t("player.sleep")),
         sleep_i = icon("timer", 16),
         mute = esc(&i18n.t(if store.settings.muted { "player.unmute" } else { "player.mute" })),
@@ -2223,6 +2225,10 @@ mod tests {
         assert!(!html.contains("data-waves-field=\"diversity\""));
         assert!(!html.contains("data-act=\"waves-save\""));
         assert!(!html.contains("data-act=\"waves-refresh\""));
+        assert!(html.contains("data-act=\"waves-dislike\""));
+        assert!(html.contains("data-act=\"track-wave\""));
+        assert!(html.contains("Не нравится"));
+        assert!(html.contains("Похожее на это"));
         assert!(!html.contains(">Настроение<"));
         assert!(!html.contains(">Разнообразие<"));
     }

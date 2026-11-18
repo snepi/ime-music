@@ -485,12 +485,43 @@ async fn trim_song(state: Arc<AppState>, form: ActForm) -> Response {
     trim_json(true, "Отрезок сохранён", new_duration, &id)
 }
 
+async fn dislike_wave(state: Arc<AppState>, form: ActForm) -> Response {
+    let title = form.title.clone().unwrap_or_default();
+    let artist = form.artist.clone().unwrap_or_default();
+    let preview = form.url.clone().unwrap_or_default();
+    let title_job = title.clone();
+    let artist_job = artist.clone();
+    let found = tokio::task::spawn_blocking(move || waves::tracks_like(&title_job, &artist_job)).await;
+    let (like, like_tracks) = found.unwrap_or_default();
+    let mut store = state.store.lock().expect("store");
+    let (key, artists) = waves::remember_dislike(&mut store.settings.waves, &title, &artist, &preview, &like, &like_tracks);
+    save(&state, &store);
+    let previews: Vec<String> = if preview.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![preview.trim().to_string()]
+    };
+    let body = serde_json::json!({
+        "ok": !key.is_empty(),
+        "message": if key.is_empty() { "Не удалось отметить трек" } else { "Этот трек и похожие больше не вернутся" },
+        "detail": { "key": key, "artists": artists, "previews": previews },
+    });
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        body.to_string(),
+    )
+        .into_response()
+}
+
 async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> Response {
     let back = form.back.clone().unwrap_or_else(|| "/".into());
     let ajax = form.ajax.as_deref() == Some("1");
     let action = form.action.clone().unwrap_or_default();
     if action == "trim" {
         return trim_song(state, form).await;
+    }
+    if action == "waves-dislike" {
+        return dislike_wave(state, form).await;
     }
     let mut store = state.store.lock().expect("store");
     let i18n = i18n::I18n::load(&state.static_dir.join("i18n"), &store.settings.locale);
@@ -607,9 +638,15 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
         "waves-reset" => {
             let heard = store.settings.waves.heard.clone();
             let spin = store.settings.waves.spin;
+            let disliked_keys = store.settings.waves.disliked_keys.clone();
+            let disliked_previews = store.settings.waves.disliked_previews.clone();
+            let dislikes = store.settings.waves.dislikes.clone();
             store.settings.waves = model::Waves::default();
             store.settings.waves.heard = heard;
             store.settings.waves.spin = spin;
+            store.settings.waves.disliked_keys = disliked_keys;
+            store.settings.waves.disliked_previews = disliked_previews;
+            store.settings.waves.dislikes = dislikes;
             message = "Настройки волны сброшены".into();
         }
         "waves-apply" => {
@@ -683,6 +720,9 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             let favorites = store.settings.favorite_artists.clone();
             let heard = store.settings.waves.heard.clone();
             let spin = store.settings.waves.spin;
+            let disliked_keys = store.settings.waves.disliked_keys.clone();
+            let disliked_previews = store.settings.waves.disliked_previews.clone();
+            let dislikes = store.settings.waves.dislikes.clone();
             store.settings = model::Settings::default();
             store.settings.ytdlp_path = ytdlp_path;
             store.settings.ytdlp_proxy = ytdlp_proxy;
@@ -690,6 +730,9 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             store.settings.favorite_artists = favorites;
             store.settings.waves.heard = heard;
             store.settings.waves.spin = spin;
+            store.settings.waves.disliked_keys = disliked_keys;
+            store.settings.waves.disliked_previews = disliked_previews;
+            store.settings.waves.dislikes = dislikes;
             store.settings.onboarding_done = true;
         }
         "reset-preset" | "reset-section" => store.apply_preset("default"),
@@ -1518,13 +1561,36 @@ async fn audio(
 struct WavesQuery {
     artist: Option<String>,
     id: Option<String>,
+    track: Option<String>,
+    preview: Option<String>,
 }
 
 async fn waves_pool(State(state): State<Arc<AppState>>, Query(query): Query<WavesQuery>) -> Response {
+    if let Some(title) = query.track.as_deref().map(str::trim).filter(|title| !title.is_empty()) {
+        let title = title.to_string();
+        let artist = query.artist.clone().unwrap_or_default();
+        let preview = query.preview.clone().unwrap_or_default();
+        let id = query.id.as_deref().and_then(|value| value.parse::<u64>().ok());
+        let (waves, known) = {
+            let store = state.store.lock().expect("store");
+            (store.settings.waves.clone(), waves::known_track_keys(&store))
+        };
+        let built = tokio::task::spawn_blocking(move || waves::build_track_wave(&waves, &known, &title, &artist, id, &preview)).await;
+        let items = built.unwrap_or_default();
+        return (
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            serde_json::json!({ "ok": true, "items": items }).to_string(),
+        )
+            .into_response();
+    }
     if let Some(name) = query.artist.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
         let id = query.id.as_deref().and_then(|value| value.parse::<u64>().ok());
         let name = name.to_string();
-        let built = tokio::task::spawn_blocking(move || waves::build_artist_wave(&name, id)).await;
+        let waves = {
+            let store = state.store.lock().expect("store");
+            store.settings.waves.clone()
+        };
+        let built = tokio::task::spawn_blocking(move || waves::build_artist_wave(&waves, &name, id)).await;
         let items = built.unwrap_or_default();
         return (
             [(header::CONTENT_TYPE, "application/json")],

@@ -917,6 +917,8 @@
   "waves.diversity.high": "Más artistas",
   "waves.skipKnown": "Omitir pistas ya en la biblioteca",
   "waves.settingsHint": "Aplicar guarda estos filtros y actualiza la radio.",
+  "waves.dislike": "No me gusta",
+  "waves.similar": "Parecido a esto",
   "tools.updates": "Actualizaciones",
   "tools.updatesHint": "Comprueba GitHub Releases. El instalador se descarga y se abre solo.",
   "tools.currentVersion": "Versión actual: {version}",
