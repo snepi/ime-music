@@ -35,8 +35,10 @@ struct Candidate {
     title: String,
     artist: String,
     preview: String,
-    /// Came from that genre's Deezer chart, so the genre is Deezer's, not a word in the name.
-    from_genre_chart: bool,
+    /// Album or track genre id when the catalog sent one.
+    catalog_genre: Option<u32>,
+    /// Taken from this genre's chart, albums, or radio. A missing genre field does not drop these.
+    from_genre_catalog: bool,
 }
 
 #[derive(Serialize)]
@@ -155,8 +157,7 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
 
     let filtered = style_filtered(&waves.genre, &waves.language);
     if let Some(id) = preset.deezer_id {
-        // Deezer's genre chart is the genre. The title is not.
-        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=80"), true));
+        raw.extend(genre_catalog(id));
     } else if waves.seed == "chart" && !filtered {
         raw.extend(fetch_list("/chart/0/tracks?limit=40", false));
     }
@@ -288,13 +289,36 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn fetch_list(path: &str, from_genre_chart: bool) -> Vec<Candidate> {
+/// Chart, albums, and radios Deezer already files under this genre id.
+/// Tracks keep that genre even when the track payload leaves genre_id empty.
+fn genre_catalog(id: u32) -> Vec<Candidate> {
+    let mut found = fetch_list(&format!("/chart/{id}/tracks?limit=50"), true);
+    if let Ok(body) = http_get(&format!("{DEEZER}/genre/{id}/radios?limit=2")) {
+        if let Ok(value) = serde_json::from_str::<Value>(&body) {
+            if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
+                for row in rows.iter().take(2) {
+                    let Some(radio) = row.get("id").and_then(|value| value.as_u64()) else { continue };
+                    found.extend(fetch_list(&format!("/radio/{radio}/tracks?limit=25"), true));
+                }
+            }
+        }
+    }
+    for item in &mut found {
+        item.from_genre_catalog = true;
+        if item.catalog_genre.is_none() {
+            item.catalog_genre = Some(id);
+        }
+    }
+    found
+}
+
+fn fetch_list(path: &str, from_genre_catalog: bool) -> Vec<Candidate> {
     let url = format!("{DEEZER}{path}");
     let Ok(body) = http_get(&url) else { return Vec::new() };
     let Ok(value) = serde_json::from_str::<Value>(&body) else { return Vec::new() };
     let Some(rows) = value.get("data").and_then(|data| data.as_array()) else { return Vec::new() };
     rows.iter().filter_map(map_track).map(|mut item| {
-        item.from_genre_chart = from_genre_chart;
+        item.from_genre_catalog = from_genre_catalog;
         item
     }).collect()
 }
@@ -333,7 +357,28 @@ fn map_track(raw: &Value) -> Option<Candidate> {
         .unwrap_or("Unknown")
         .trim()
         .to_string();
-    Some(Candidate { title, artist, preview, from_genre_chart: false })
+    Some(Candidate {
+        title,
+        artist,
+        preview,
+        catalog_genre: read_catalog_genre(raw),
+        from_genre_catalog: false,
+    })
+}
+
+fn read_catalog_genre(raw: &Value) -> Option<u32> {
+    let as_id = |value: &Value| value.as_u64().map(|id| id as u32);
+    raw.get("genre_id")
+        .and_then(as_id)
+        .or_else(|| raw.get("album").and_then(|album| album.get("genre_id")).and_then(as_id))
+        .or_else(|| {
+            raw.get("album")?
+                .get("genres")?
+                .get("data")?
+                .as_array()?
+                .iter()
+                .find_map(|genre| genre.get("id").and_then(as_id))
+        })
 }
 
 fn artist_key(name: &str) -> String {
@@ -386,12 +431,21 @@ fn matches_language(track: &Candidate, language: &str) -> bool {
     }
 }
 
-/// Genre comes from Deezer's genre chart. A word in the title, album, or nickname is not a genre.
+/// Genre is the catalog id (album genre, or the genre chart/radio that supplied the track).
+/// A missing genre field does not throw away a track that already came from that catalog.
+/// The word in the title, album, or nickname is not a genre.
 fn matches_genre(track: &Candidate, genre: &str) -> bool {
     if genre == "all" || genre.is_empty() {
         return true;
     }
-    if !track.from_genre_chart {
+    let Some(want) = preset(genre).deezer_id else {
+        return true;
+    };
+    if let Some(got) = track.catalog_genre {
+        if got != want {
+            return false;
+        }
+    } else if !track.from_genre_catalog {
         return false;
     }
     if genre == "ruRap" && title_language(&track.title) != "ru" {
@@ -409,7 +463,8 @@ mod tests {
             title: preview.into(),
             artist: artist.into(),
             preview: preview.into(),
-            from_genre_chart: false,
+            catalog_genre: None,
+            from_genre_catalog: false,
         }
     }
 
@@ -448,13 +503,15 @@ mod tests {
             title: "Младшая сестра".into(),
             artist: "дора".into(),
             preview: "ru".into(),
-            from_genre_chart: false,
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         let english = Candidate {
             title: "Creep".into(),
             artist: "Radiohead".into(),
             preview: "en".into(),
-            from_genre_chart: false,
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         assert!(matches_language(&russian, "ru"));
         assert!(!matches_language(&english, "ru"));
@@ -469,7 +526,8 @@ mod tests {
             title: "Creep".into(),
             artist: "Русский".into(),
             preview: "nick".into(),
-            from_genre_chart: false,
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         assert!(!matches_language(&nickname, "ru"));
         assert!(matches_language(&nickname, "en"));
@@ -477,7 +535,8 @@ mod tests {
             title: "Best русский remix".into(),
             artist: "DJ".into(),
             preview: "mix".into(),
-            from_genre_chart: false,
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         assert_eq!(title_language(&mixed.title), "en");
         assert!(!matches_language(&mixed, "ru"));
@@ -485,7 +544,8 @@ mod tests {
             title: "Русский размер".into(),
             artist: "Rockwell".into(),
             preview: "ru-title".into(),
-            from_genre_chart: false,
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         assert!(matches_language(&russian_title, "ru"));
         assert!(!matches_language(&russian_title, "en"));
@@ -497,7 +557,8 @@ mod tests {
             title: "Somebody's Watching Me".into(),
             artist: "Rockwell".into(),
             preview: "nick".into(),
-            from_genre_chart: false,
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         assert!(!matches_genre(&nickname, "rock"));
         let labels = [
@@ -517,14 +578,16 @@ mod tests {
                 title: word.into(),
                 artist: format!("Ник {word}"),
                 preview: genre.into(),
-                from_genre_chart: false,
+                catalog_genre: None,
+                from_genre_catalog: false,
             };
             assert!(!matches_genre(&titled, genre), "{word}");
             let classified = Candidate {
                 title: "Песня без ярлыка".into(),
                 artist: "Кто-то".into(),
                 preview: format!("chart-{genre}"),
-                from_genre_chart: true,
+                catalog_genre: None,
+                from_genre_catalog: true,
             };
             if genre == "ruRap" {
                 assert!(matches_genre(&classified, genre));
@@ -536,16 +599,28 @@ mod tests {
             title: "Свобода".into(),
             artist: "Кино".into(),
             preview: "chart".into(),
-            from_genre_chart: true,
+            catalog_genre: None,
+            from_genre_catalog: true,
         };
         assert!(matches_genre(&chart, "rock"));
         assert!(matches_language(&chart, "ru"));
+        let by_id = Candidate {
+            title: "Creep".into(),
+            artist: "Radiohead".into(),
+            preview: "by-id".into(),
+            catalog_genre: Some(152),
+            from_genre_catalog: false,
+        };
+        assert!(matches_genre(&by_id, "rock"));
+        assert!(!matches_genre(&by_id, "pop"));
         let english_rap = Candidate {
             title: "Creep".into(),
             artist: "Radiohead".into(),
             preview: "en-rap".into(),
-            from_genre_chart: true,
+            catalog_genre: Some(116),
+            from_genre_catalog: true,
         };
+        assert!(matches_genre(&english_rap, "rap"));
         assert!(!matches_genre(&english_rap, "ruRap"));
     }
 
