@@ -6,6 +6,9 @@
   audio.volume = rawVolume != null && rawVolume !== "" && Number.isFinite(parsedVolume) ? Math.min(1, Math.max(0, parsedVolume)) : 0.8;
   let drag = null;
   let sleep = { mode: "off", timer: 0 };
+  let positionReady = !document.body.dataset.current;
+  let lastSecondSent = -1;
+  const savedSecond = Math.max(0, Math.floor(Number(document.body.dataset.position) || 0));
   const imports = [];
   let waves = { active: false, artist: false, queue: [], index: -1, seen: new Set() };
   const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
@@ -49,6 +52,7 @@
   });
   document.addEventListener("pointerup", () => {
     if (drag && drag.kind === "volume") post("volume", { value: String(audio.volume) });
+    if (drag && drag.kind === "seek") rememberSecond(true);
     drag = null;
   });
   document.addEventListener("pointercancel", () => {
@@ -693,7 +697,9 @@
       }
     }
     if (drag && drag.kind === "seek") return;
+    if (!positionReady) return;
     paintProgress();
+    rememberSecond(false);
     const fade = Number(document.body.dataset.crossfade || 0);
     if (document.body.dataset.gapless !== "1" && fade > 0 && audio.duration && audio.duration - audio.currentTime < fade) {
       const left = Math.max(0, audio.duration - audio.currentTime);
@@ -701,7 +707,10 @@
     }
   });
   audio.addEventListener("play", () => syncPlayButton());
-  audio.addEventListener("pause", () => syncPlayButton());
+  audio.addEventListener("pause", () => {
+    syncPlayButton();
+    rememberSecond(true);
+  });
   audio.addEventListener("ended", () => {
     if (sleep.mode === "track" || sleep.mode === "album") {
       finishSleep("Стоп в конце трека");
@@ -2296,6 +2305,23 @@
     });
   }
 
+  function libraryAudioOpen() {
+    const id = document.body.dataset.current || "";
+    if (!id) return false;
+    const src = audio.currentSrc || audio.src || "";
+    return src.includes("/audio/") && src.includes(encodeURIComponent(id));
+  }
+
+  function rememberSecond(force) {
+    if (!positionReady || !libraryAudioOpen()) return;
+    const second = Math.floor(audio.currentTime || 0);
+    if (!Number.isFinite(second) || second < 0) return;
+    if (!force && second === lastSecondSent) return;
+    lastSecondSent = second;
+    document.body.dataset.position = String(second);
+    post("position", { id: document.body.dataset.current, value: String(second), field: audio.paused ? "0" : "1" });
+  }
+
   function paintProgress(at) {
     const duration = audio.duration || 0;
     const time = typeof at === "number" ? at : audio.currentTime || 0;
@@ -3063,7 +3089,7 @@
   async function openTrackMenu(button) {
     document.querySelectorAll(".context-menu").forEach((node) => node.remove());
     const id = button.dataset.menu;
-    const meta = await fetch("/api/queue").then((res) => res.json()).catch(() => ({ playlists: [] }));
+    const meta = await fetch("/api/queue", { cache: "no-store" }).then((res) => res.json()).catch(() => ({ playlists: [] }));
     const playlists = (meta.playlists || [])
       .map((pl) => `<button type="button" class="context-menu-item" data-menu-act="playlist" data-id="${escapeAttr(id)}" data-playlist="${escapeAttr(pl.id)}">${escapeHtml(pl.name)}</button>`)
       .join("");
@@ -3087,21 +3113,90 @@
       `<button type="button" class="context-menu-item danger" data-menu-act="delete" ${attrs}>Удалить из библиотеки</button>`;
     document.body.appendChild(menu);
   }
+  const QUEUE_GRIP = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>';
+
+  function queueRow(item, index, currentId) {
+    const current = item.id === currentId ? " queue-row-current" : "";
+    const cover = item.cover
+      ? `<img class="queue-cover" src="/cover/${encodeURIComponent(item.id)}" alt="">`
+      : `<div class="queue-cover queue-cover-placeholder" aria-hidden="true"></div>`;
+    return `<li class="queue-row${current}" data-id="${escapeAttr(item.id)}"><button type="button" class="queue-drag-handle" data-queue-drag="1" aria-label="Перетащить">${QUEUE_GRIP}</button><span class="queue-index">${index + 1}</span>${cover}<button type="button" class="queue-row-text" data-menu-act="play" data-id="${escapeAttr(item.id)}" data-title="${escapeAttr(item.title)}" data-artist="${escapeAttr(item.artist)}"><span class="queue-row-title">${escapeHtml(item.title)}</span><span class="queue-row-artist">${escapeHtml(item.artist)}</span></button><span class="queue-row-duration">${fmt(item.duration || 0)}</span><button type="button" class="icon-btn queue-remove" data-queue-remove="${escapeAttr(item.id)}" aria-label="Удалить из очереди">×</button></li>`;
+  }
+
+  function renumberQueue(list) {
+    list.querySelectorAll(".queue-index").forEach((node, index) => {
+      node.textContent = String(index + 1);
+    });
+  }
+
+  function commitQueueOrder(ids) {
+    listQueue = null;
+    artistQueue = null;
+    post("queue-reorder", { value: ids.join(",") });
+  }
+
+  function bindQueueReorder(list) {
+    list.addEventListener("pointerdown", (event) => {
+      const handle = event.target.closest("[data-queue-drag]");
+      if (!handle || event.button !== 0) return;
+      const row = handle.closest(".queue-row");
+      if (!row) return;
+      event.preventDefault();
+      event.stopPropagation();
+      row.classList.add("dragging");
+      const pointer = event.pointerId;
+      try { handle.setPointerCapture(pointer); } catch { /* capture */ }
+      const move = (ev) => {
+        if (ev.pointerId !== pointer) return;
+        const rows = [...list.querySelectorAll(".queue-row")].filter((item) => item !== row);
+        let before = null;
+        for (const item of rows) {
+          const rect = item.getBoundingClientRect();
+          if (ev.clientY < rect.top + rect.height / 2) {
+            before = item;
+            break;
+          }
+        }
+        if (before !== row.nextSibling) list.insertBefore(row, before);
+        renumberQueue(list);
+      };
+      let done = false;
+      const finish = (ev) => {
+        if (done) return;
+        if (ev && ev.pointerId != null && ev.type !== "mouseup" && ev.pointerId !== pointer) return;
+        done = true;
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", finish);
+        handle.removeEventListener("pointercancel", finish);
+        document.removeEventListener("mouseup", finish);
+        row.classList.remove("dragging");
+        const ids = [...list.querySelectorAll(".queue-row")].map((item) => item.dataset.id).filter(Boolean);
+        if (ids.length > 1) commitQueueOrder(ids);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", finish);
+      handle.addEventListener("pointercancel", finish);
+      document.addEventListener("mouseup", finish);
+    });
+  }
+
   async function toggleQueue() {
     const existing = document.querySelector(".queue-overlay");
     if (existing) {
       existing.remove();
       return;
     }
-    const data = await fetch("/api/queue").then((res) => res.json());
+    const data = await fetch("/api/queue", { cache: "no-store" }).then((res) => res.json());
     const rows = (data.items || [])
-      .map((item) => `<li class="queue-row"><button type="button" class="context-menu-item" data-menu-act="play" data-id="${escapeAttr(item.id)}" data-title="${escapeAttr(item.title)}" data-artist="${escapeAttr(item.artist)}">${escapeHtml(item.title)} — ${escapeHtml(item.artist)}</button><button type="button" class="icon-btn" data-queue-remove="${escapeAttr(item.id)}" aria-label="Удалить из очереди">×</button></li>`)
+      .map((item, index) => queueRow(item, index, data.current || ""))
       .join("");
     const panel = document.createElement("div");
     panel.className = "queue-overlay";
     panel.dataset.sticky = "1";
-    panel.innerHTML = `<aside class="queue-panel" role="dialog" aria-label="Очередь"><div class="queue-panel-header"><h3>Очередь</h3><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div><p class="queue-hint">Сюда попадают треки из меню «Добавить в очередь».</p>${rows ? `<ul class="queue-list">${rows}</ul>` : '<p class="queue-hint">Очередь пуста</p>'}<div class="queue-panel-footer"><button type="button" class="btn btn-ghost" data-queue-clear="1">Очистить очередь</button></div></aside>`;
+    panel.innerHTML = `<aside class="queue-panel" role="dialog" aria-label="Очередь"><div class="queue-panel-header"><h3>Очередь</h3><button type="button" class="icon-btn" data-close-pop="1" aria-label="Закрыть">×</button></div><p class="queue-hint">Сюда попадают треки из меню «Добавить в очередь». Потяните строку, чтобы изменить порядок.</p>${rows ? `<ul class="queue-list">${rows}</ul>` : '<p class="queue-hint">Очередь пуста</p>'}<div class="queue-panel-footer"><button type="button" class="btn btn-ghost" data-queue-clear="1">Очистить очередь</button></div></aside>`;
     document.body.appendChild(panel);
+    const list = panel.querySelector(".queue-list");
+    if (list) bindQueueReorder(list);
   }
   document.addEventListener("click", (event) => {
     const remove = event.target.closest("[data-queue-remove]");
@@ -3198,11 +3293,68 @@
   tuneEq();
   if (document.body.dataset.normalize === "1") audio.volume = Math.min(audio.volume, 0.82);
   if (document.body.dataset.focusSearch === "1") document.querySelector(".search-input")?.focus();
-  if (document.body.dataset.autoResume === "1" && document.body.dataset.current) {
+  function continueFromSavedSecond() {
     const id = document.body.dataset.current;
+    if (!id) {
+      positionReady = true;
+      return;
+    }
     const row = document.querySelector(`[data-play="${cssEscape(id)}"]`);
-    playId(id, row?.dataset.title || "", row?.dataset.artist || "");
+    const titleNode = document.querySelector(".player-track-title");
+    const artistNode = document.querySelector(".player-track-artist");
+    const title = row?.dataset.title || (titleNode && titleNode.textContent !== "Ничего не играет" ? titleNode.textContent : "") || "";
+    const artist = row?.dataset.artist || artistNode?.textContent || "";
+    clip = savedClip(id);
+    audio.src = "/audio/" + encodeURIComponent(id);
+    const place = () => {
+      if (!(audio.src || "").includes(encodeURIComponent(id))) return;
+      let at = savedSecond;
+      const trim = clip.start > 0 ? clip.start : 0;
+      if (trim > at) at = trim;
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        at = Math.min(at, Math.max(0, audio.duration - 0.25));
+      }
+      if (clip.end > clip.start && at >= clip.end - 0.05) at = trim;
+      try { audio.currentTime = at; } catch { /* seek */ }
+      paintProgress(at);
+      positionReady = true;
+      lastSecondSent = Math.floor(at);
+      const shouldPlay = savedSecond > 0 || document.body.dataset.playing === "1" || document.body.dataset.autoResume === "1";
+      if (!shouldPlay) {
+        syncPlayButton();
+        return;
+      }
+      audio.play().then(() => {
+        post("resume");
+        syncPlayButton();
+      }).catch(() => syncPlayButton());
+    };
+    if (audio.readyState >= 1) place();
+    else audio.addEventListener("loadedmetadata", place, { once: true });
+    setNowPlaying(title, artist, { url: "", cover: "" });
+    markCurrent(id);
+    syncPlayButton();
   }
+  continueFromSavedSecond();
+  window.setInterval(() => {
+    if (!audio.paused) rememberSecond(false);
+  }, 2000);
+  window.addEventListener("pagehide", () => {
+    if (!positionReady || !libraryAudioOpen()) return;
+    const body = new URLSearchParams({
+      action: "position",
+      ajax: "1",
+      id: document.body.dataset.current || "",
+      value: String(Math.floor(audio.currentTime || 0)),
+      field: audio.paused ? "0" : "1",
+    });
+    fetch("/act", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  });
   document.addEventListener("dblclick", (event) => {
     const row = event.target.closest(".song-row");
     if (!row || document.body.dataset.doubleClick !== "editMetadata") return;

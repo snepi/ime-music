@@ -780,6 +780,29 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             }
         }
         "queue-clear" => store.queue_clear(),
+        "queue-reorder" => {
+            if let Some(value) = form.value.as_deref() {
+                let ids: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                store.queue_reorder(&ids);
+            }
+        }
+        "position" => {
+            if let (Some(id), Some(value)) = (form.id.as_deref(), form.value.as_deref()) {
+                if let Ok(seconds) = value.parse::<f64>() {
+                    let playing = match form.field.as_deref() {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    };
+                    store.set_position(id, seconds, playing);
+                }
+            }
+        }
         "delete-song" => {
             if let Some(id) = form.id.as_deref() {
                 store.remove_song(id);
@@ -1620,6 +1643,7 @@ async fn api_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let body = serde_json::json!({
         "current": store.player.current_id,
         "playing": store.player.playing,
+        "position": store.player.position,
         "volume": store.settings.volume,
         "songs": store.songs.len(),
     });
@@ -1700,6 +1724,8 @@ async fn api_queue(State(state): State<Arc<AppState>>) -> Response {
                 "title": song.title,
                 "artist": song.artist,
                 "album": song.album,
+                "duration": song.duration,
+                "cover": !song.cover_path.is_empty(),
             })
         })
         .collect();
