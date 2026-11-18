@@ -1587,27 +1587,58 @@
     return document.querySelector(`.waves-chip.is-active[data-waves-field="${field}"]`)?.dataset.wavesValue || "";
   }
 
+  function titleLanguage(title) {
+    const cyr = (String(title).match(/[\u0400-\u04FF]/g) || []).length;
+    const lat = (String(title).match(/[A-Za-z]/g) || []).length;
+    if (cyr === 0 && lat === 0) return "other";
+    if (cyr > lat) return "ru";
+    if (lat > cyr) return "en";
+    return "other";
+  }
+
+  function hasPhrase(text, phrase) {
+    const split = (value) => String(value).toLowerCase().split(/[^\p{L}\p{N}&]+/u).filter(Boolean);
+    const haystack = split(text);
+    const needle = split(phrase);
+    if (!needle.length || haystack.length < needle.length) return false;
+    return haystack.some((_, index) => needle.every((part, offset) => haystack[index + offset] === part));
+  }
+
   async function loadFallbackWaves() {
     const genre = waveChip("genre") || "all";
     const language = waveChip("language") || "any";
-    const seed = waveChip("seed") || "taste";
-    let term = genre === "all" || genre === "ruRap" ? "music" : genre;
-    if (language === "ru") term = `русский ${term}`;
-    else if (language === "en") term = `${term} english`;
-    if (seed === "chart") term = `${term} chart`;
+    const term = genre === "all" || genre === "ruRap" ? "music" : genre;
     const country = language === "en" ? "us" : "ru";
     const response = await fetch(
       `https://itunes.apple.com/search?entity=song&limit=40&country=${country}&term=` + encodeURIComponent(term),
     );
     const data = await response.json();
+    const phrases = {
+      rock: ["rock", "рок"],
+      pop: ["pop", "поп"],
+      rap: ["rap", "рэп", "hip hop"],
+      ruRap: ["рэп", "rap", "hip hop"],
+      electronic: ["electronic", "edm", "электроника"],
+      rnb: ["r&b", "rnb", "рнб"],
+      indie: ["indie", "инди"],
+      metal: ["metal", "метал"],
+      dance: ["dance", "дэнс"],
+      jazz: ["jazz", "джаз"],
+    };
     return shuffleTracks(
       (data.results || [])
         .filter((item) => item.previewUrl)
         .filter((item) => {
-          const text = `${item.trackName || ""} ${item.artistName || ""}`;
-          const cyr = /[а-яё]/i.test(text);
-          if (language === "ru") return cyr;
-          if (language === "en") return !cyr;
+          const title = item.trackName || "";
+          const lang = titleLanguage(title);
+          if (language === "ru" && lang !== "ru") return false;
+          if (language === "en" && lang !== "en") return false;
+          if (genre === "ruRap" && lang !== "ru") return false;
+          if (genre !== "all" && genre !== "ruRap") {
+            const words = phrases[genre] || [genre];
+            if (!words.some((phrase) => hasPhrase(title, phrase))) return false;
+          }
+          if (genre === "ruRap" && !(phrases.ruRap || []).some((phrase) => hasPhrase(title, phrase))) return false;
           return true;
         })
         .map((item) => ({

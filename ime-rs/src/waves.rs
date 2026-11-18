@@ -23,7 +23,7 @@ fn preset(genre: &str) -> Preset {
         "rap" => Preset { deezer_id: Some(116), queries: &["rap", "hip hop"] },
         "ruRap" => Preset {
             deezer_id: Some(116),
-            queries: &["русский рэп", "russian rap", "hip-hop russia"],
+            queries: &["рэп", "hip hop"],
         },
         "electronic" => Preset { deezer_id: Some(106), queries: &["electronic", "edm"] },
         "rnb" => Preset { deezer_id: Some(165), queries: &["r&b", "soul"] },
@@ -41,6 +41,8 @@ struct Candidate {
     artist: String,
     album: String,
     preview: String,
+    /// Came from that genre's Deezer chart, so the genre is Deezer's, not a word in the name.
+    from_genre_chart: bool,
 }
 
 #[derive(Serialize)]
@@ -117,14 +119,14 @@ pub fn build_artist_wave(name: &str, id: Option<u64>) -> Vec<WaveTrack> {
     let Some(id) = id.or_else(|| resolve_artist(name)) else {
         return Vec::new();
     };
-    let mut own = fetch_list(&format!("/artist/{id}/top?limit=25"));
-    let mut similar = fetch_list(&format!("/artist/{id}/radio?limit=30"));
+    let mut own = fetch_list(&format!("/artist/{id}/top?limit=25"), false);
+    let mut similar = fetch_list(&format!("/artist/{id}/radio?limit=30"), false);
     if let Ok(body) = http_get(&format!("{DEEZER}/artist/{id}/related?limit=6")) {
         if let Ok(value) = serde_json::from_str::<Value>(&body) {
             if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
                 for row in rows.iter().take(4) {
                     let Some(related) = row.get("id").and_then(|value| value.as_u64()) else { continue };
-                    similar.extend(fetch_list(&format!("/artist/{related}/top?limit=8")));
+                    similar.extend(fetch_list(&format!("/artist/{related}/top?limit=8"), false));
                 }
             }
         }
@@ -159,23 +161,30 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
 
     let filtered = style_filtered(&waves.genre, &waves.language);
     if let Some(id) = preset.deezer_id {
-        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=40")));
+        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=40"), true));
     } else if waves.seed == "chart" && !filtered {
-        raw.extend(fetch_list("/chart/0/tracks?limit=40"));
+        raw.extend(fetch_list("/chart/0/tracks?limit=40", false));
     }
     for query in wave_queries(&waves.genre, &waves.language) {
         let path = format!("/search/track?q={}&limit=25", urlencoding::encode(&query));
-        raw.extend(fetch_list(&path));
+        raw.extend(fetch_list(&path, false));
+    }
+    // A Russian filter needs Russian titles, not the word «русский».
+    // Genre charts supply them; the title script decides the language.
+    if waves.genre == "all" && waves.language == "ru" {
+        for id in [132_u32, 152, 116, 113] {
+            raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=20"), false));
+        }
     }
     // Artist radio ignores genre. Use it only when the listener did not pick a style.
     if uses_artist_radio(&waves.genre, &waves.seed) {
         for name in seed_artists(store).iter().take(6) {
             let Some(id) = resolve_artist(name) else { continue };
-            raw.extend(fetch_list(&format!("/artist/{id}/radio?limit=12")));
+            raw.extend(fetch_list(&format!("/artist/{id}/radio?limit=12"), false));
         }
     }
     if raw.len() < 8 && !filtered {
-        raw.extend(fetch_list("/chart/0/tracks?limit=40"));
+        raw.extend(fetch_list("/chart/0/tracks?limit=40", false));
     }
 
     let known = if waves.skip_known {
@@ -289,12 +298,15 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn fetch_list(path: &str) -> Vec<Candidate> {
+fn fetch_list(path: &str, from_genre_chart: bool) -> Vec<Candidate> {
     let url = format!("{DEEZER}{path}");
     let Ok(body) = http_get(&url) else { return Vec::new() };
     let Ok(value) = serde_json::from_str::<Value>(&body) else { return Vec::new() };
     let Some(rows) = value.get("data").and_then(|data| data.as_array()) else { return Vec::new() };
-    rows.iter().filter_map(map_track).collect()
+    rows.iter().filter_map(map_track).map(|mut item| {
+        item.from_genre_chart = from_genre_chart;
+        item
+    }).collect()
 }
 
 fn resolve_artist(name: &str) -> Option<u64> {
@@ -337,7 +349,7 @@ fn map_track(raw: &Value) -> Option<Candidate> {
         .unwrap_or("")
         .trim()
         .to_string();
-    Some(Candidate { title, artist, album, preview })
+    Some(Candidate { title, artist, album, preview, from_genre_chart: false })
 }
 
 fn artist_key(name: &str) -> String {
@@ -361,15 +373,21 @@ fn split_artists(name: &str) -> Vec<String> {
         .collect()
 }
 
-fn has_cyrillic(text: &str) -> bool {
-    text.chars().any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
-}
-
-fn detect_language(track: &Candidate) -> &'static str {
-    let blob = format!("{} {} {}", track.title, track.artist, track.album);
-    if has_cyrillic(&blob) {
+fn title_language(title: &str) -> &'static str {
+    let mut cyrillic = 0;
+    let mut latin = 0;
+    for ch in title.chars() {
+        if ('\u{0400}'..='\u{04FF}').contains(&ch) {
+            cyrillic += 1;
+        } else if ch.is_ascii_alphabetic() {
+            latin += 1;
+        }
+    }
+    if cyrillic == 0 && latin == 0 {
+        "other"
+    } else if cyrillic > latin {
         "ru"
-    } else if blob.chars().any(|ch| ch.is_ascii_alphabetic()) {
+    } else if latin > cyrillic {
         "en"
     } else {
         "other"
@@ -380,34 +398,93 @@ fn wave_queries(genre: &str, language: &str) -> Vec<String> {
     let preset = preset(genre);
     let mut queries: Vec<String> = preset.queries.iter().map(|query| (*query).to_string()).collect();
     if queries.is_empty() {
-        queries.push(match language {
-            "ru" => "русский".into(),
-            "en" => "english".into(),
-            _ => "music".into(),
-        });
+        queries.push("music".into());
     }
     if language == "ru" {
-        queries = queries.into_iter().map(|query| format!("русский {query}")).collect();
-    } else if language == "en" {
-        queries = queries.into_iter().map(|query| format!("{query} english")).collect();
+        if let Some(cyrillic) = cyrillic_genre(genre) {
+            if !queries.iter().any(|query| query == cyrillic) {
+                queries.push(cyrillic.to_string());
+            }
+        }
     }
     queries.into_iter().take(4).collect()
 }
 
+fn cyrillic_genre(genre: &str) -> Option<&'static str> {
+    match genre {
+        "rock" => Some("рок"),
+        "pop" => Some("поп"),
+        "rap" | "ruRap" => Some("рэп"),
+        "electronic" => Some("электроника"),
+        "rnb" => Some("рнб"),
+        "indie" => Some("инди"),
+        "metal" => Some("метал"),
+        "dance" => Some("дэнс"),
+        "jazz" => Some("джаз"),
+        _ => None,
+    }
+}
+
 fn matches_language(track: &Candidate, language: &str) -> bool {
     match language {
-        "ru" => detect_language(track) == "ru",
-        "en" => detect_language(track) == "en",
+        "ru" => title_language(&track.title) == "ru",
+        "en" => title_language(&track.title) == "en",
         _ => true,
     }
 }
 
+fn words(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_alphanumeric() || ch == '&' {
+            current.extend(ch.to_lowercase());
+        } else if !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+fn has_phrase(text: &str, phrase: &str) -> bool {
+    let haystack = words(text);
+    let needle = words(phrase);
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|window| window == needle.as_slice())
+}
+
+fn genre_phrases(genre: &str) -> &'static [&'static str] {
+    match genre {
+        "rock" => &["rock", "рок"],
+        "pop" => &["pop", "поп"],
+        "rap" | "ruRap" => &["rap", "рэп", "hip hop", "хип-хоп", "хип хоп"],
+        "electronic" => &["electronic", "edm", "электроника", "электро"],
+        "rnb" => &["r&b", "rnb", "рнб"],
+        "indie" => &["indie", "инди"],
+        "metal" => &["metal", "метал"],
+        "dance" => &["dance", "дэнс"],
+        "jazz" => &["jazz", "джаз"],
+        _ => &[],
+    }
+}
+
 fn matches_genre(track: &Candidate, genre: &str) -> bool {
-    if genre != "ruRap" {
+    if genre == "all" || genre.is_empty() {
         return true;
     }
-    let blob = format!("{} {} {}", track.title, track.artist, track.album).to_lowercase();
-    detect_language(track) == "ru" || blob.contains("рэп") || blob.contains("rap") || blob.contains("hip")
+    if genre == "ruRap" && title_language(&track.title) != "ru" {
+        return false;
+    }
+    if track.from_genre_chart {
+        return true;
+    }
+    let text = format!("{} {}", track.title, track.album);
+    genre_phrases(genre).iter().any(|phrase| has_phrase(&text, phrase))
 }
 
 #[cfg(test)]
@@ -420,6 +497,7 @@ mod tests {
             artist: artist.into(),
             album: String::new(),
             preview: preview.into(),
+            from_genre_chart: false,
         }
     }
 
@@ -459,17 +537,107 @@ mod tests {
             artist: "дора".into(),
             album: String::new(),
             preview: "ru".into(),
+            from_genre_chart: false,
         };
         let english = Candidate {
             title: "Creep".into(),
             artist: "Radiohead".into(),
             album: String::new(),
             preview: "en".into(),
+            from_genre_chart: false,
         };
         assert!(matches_language(&russian, "ru"));
         assert!(!matches_language(&english, "ru"));
         assert!(matches_language(&english, "en"));
         assert!(!matches_language(&russian, "en"));
+        assert!(matches_language(&english, "any"));
+    }
+
+    #[test]
+    fn language_is_the_title_not_a_word_in_the_nickname() {
+        let nickname = Candidate {
+            title: "Creep".into(),
+            artist: "Русский".into(),
+            album: "Best Of".into(),
+            preview: "nick".into(),
+            from_genre_chart: false,
+        };
+        assert!(!matches_language(&nickname, "ru"));
+        assert!(matches_language(&nickname, "en"));
+        let mixed = Candidate {
+            title: "Best русский remix".into(),
+            artist: "DJ".into(),
+            album: String::new(),
+            preview: "mix".into(),
+            from_genre_chart: false,
+        };
+        assert_eq!(title_language(&mixed.title), "en");
+        assert!(!matches_language(&mixed, "ru"));
+        let russian_title = Candidate {
+            title: "Русский размер".into(),
+            artist: "Rockwell".into(),
+            album: String::new(),
+            preview: "ru-title".into(),
+            from_genre_chart: false,
+        };
+        assert!(matches_language(&russian_title, "ru"));
+        assert!(!matches_language(&russian_title, "en"));
+    }
+
+    #[test]
+    fn genre_does_not_match_a_word_inside_a_name() {
+        let nickname = Candidate {
+            title: "Somebody's Watching Me".into(),
+            artist: "Rockwell".into(),
+            album: String::new(),
+            preview: "nick".into(),
+            from_genre_chart: false,
+        };
+        assert!(!matches_genre(&nickname, "rock"));
+        let inside = Candidate {
+            title: "Therapy".into(),
+            artist: "Rap".into(),
+            album: "Trap".into(),
+            preview: "inside".into(),
+            from_genre_chart: false,
+        };
+        assert!(!matches_genre(&inside, "rap"));
+        let titled = Candidate {
+            title: "Ночной джаз".into(),
+            artist: "Кто-то".into(),
+            album: String::new(),
+            preview: "jazz".into(),
+            from_genre_chart: false,
+        };
+        assert!(matches_genre(&titled, "jazz"));
+        assert!(!matches_genre(&titled, "rock"));
+        let chart = Candidate {
+            title: "Свобода".into(),
+            artist: "Кино".into(),
+            album: String::new(),
+            preview: "chart".into(),
+            from_genre_chart: true,
+        };
+        assert!(matches_genre(&chart, "rock"));
+        assert!(matches_language(&chart, "ru"));
+        let english_rap = Candidate {
+            title: "Creep".into(),
+            artist: "Radiohead".into(),
+            album: String::new(),
+            preview: "en-rap".into(),
+            from_genre_chart: true,
+        };
+        assert!(!matches_genre(&english_rap, "ruRap"));
+    }
+
+    #[test]
+    fn skip_library_is_the_same_recording() {
+        let owned = track_key("Rockwell", "Somebody's Watching Me");
+        assert_ne!(owned, track_key("Rock", "Somebody's Watching Me"));
+        assert_ne!(owned, track_key("Rockwell", "Rock"));
+        assert_ne!(track_key("Наутилус", "Русский рок"), track_key("Другой", "Рок"));
+        assert_eq!(track_key("дора", "Младшая сестра"), track_key("Дора", "Младшая  сестра"));
+        assert_ne!(artist_key("Rock"), artist_key("Rockwell"));
     }
 
     #[test]
@@ -502,13 +670,16 @@ mod tests {
     #[test]
     fn queries_follow_genre_and_language() {
         let jazz = wave_queries("jazz", "any");
-        assert!(jazz.iter().any(|query| query.contains("jazz")));
+        assert!(jazz.iter().any(|query| query == "jazz"));
+        assert!(jazz.iter().all(|query| !query.contains("русский") && !query.contains("english")));
         let russian = wave_queries("jazz", "ru");
-        assert!(russian.iter().all(|query| query.contains("русский") && query.contains("jazz")));
+        assert!(russian.iter().any(|query| query == "jazz"));
+        assert!(russian.iter().any(|query| query == "джаз"));
+        assert!(russian.iter().all(|query| !query.split_whitespace().any(|word| word == "русский")));
         let english = wave_queries("rock", "en");
-        assert!(english.iter().all(|query| query.contains("english") && query.contains("rock")));
+        assert!(english.iter().all(|query| query == "rock"));
         assert_ne!(wave_queries("all", "any"), wave_queries("pop", "any"));
-        assert_ne!(wave_queries("all", "ru"), wave_queries("all", "en"));
+        assert_eq!(wave_queries("all", "ru"), wave_queries("all", "en"));
     }
 
     #[test]
