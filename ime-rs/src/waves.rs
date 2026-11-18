@@ -1,5 +1,6 @@
-//! IMe Waves pool. Matches the Electron radio: genre, language, mood, seed,
-//! and diversity, then a new shuffle on every session.
+//! IMe Waves pool. Genre, language, and source shape the next wave.
+//! Mood and diversity are kept on the saved settings so older files still
+//! load, and they no longer change the pool.
 
 use crate::model::{Song, Store, Waves};
 use serde::Serialize;
@@ -12,25 +13,20 @@ const POOL_CAP: usize = 80;
 
 struct Preset {
     deezer_id: Option<u32>,
-    queries: &'static [&'static str],
 }
 
 fn preset(genre: &str) -> Preset {
     match genre {
-        "rock" => Preset { deezer_id: Some(152), queries: &["rock"] },
-        "pop" => Preset { deezer_id: Some(132), queries: &["pop"] },
-        "rap" => Preset { deezer_id: Some(116), queries: &["rap", "hip hop"] },
-        "ruRap" => Preset {
-            deezer_id: Some(116),
-            queries: &["русский рэп", "russian rap", "hip-hop russia"],
-        },
-        "electronic" => Preset { deezer_id: Some(106), queries: &["electronic", "edm"] },
-        "rnb" => Preset { deezer_id: Some(165), queries: &["r&b", "soul"] },
-        "indie" => Preset { deezer_id: Some(85), queries: &["indie", "alternative"] },
-        "metal" => Preset { deezer_id: Some(464), queries: &["metal"] },
-        "dance" => Preset { deezer_id: Some(113), queries: &["dance", "house"] },
-        "jazz" => Preset { deezer_id: Some(129), queries: &["jazz"] },
-        _ => Preset { deezer_id: None, queries: &[] },
+        "rock" => Preset { deezer_id: Some(152) },
+        "pop" => Preset { deezer_id: Some(132) },
+        "rap" | "ruRap" => Preset { deezer_id: Some(116) },
+        "electronic" => Preset { deezer_id: Some(106) },
+        "rnb" => Preset { deezer_id: Some(165) },
+        "indie" => Preset { deezer_id: Some(85) },
+        "metal" => Preset { deezer_id: Some(464) },
+        "dance" => Preset { deezer_id: Some(113) },
+        "jazz" => Preset { deezer_id: Some(129) },
+        _ => Preset { deezer_id: None },
     }
 }
 
@@ -38,8 +34,11 @@ fn preset(genre: &str) -> Preset {
 struct Candidate {
     title: String,
     artist: String,
-    album: String,
     preview: String,
+    /// Album or track genre id when the catalog sent one.
+    catalog_genre: Option<u32>,
+    /// Taken from this genre's chart, albums, or radio. A missing genre field does not drop these.
+    from_genre_catalog: bool,
 }
 
 #[derive(Serialize)]
@@ -91,20 +90,39 @@ pub fn apply_setting(waves: &mut Waves, field: &str, value: &str) -> bool {
     false
 }
 
+/// Commit the filters the settings panel still shows. Retired mood and
+/// diversity values are cleared so a hidden setting cannot keep shaping the pool.
+pub fn apply_filters(waves: &mut Waves, genre: &str, language: &str, seed: &str, skip_known: &str) {
+    apply_setting(waves, "genre", genre);
+    apply_setting(waves, "language", language);
+    apply_setting(waves, "seed", seed);
+    apply_setting(waves, "mood", "any");
+    apply_setting(waves, "diversity", "normal");
+    apply_setting(waves, "skipKnown", skip_known);
+}
+
+fn style_filtered(genre: &str, language: &str) -> bool {
+    genre != "all" || language != "any"
+}
+
+fn uses_artist_radio(genre: &str, seed: &str) -> bool {
+    genre == "all" && seed != "chart"
+}
+
 /// A wave built around one artist: their own tracks, then tracks in the same lane.
 /// Settings (genre, seed, mood) stay as they are.
 pub fn build_artist_wave(name: &str, id: Option<u64>) -> Vec<WaveTrack> {
     let Some(id) = id.or_else(|| resolve_artist(name)) else {
         return Vec::new();
     };
-    let mut own = fetch_list(&format!("/artist/{id}/top?limit=25"));
-    let mut similar = fetch_list(&format!("/artist/{id}/radio?limit=30"));
+    let mut own = fetch_list(&format!("/artist/{id}/top?limit=25"), false);
+    let mut similar = fetch_list(&format!("/artist/{id}/radio?limit=30"), false);
     if let Ok(body) = http_get(&format!("{DEEZER}/artist/{id}/related?limit=6")) {
         if let Ok(value) = serde_json::from_str::<Value>(&body) {
             if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
                 for row in rows.iter().take(4) {
                     let Some(related) = row.get("id").and_then(|value| value.as_u64()) else { continue };
-                    similar.extend(fetch_list(&format!("/artist/{related}/top?limit=8")));
+                    similar.extend(fetch_list(&format!("/artist/{related}/top?limit=8"), false));
                 }
             }
         }
@@ -137,25 +155,27 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
     let preset = preset(&waves.genre);
     let mut raw = Vec::new();
 
-    let filtered = waves.genre != "all" || waves.language != "any" || waves.mood != "any";
+    let filtered = style_filtered(&waves.genre, &waves.language);
     if let Some(id) = preset.deezer_id {
-        raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=40")));
+        raw.extend(genre_catalog(id));
     } else if waves.seed == "chart" && !filtered {
-        raw.extend(fetch_list("/chart/0/tracks?limit=40"));
+        raw.extend(fetch_list("/chart/0/tracks?limit=40", false));
     }
-    for query in wave_queries(&waves.genre, &waves.language, &waves.mood) {
-        let path = format!("/search/track?q={}&limit=25", urlencoding::encode(&query));
-        raw.extend(fetch_list(&path));
+    // Russian titles come from real charts, then the title script. Not from the word «русский».
+    if waves.genre == "all" && waves.language == "ru" {
+        for id in [132_u32, 152, 116, 113] {
+            raw.extend(fetch_list(&format!("/chart/{id}/tracks?limit=20"), false));
+        }
     }
     // Artist radio ignores genre. Use it only when the listener did not pick a style.
-    if waves.genre == "all" && waves.mood == "any" && waves.seed != "chart" {
+    if uses_artist_radio(&waves.genre, &waves.seed) {
         for name in seed_artists(store).iter().take(6) {
             let Some(id) = resolve_artist(name) else { continue };
-            raw.extend(fetch_list(&format!("/artist/{id}/radio?limit=12")));
+            raw.extend(fetch_list(&format!("/artist/{id}/radio?limit=12"), false));
         }
     }
     if raw.len() < 8 && !filtered {
-        raw.extend(fetch_list("/chart/0/tracks?limit=40"));
+        raw.extend(fetch_list("/chart/0/tracks?limit=40", false));
     }
 
     let known = if waves.skip_known {
@@ -178,7 +198,7 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         if waves.skip_known && known.contains(&key) {
             continue;
         }
-        if !matches_language(&item, &waves.language) || !matches_mood(&item, &waves.mood) {
+        if !matches_language(&item, &waves.language) {
             continue;
         }
         if !matches_genre(&item, &waves.genre) {
@@ -187,7 +207,7 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         mapped.push(item);
     }
 
-    arrange(&mut mapped, &heard, waves.spin, waves.diversity == "high");
+    arrange(&mut mapped, &heard, waves.spin, false);
     mapped
         .into_iter()
         .take(POOL_CAP)
@@ -269,12 +289,38 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn fetch_list(path: &str) -> Vec<Candidate> {
+/// Chart, albums, and radios Deezer already files under this genre id.
+/// Tracks keep that genre even when the track payload leaves genre_id empty.
+fn genre_catalog(id: u32) -> Vec<Candidate> {
+    let mut found = fetch_list(&format!("/chart/{id}/tracks?limit=50"), true);
+    if let Ok(body) = http_get(&format!("{DEEZER}/genre/{id}/radios?limit=2")) {
+        if let Ok(value) = serde_json::from_str::<Value>(&body) {
+            if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
+                for row in rows.iter().take(2) {
+                    let Some(radio) = row.get("id").and_then(|value| value.as_u64()) else { continue };
+                    found.extend(fetch_list(&format!("/radio/{radio}/tracks?limit=25"), true));
+                }
+            }
+        }
+    }
+    for item in &mut found {
+        item.from_genre_catalog = true;
+        if item.catalog_genre.is_none() {
+            item.catalog_genre = Some(id);
+        }
+    }
+    found
+}
+
+fn fetch_list(path: &str, from_genre_catalog: bool) -> Vec<Candidate> {
     let url = format!("{DEEZER}{path}");
     let Ok(body) = http_get(&url) else { return Vec::new() };
     let Ok(value) = serde_json::from_str::<Value>(&body) else { return Vec::new() };
     let Some(rows) = value.get("data").and_then(|data| data.as_array()) else { return Vec::new() };
-    rows.iter().filter_map(map_track).collect()
+    rows.iter().filter_map(map_track).map(|mut item| {
+        item.from_genre_catalog = from_genre_catalog;
+        item
+    }).collect()
 }
 
 fn resolve_artist(name: &str) -> Option<u64> {
@@ -311,13 +357,28 @@ fn map_track(raw: &Value) -> Option<Candidate> {
         .unwrap_or("Unknown")
         .trim()
         .to_string();
-    let album = raw
-        .get("album")
-        .and_then(|album| album.get("title").and_then(|v| v.as_str()).or_else(|| album.as_str()))
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    Some(Candidate { title, artist, album, preview })
+    Some(Candidate {
+        title,
+        artist,
+        preview,
+        catalog_genre: read_catalog_genre(raw),
+        from_genre_catalog: false,
+    })
+}
+
+fn read_catalog_genre(raw: &Value) -> Option<u32> {
+    let as_id = |value: &Value| value.as_u64().map(|id| id as u32);
+    raw.get("genre_id")
+        .and_then(as_id)
+        .or_else(|| raw.get("album").and_then(|album| album.get("genre_id")).and_then(as_id))
+        .or_else(|| {
+            raw.get("album")?
+                .get("genres")?
+                .get("data")?
+                .as_array()?
+                .iter()
+                .find_map(|genre| genre.get("id").and_then(as_id))
+        })
 }
 
 fn artist_key(name: &str) -> String {
@@ -341,77 +402,56 @@ fn split_artists(name: &str) -> Vec<String> {
         .collect()
 }
 
-fn has_cyrillic(text: &str) -> bool {
-    text.chars().any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
-}
-
-fn detect_language(track: &Candidate) -> &'static str {
-    let blob = format!("{} {} {}", track.title, track.artist, track.album);
-    if has_cyrillic(&blob) {
+fn title_language(title: &str) -> &'static str {
+    let mut cyrillic = 0;
+    let mut latin = 0;
+    for ch in title.chars() {
+        if ('\u{0400}'..='\u{04FF}').contains(&ch) {
+            cyrillic += 1;
+        } else if ch.is_ascii_alphabetic() {
+            latin += 1;
+        }
+    }
+    if cyrillic == 0 && latin == 0 {
+        "other"
+    } else if cyrillic > latin {
         "ru"
-    } else if blob.chars().any(|ch| ch.is_ascii_alphabetic()) {
+    } else if latin > cyrillic {
         "en"
     } else {
         "other"
     }
 }
 
-fn wave_queries(genre: &str, language: &str, mood: &str) -> Vec<String> {
-    let preset = preset(genre);
-    let mut queries: Vec<String> = preset.queries.iter().map(|query| (*query).to_string()).collect();
-    if queries.is_empty() {
-        queries.push(match language {
-            "ru" => "русский".into(),
-            "en" => "english".into(),
-            _ => "music".into(),
-        });
-    }
-    if language == "ru" {
-        queries = queries.into_iter().map(|query| format!("русский {query}")).collect();
-    } else if language == "en" {
-        queries = queries.into_iter().map(|query| format!("{query} english")).collect();
-    }
-    if mood != "any" {
-        let word = match mood {
-            "energetic" => "energetic party",
-            "chill" => "chill relax",
-            "dark" => "dark sad",
-            "happy" => "happy love",
-            _ => "",
-        };
-        if !word.is_empty() {
-            queries = queries.into_iter().map(|query| format!("{query} {word}")).collect();
-        }
-    }
-    queries.into_iter().take(4).collect()
-}
-
 fn matches_language(track: &Candidate, language: &str) -> bool {
     match language {
-        "ru" => detect_language(track) == "ru",
-        "en" => detect_language(track) == "en",
+        "ru" => title_language(&track.title) == "ru",
+        "en" => title_language(&track.title) == "en",
         _ => true,
     }
 }
 
-fn matches_mood(track: &Candidate, mood: &str) -> bool {
-    let blob = format!("{} {} {}", track.title, track.album, track.artist).to_lowercase();
-    let patterns: &[&str] = match mood {
-        "energetic" => &["energy", "power", "fire", "party", "club", "энерг", "огонь", "клуб"],
-        "chill" => &["chill", "lofi", "lo-fi", "ambient", "calm", "relax", "чил", "спокой"],
-        "dark" => &["dark", "night", "shadow", "doom", "sad", "тёмн", "темн", "ночь", "груст"],
-        "happy" => &["happy", "joy", "love", "summer", "sun", "счаст", "любов", "лето", "радост"],
-        _ => return true,
-    };
-    patterns.iter().any(|pattern| blob.contains(pattern))
-}
-
+/// Genre is the catalog id (album genre, or the genre chart/radio that supplied the track).
+/// A missing genre field does not throw away a track that already came from that catalog.
+/// The word in the title, album, or nickname is not a genre.
 fn matches_genre(track: &Candidate, genre: &str) -> bool {
-    if genre != "ruRap" {
+    if genre == "all" || genre.is_empty() {
         return true;
     }
-    let blob = format!("{} {} {}", track.title, track.artist, track.album).to_lowercase();
-    detect_language(track) == "ru" || blob.contains("рэп") || blob.contains("rap") || blob.contains("hip")
+    let Some(want) = preset(genre).deezer_id else {
+        return true;
+    };
+    if let Some(got) = track.catalog_genre {
+        if got != want {
+            return false;
+        }
+    } else if !track.from_genre_catalog {
+        return false;
+    }
+    if genre == "ruRap" && title_language(&track.title) != "ru" {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -422,8 +462,9 @@ mod tests {
         Candidate {
             title: preview.into(),
             artist: artist.into(),
-            album: String::new(),
             preview: preview.into(),
+            catalog_genre: None,
+            from_genre_catalog: false,
         }
     }
 
@@ -461,19 +502,136 @@ mod tests {
         let russian = Candidate {
             title: "Младшая сестра".into(),
             artist: "дора".into(),
-            album: String::new(),
             preview: "ru".into(),
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         let english = Candidate {
             title: "Creep".into(),
             artist: "Radiohead".into(),
-            album: String::new(),
             preview: "en".into(),
+            catalog_genre: None,
+            from_genre_catalog: false,
         };
         assert!(matches_language(&russian, "ru"));
         assert!(!matches_language(&english, "ru"));
         assert!(matches_language(&english, "en"));
         assert!(!matches_language(&russian, "en"));
+        assert!(matches_language(&english, "any"));
+    }
+
+    #[test]
+    fn language_is_the_title_not_a_word_in_the_nickname() {
+        let nickname = Candidate {
+            title: "Creep".into(),
+            artist: "Русский".into(),
+            preview: "nick".into(),
+            catalog_genre: None,
+            from_genre_catalog: false,
+        };
+        assert!(!matches_language(&nickname, "ru"));
+        assert!(matches_language(&nickname, "en"));
+        let mixed = Candidate {
+            title: "Best русский remix".into(),
+            artist: "DJ".into(),
+            preview: "mix".into(),
+            catalog_genre: None,
+            from_genre_catalog: false,
+        };
+        assert_eq!(title_language(&mixed.title), "en");
+        assert!(!matches_language(&mixed, "ru"));
+        let russian_title = Candidate {
+            title: "Русский размер".into(),
+            artist: "Rockwell".into(),
+            preview: "ru-title".into(),
+            catalog_genre: None,
+            from_genre_catalog: false,
+        };
+        assert!(matches_language(&russian_title, "ru"));
+        assert!(!matches_language(&russian_title, "en"));
+    }
+
+    #[test]
+    fn genre_does_not_match_a_word_inside_a_name() {
+        let nickname = Candidate {
+            title: "Somebody's Watching Me".into(),
+            artist: "Rockwell".into(),
+            preview: "nick".into(),
+            catalog_genre: None,
+            from_genre_catalog: false,
+        };
+        assert!(!matches_genre(&nickname, "rock"));
+        let labels = [
+            ("rock", "Рок"),
+            ("pop", "Поп"),
+            ("rap", "Рэп"),
+            ("ruRap", "Русский рэп"),
+            ("electronic", "Электроника"),
+            ("rnb", "R&B"),
+            ("indie", "Инди"),
+            ("metal", "Metal"),
+            ("dance", "Дэнс"),
+            ("jazz", "Джаз"),
+        ];
+        for (genre, word) in labels {
+            let titled = Candidate {
+                title: word.into(),
+                artist: format!("Ник {word}"),
+                preview: genre.into(),
+                catalog_genre: None,
+                from_genre_catalog: false,
+            };
+            assert!(!matches_genre(&titled, genre), "{word}");
+            let classified = Candidate {
+                title: "Песня без ярлыка".into(),
+                artist: "Кто-то".into(),
+                preview: format!("chart-{genre}"),
+                catalog_genre: None,
+                from_genre_catalog: true,
+            };
+            if genre == "ruRap" {
+                assert!(matches_genre(&classified, genre));
+            } else {
+                assert!(matches_genre(&classified, genre));
+            }
+        }
+        let chart = Candidate {
+            title: "Свобода".into(),
+            artist: "Кино".into(),
+            preview: "chart".into(),
+            catalog_genre: None,
+            from_genre_catalog: true,
+        };
+        assert!(matches_genre(&chart, "rock"));
+        assert!(matches_language(&chart, "ru"));
+        let by_id = Candidate {
+            title: "Creep".into(),
+            artist: "Radiohead".into(),
+            preview: "by-id".into(),
+            catalog_genre: Some(152),
+            from_genre_catalog: false,
+        };
+        assert!(matches_genre(&by_id, "rock"));
+        assert!(!matches_genre(&by_id, "pop"));
+        let english_rap = Candidate {
+            title: "Creep".into(),
+            artist: "Radiohead".into(),
+            preview: "en-rap".into(),
+            catalog_genre: Some(116),
+            from_genre_catalog: true,
+        };
+        assert!(matches_genre(&english_rap, "rap"));
+        assert!(!matches_genre(&english_rap, "ruRap"));
+    }
+
+    #[test]
+    fn skip_library_is_the_same_recording() {
+        let owned = track_key("Rockwell", "Somebody's Watching Me");
+        assert_ne!(owned, track_key("Rock", "Somebody's Watching Me"));
+        assert_ne!(owned, track_key("Rockwell", "Rock"));
+        assert_ne!(track_key("Наутилус", "Русский рок"), track_key("Другой", "Рок"));
+        assert_eq!(track_key("дора", "Младшая сестра"), track_key("Дора", "Младшая  сестра"));
+        assert_ne!(artist_key("Rock"), artist_key("Rockwell"));
     }
 
     #[test]
@@ -485,5 +643,44 @@ mod tests {
         assert_eq!(waves.genre, "jazz");
         assert!(apply_setting(&mut waves, "skipKnown", "0"));
         assert!(!waves.skip_known);
+    }
+
+    #[test]
+    fn apply_filters_keeps_only_the_remaining_controls() {
+        let mut waves = Waves::default();
+        waves.mood = "chill".into();
+        waves.diversity = "high".into();
+        apply_filters(&mut waves, "jazz", "ru", "chart", "0");
+        assert_eq!(waves.genre, "jazz");
+        assert_eq!(waves.language, "ru");
+        assert_eq!(waves.seed, "chart");
+        assert!(!waves.skip_known);
+        assert_eq!(waves.mood, "any");
+        assert_eq!(waves.diversity, "normal");
+        assert!(!apply_setting(&mut waves, "seed", "polka"));
+        assert_eq!(waves.seed, "chart");
+    }
+
+    #[test]
+    fn filters_do_not_search_for_their_own_labels() {
+        for genre in ["rock", "pop", "rap", "ruRap", "electronic", "rnb", "indie", "metal", "dance", "jazz"] {
+            assert!(preset(genre).deezer_id.is_some());
+        }
+        assert!(uses_artist_radio("all", "taste"));
+        assert!(!uses_artist_radio("all", "chart"));
+        assert!(!uses_artist_radio("rock", "chart"));
+        assert!(!uses_artist_radio("jazz", "liked"));
+    }
+
+    #[test]
+    fn source_changes_the_next_wave_plan() {
+        assert!(uses_artist_radio("all", "taste"));
+        assert!(uses_artist_radio("all", "liked"));
+        assert!(uses_artist_radio("all", "wishlist"));
+        assert!(!uses_artist_radio("all", "chart"));
+        assert!(!uses_artist_radio("jazz", "liked"));
+        assert!(style_filtered("jazz", "any"));
+        assert!(style_filtered("all", "ru"));
+        assert!(!style_filtered("all", "any"));
     }
 }

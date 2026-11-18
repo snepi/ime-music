@@ -8,9 +8,6 @@
   let sleep = { mode: "off", timer: 0 };
   const imports = [];
   let waves = { active: false, artist: false, queue: [], index: -1, seen: new Set() };
-  let waveToken = 0;
-  let waveUserPause = false;
-  let waveAttempt = null;
   const fallbackSeeds = ["pop", "rock", "electronic", "hip hop", "jazz", "indie", "dance", "metal", "soul", "r&b", "house", "ambient"];
 
   const svg = (inner, size) =>
@@ -486,8 +483,6 @@
     const waveChip = event.target.closest("[data-waves-field]");
     if (waveChip && waveChip.tagName === "BUTTON") {
       event.preventDefault();
-      const field = waveChip.dataset.wavesField;
-      const value = waveChip.dataset.wavesValue;
       const row = waveChip.parentElement;
       if (row) {
         row.querySelectorAll("[data-waves-field]").forEach((node) => {
@@ -496,9 +491,6 @@
           node.setAttribute("aria-pressed", on ? "true" : "false");
         });
       }
-      post("waves-setting", { field, value }).then(() => {
-        if (waves.active) refreshWave();
-      });
       return;
     }
     const recChip = event.target.closest("[data-rec-filter]");
@@ -519,9 +511,8 @@
     if (name === "toggle") toggle();
     if (name === "next") playNext();
     if (name === "prev") playPrev();
-    if (name === "waves-save") notify("Настройки волны сохранены", "success");
+    if (name === "waves-apply") applyWaves();
     if (name === "waves-reset") resetWaves();
-    if (name === "waves-refresh") refreshWave();
     if (name === "refresh-rec") loadRecommendations(recFilter, true);
     if (name === "mute") toggleMute();
     if (name === "shuffle" || name === "repeat") {
@@ -532,12 +523,6 @@
     if (name === "queue") toggleQueue();
     if (name === "sleep") toggleSleep(act);
     if (name === "mini") toggleMini();
-  });
-
-  document.addEventListener("change", (event) => {
-    const input = event.target;
-    if (!(input instanceof HTMLInputElement) || input.dataset.wavesField !== "skipKnown") return;
-    post("waves-setting", { field: "skipKnown", value: input.checked ? "1" : "0" });
   });
 
   document.addEventListener("submit", (event) => {
@@ -717,15 +702,6 @@
   });
   audio.addEventListener("play", () => syncPlayButton());
   audio.addEventListener("pause", () => syncPlayButton());
-  audio.addEventListener("error", () => {
-    if (!waves.active || waveUserPause || !waveAttempt) return;
-    if (audio.dataset.waveLoad !== waveAttempt.token + ":" + waveAttempt.kind) return;
-    failWaveAttempt(waveAttempt);
-  });
-  audio.addEventListener("loadedmetadata", () => {
-    if (!waves.active || waveUserPause || !waveAttempt || waveAttempt.kind !== "archive") return;
-    if (Number.isFinite(audio.duration) && audio.duration > 0 && audio.duration < 1) failWaveAttempt(waveAttempt);
-  });
   audio.addEventListener("ended", () => {
     if (sleep.mode === "track" || sleep.mode === "album") {
       finishSleep("Стоп в конце трека");
@@ -1510,43 +1486,17 @@
     else host.dataset.restore = host.innerHTML;
   }
 
-  function toggleWaves() {
-    if (audio.src && !audio.paused) {
-      waveUserPause = true;
+  async function startWaves() {
+    if (waves.active && audio.src && !audio.paused) {
       audio.pause();
       syncPlayButton();
       return;
     }
-    waveUserPause = false;
-    if (audio.src) {
-      const started = audio.play();
-      if (started && typeof started.catch === "function") {
-        started.catch((err) => {
-          if (waveUserPause || (err && err.name === "AbortError")) return;
-          const index = waves.index >= 0 && waves.queue[waves.index] ? waves.index : 0;
-          if (waves.queue[index]) playWavesIndex(index);
-          else beginWaves();
-        });
-      }
+    if (waves.active && audio.src && audio.paused) {
+      await audio.play();
       syncPlayButton();
       return;
     }
-    const index = waves.index >= 0 && waves.queue[waves.index] ? waves.index : 0;
-    if (waves.queue[index]) playWavesIndex(index);
-    else beginWaves();
-  }
-
-  async function startWaves() {
-    if (waves.active) {
-      toggleWaves();
-      return;
-    }
-    beginWaves();
-  }
-
-  async function beginWaves() {
-    const token = ++waveToken;
-    waveUserPause = false;
     waves.active = true;
     waves.artist = false;
     artistQueue = null;
@@ -1554,13 +1504,12 @@
     waves.index = -1;
     waves.seen = new Set();
     await refillWaves();
-    if (token !== waveToken || waveUserPause) return;
     if (!waves.queue.length) {
       waves.active = false;
-      syncPlayButton();
       return;
     }
     playWavesIndex(0);
+    scheduleArchive();
   }
 
   function toggleWavesSettings() {
@@ -1599,27 +1548,32 @@
     return document.querySelector(`.waves-chip.is-active[data-waves-field="${field}"]`)?.dataset.wavesValue || "";
   }
 
+  function titleLanguage(title) {
+    const cyr = (String(title).match(/[\u0400-\u04FF]/g) || []).length;
+    const lat = (String(title).match(/[A-Za-z]/g) || []).length;
+    if (cyr === 0 && lat === 0) return "other";
+    if (cyr > lat) return "ru";
+    if (lat > cyr) return "en";
+    return "other";
+  }
+
   async function loadFallbackWaves() {
     const genre = waveChip("genre") || "all";
     const language = waveChip("language") || "any";
-    const mood = waveChip("mood") || "any";
-    let term = genre === "all" || genre === "ruRap" ? "music" : genre;
-    if (language === "ru") term = `русский ${term}`;
-    else if (language === "en") term = `${term} english`;
-    if (mood !== "any") term = `${term} ${mood}`;
+    // iTunes has no genre id. Searching the chip's word would accept a title that merely says «рок».
+    if (genre !== "all") return [];
     const country = language === "en" ? "us" : "ru";
     const response = await fetch(
-      `https://itunes.apple.com/search?entity=song&limit=40&country=${country}&term=` + encodeURIComponent(term),
+      "https://itunes.apple.com/search?entity=song&limit=40&country=" + country + "&term=" + encodeURIComponent("music"),
     );
     const data = await response.json();
     return shuffleTracks(
       (data.results || [])
         .filter((item) => item.previewUrl)
         .filter((item) => {
-          const text = `${item.trackName || ""} ${item.artistName || ""}`;
-          const cyr = /[а-яё]/i.test(text);
-          if (language === "ru") return cyr;
-          if (language === "en") return !cyr;
+          const lang = titleLanguage(item.trackName || "");
+          if (language === "ru") return lang === "ru";
+          if (language === "en") return lang === "en";
           return true;
         })
         .map((item) => ({
@@ -1649,9 +1603,27 @@
     if (waves.active) scheduleArchive();
   }
 
+  async function applyWaves() {
+    const button = document.querySelector('[data-act="waves-apply"]');
+    if (button) button.disabled = true;
+    try {
+      const genre = waveChip("genre") || "all";
+      const language = waveChip("language") || "any";
+      const seed = waveChip("seed") || "taste";
+      const skip = document.querySelector('[data-waves-field="skipKnown"]');
+      const skipKnown = skip && skip.checked ? "1" : "0";
+      await post("waves-apply", { value: [genre, language, seed, skipKnown].join("|") });
+      await refreshWave();
+      if (waves.queue.length) notify("Волна обновлена", "success");
+      else if (!document.querySelector(".toast")) notify("По этим фильтрам нет треков", "info");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function resetWaves() {
     await post("waves-reset");
-    const defaults = { genre: "all", language: "any", mood: "any", seed: "taste", diversity: "normal" };
+    const defaults = { genre: "all", language: "any", seed: "taste" };
     for (const [field, value] of Object.entries(defaults)) {
       document.querySelectorAll(`[data-waves-field="${field}"]`).forEach((node) => {
         const on = node.dataset.wavesValue === value;
@@ -2012,87 +1984,25 @@
     }
   }
 
-  function sameMedia(left, right) {
-    try {
-      return new URL(left || "", location.href).href === new URL(right || "", location.href).href;
-    } catch {
-      return left === right;
-    }
-  }
-
-  function showWaveItem(item) {
-    const title = document.querySelector(".home-waves-title");
-    const meta = document.querySelector(".home-waves-meta");
-    if (title) title.textContent = item.title || "IMe Waves";
-    if (meta) meta.innerHTML = artistLink(item.artist || "");
-    setNowPlaying(item.title || "", item.artist || "", { url: item.url || "", cover: "" });
-  }
-
-  function playWavesIndex(index) {
-    const token = ++waveToken;
-    waveUserPause = false;
-    if (index >= waves.queue.length - 3) refillWaves();
+  async function playWavesIndex(index) {
+    if (index >= waves.queue.length - 3) await refillWaves();
     const item = waves.queue[index];
     if (!item) {
-      if (token === waveToken) {
-        waves.active = false;
-        syncPlayButton();
-      }
+      waves.active = false;
+      syncPlayButton();
       return;
     }
-    waves.active = true;
     waves.index = index;
     post("waves-heard", { url: item.url });
-    showWaveItem(item);
+    const title = document.querySelector(".home-waves-title");
+    const meta = document.querySelector(".home-waves-meta");
+    if (title) title.textContent = item.title;
+    if (meta) meta.innerHTML = artistLink(item.artist);
     const local = librarySong(item.title, item.artist);
-    let picked = false;
-    const use = (url, kind) => {
-      if (picked || token !== waveToken || waveUserPause || !url) return;
-      picked = true;
-      startWaveSource(item, token, index, url, kind);
-      scheduleArchive();
-    };
-    if (local) {
-      use("/audio/" + encodeURIComponent(local.id), "local");
-      return;
-    }
-    const timer = window.setTimeout(() => use(item.url, "preview"), 200);
-    if (item.title) {
-      archiveFile(item.title, item.artist).then((archived) => {
-        if (!archived || token !== waveToken || waveUserPause || picked) return;
-        window.clearTimeout(timer);
-        use(archived, "archive");
-      });
-    }
-  }
-
-  function startWaveSource(item, token, index, url, kind) {
-    if (!url || token !== waveToken) return;
-    const attempt = { token, index, url, kind };
-    waveAttempt = attempt;
-    clip = { id: "", start: 0, end: 0, preview: false };
-    audio.dataset.waveLoad = token + ":" + kind;
-    audio.src = url;
-    const started = audio.play();
-    if (started && typeof started.catch === "function") {
-      started.catch((err) => {
-        if (attempt !== waveAttempt || waveUserPause) return;
-        if (err && err.name === "AbortError") return;
-        failWaveAttempt(attempt);
-      });
-    }
-    syncPlayButton();
-  }
-
-  function failWaveAttempt(attempt) {
-    if (!attempt || attempt !== waveAttempt || waveUserPause || attempt.token !== waveToken) return;
-    const item = waves.queue[attempt.index];
-    if (item && attempt.kind !== "preview" && item.url && !sameMedia(attempt.url, item.url)) {
-      startWaveSource(item, attempt.token, attempt.index, item.url, "preview");
-      return;
-    }
-    const next = attempt.index + 1;
-    if (waves.queue[next]) playWavesIndex(next);
+    const archived = local ? "" : await archiveFile(item.title, item.artist);
+    const full = local ? "/audio/" + encodeURIComponent(local.id) : archived;
+    playUrl(full || item.url, item.title, item.artist);
+    scheduleArchive();
   }
 
   const archiveQueued = new Set();
@@ -2270,8 +2180,10 @@
   }
 
   function toggle() {
-    if (waves.active) {
-      toggleWaves();
+    if (waves.active && audio.src) {
+      if (audio.paused) audio.play();
+      else audio.pause();
+      syncPlayButton();
       return;
     }
     if (!audio.src && document.body.dataset.current) {
