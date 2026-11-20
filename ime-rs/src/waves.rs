@@ -639,16 +639,17 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Chart, albums, and radios Deezer already files under this genre id.
-/// Tracks keep that genre even when the track payload leaves genre_id empty.
+/// One genre-chart request. Radios are only a backup when that chart comes back short,
+/// so Apply does not wait on extra Deezer calls when the catalog already has tracks.
 fn genre_catalog(id: u32) -> Vec<Candidate> {
-    let mut found = fetch_list(&format!("/chart/{id}/tracks?limit=50"), true);
-    if let Ok(body) = http_get(&format!("{DEEZER}/genre/{id}/radios?limit=2")) {
-        if let Ok(value) = serde_json::from_str::<Value>(&body) {
-            if let Some(rows) = value.get("data").and_then(|data| data.as_array()) {
-                for row in rows.iter().take(2) {
-                    let Some(radio) = row.get("id").and_then(|value| value.as_u64()) else { continue };
-                    found.extend(fetch_list(&format!("/radio/{radio}/tracks?limit=25"), true));
+    let mut found = fetch_list(&format!("/chart/{id}/tracks?limit=40"), true);
+    if found.len() < 12 {
+        if let Ok(body) = http_get(&format!("{DEEZER}/genre/{id}/radios?limit=1")) {
+            if let Ok(value) = serde_json::from_str::<Value>(&body) {
+                if let Some(row) = value.get("data").and_then(|data| data.as_array()).and_then(|rows| rows.first()) {
+                    if let Some(radio) = row.get("id").and_then(|value| value.as_u64()) {
+                        found.extend(fetch_list(&format!("/radio/{radio}/tracks?limit=25"), true));
+                    }
                 }
             }
         }

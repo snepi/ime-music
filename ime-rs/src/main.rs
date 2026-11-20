@@ -133,6 +133,7 @@ fn main() {
         .route("/api/queue", get(api_queue))
         .route("/api/deezer", get(deezer_proxy))
         .route("/api/waves", get(waves_pool))
+        .route("/api/wave-audio", get(wave_audio))
         .route("/api/updates", get(api_updates))
         .route("/backup", get(backup_download))
         .route("/import-backup", post(import_backup))
@@ -276,6 +277,49 @@ fn screen_from(q: &PageQuery, store: &Store) -> Screen {
 #[derive(Deserialize)]
 struct DeezerQuery {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct WaveAudioQuery {
+    url: String,
+}
+
+/// Same-origin copy of the preview the card is already playing, so the picture can follow it.
+/// Nothing is written into the library.
+async fn wave_audio(Query(query): Query<WaveAudioQuery>) -> Response {
+    let url = query.url.trim().to_string();
+    if !wave_preview_url(&url) {
+        return (StatusCode::BAD_REQUEST, "bad url").into_response();
+    }
+    let fetched = tokio::task::spawn_blocking(move || {
+        let response = ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(8))
+            .call()
+            .map_err(|err| err.to_string())?;
+        let mut bytes = Vec::new();
+        let mut reader = std::io::Read::take(response.into_reader(), 2_000_000);
+        std::io::Read::read_to_end(&mut reader, &mut bytes).map_err(|err| err.to_string())?;
+        Ok::<_, String>(bytes)
+    })
+    .await;
+    match fetched {
+        Ok(Ok(bytes)) if !bytes.is_empty() => (
+            [
+                (header::CONTENT_TYPE, "audio/mpeg"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        _ => (StatusCode::BAD_GATEWAY, "preview").into_response(),
+    }
+}
+
+fn wave_preview_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    if url.contains('@') || url.contains('\\') || url.contains(' ') { return false; }
+    let host = rest.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+    host == "dzcdn.net" || host.ends_with(".dzcdn.net")
 }
 
 /// Deezer has no browser CORS header, so the desktop page asks this proxy.
@@ -1865,7 +1909,7 @@ async fn api_updates() -> Response {
             .and_then(|response| response.into_string().map_err(|err| err.to_string()))
     })
     .await;
-    let current = "1.3.6.1";
+    let current = "1.3.7.1";
     let body = match fetched {
         Ok(Ok(text)) => text,
         _ => {

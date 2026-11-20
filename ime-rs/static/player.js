@@ -1548,7 +1548,6 @@
       return;
     }
     playWavesIndex(0);
-    scheduleArchive();
   }
 
   function toggleWavesSettings() {
@@ -1713,7 +1712,6 @@
       return;
     }
     playWavesIndex(0);
-    scheduleArchive();
   }
 
   function similarToCurrent() {
@@ -1801,21 +1799,15 @@
   }
 
   async function applyWaves() {
-    const button = document.querySelector('[data-act="waves-apply"]');
-    if (button) button.disabled = true;
-    try {
-      const genre = waveChip("genre") || "all";
-      const language = waveChip("language") || "any";
-      const seed = waveChip("seed") || "taste";
-      const skip = document.querySelector('[data-waves-field="skipKnown"]');
-      const skipKnown = skip && skip.checked ? "1" : "0";
-      await post("waves-apply", { value: [genre, language, seed, skipKnown].join("|") });
-      await refreshWave();
-      if (waves.queue.length) notify("Волна обновлена", "success");
-      else if (!document.querySelector(".toast")) notify("По этим фильтрам нет треков", "info");
-    } finally {
-      if (button) button.disabled = false;
-    }
+    const genre = waveChip("genre") || "all";
+    const language = waveChip("language") || "any";
+    const seed = waveChip("seed") || "taste";
+    const skip = document.querySelector('[data-waves-field="skipKnown"]');
+    const skipKnown = skip && skip.checked ? "1" : "0";
+    await post("waves-apply", { value: [genre, language, seed, skipKnown].join("|") });
+    await refreshWave();
+    if (waves.queue.length) notify("Волна обновлена", "success");
+    else if (!document.querySelector(".toast")) notify("По этим фильтрам нет треков", "info");
   }
 
   async function resetWaves() {
@@ -2181,25 +2173,140 @@
     }
   }
 
-  async function playWavesIndex(index) {
-    if (index >= waves.queue.length - 3) await refillWaves();
+  let wavePlayToken = 0;
+
+  function playWavesIndex(index) {
     const item = waves.queue[index];
     if (!item) {
       waves.active = false;
       syncPlayButton();
       return;
     }
+    const token = ++wavePlayToken;
     waves.index = index;
+    waves.active = true;
     post("waves-heard", { url: item.url });
     const title = document.querySelector(".home-waves-title");
     const meta = document.querySelector(".home-waves-meta");
     if (title) title.textContent = item.title;
     if (meta) meta.innerHTML = artistLink(item.artist);
     const local = librarySong(item.title, item.artist);
-    const archived = local ? "" : await archiveFile(item.title, item.artist);
-    const full = local ? "/audio/" + encodeURIComponent(local.id) : archived;
-    playUrl(full || item.url, item.title, item.artist);
+    const src = local ? "/audio/" + encodeURIComponent(local.id) : item.url;
+    playUrlNow(src, item.title, item.artist);
+    loadWavePicture(src, token);
+    if (!local) {
+      archiveFile(item.title, item.artist).then((archived) => {
+        if (!archived || token !== wavePlayToken || waves.index !== index || audio.currentTime > 0.35) return;
+        playUrlNow(archived, item.title, item.artist);
+      });
+    }
+    if (index >= waves.queue.length - 3) refillWaves();
     scheduleArchive();
+  }
+
+  function playUrlNow(url, title, artist) {
+    tuneEq();
+    clip = { id: "", start: 0, end: 0, preview: false };
+    audio.muted = false;
+    if (!(audio.volume > 0)) audio.volume = 0.8;
+    // A catalog demo has no CORS header. Routing that element through Web Audio
+    // plays silence, so the demo stays on the element's own output.
+    audio.src = eqNodes && /^https:\/\/([^/]+\.)?dzcdn\.net\//.test(url || "")
+      ? "/api/wave-audio?url=" + encodeURIComponent(url)
+      : url;
+    const started = audio.play();
+    if (started && typeof started.catch === "function") started.catch(() => {});
+    setNowPlaying(title, artist, { url: url || "", cover: "" });
+    syncPlayButton();
+    pumpWaveCard();
+  }
+
+  let waveDecode = null;
+  let waveMeterLoop = false;
+  let wavePicture = null;
+
+  function waveDecodeContext() {
+    if (waveDecode) return waveDecode;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    try {
+      waveDecode = new Ctx();
+      return waveDecode;
+    } catch {
+      return null;
+    }
+  }
+
+  function loadWavePicture(url, token) {
+    const demo = /^https:\/\/([^/]+\.)?dzcdn\.net\//.test(url || "");
+    const local = typeof url === "string" && (url.startsWith("/") || url.startsWith(location.origin));
+    if (!demo && !local) return;
+    const ctx = waveDecodeContext();
+    if (!ctx) return;
+    const fetchUrl = demo ? "/api/wave-audio?url=" + encodeURIComponent(url) : url;
+    fetch(fetchUrl)
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((bytes) => (bytes ? ctx.decodeAudioData(bytes.slice(0)) : null))
+      .then((buffer) => {
+        if (buffer && token === wavePlayToken) wavePicture = { token, buffer };
+      })
+      .catch(() => {});
+  }
+
+  function waveLevels(buffer, time) {
+    const data = buffer.getChannelData(0);
+    const start = Math.max(0, Math.floor((time || 0) * buffer.sampleRate));
+    const width = 160;
+    const targets = [2, 5, 9, 16, 28];
+    return targets.map((bin) => {
+      let real = 0;
+      let imag = 0;
+      const omega = (Math.PI * 2 * bin) / width;
+      for (let i = 0; i < width; i += 2) {
+        const sample = data[start + i] || 0;
+        real += sample * Math.cos(omega * i);
+        imag -= sample * Math.sin(omega * i);
+      }
+      const power = Math.sqrt(real * real + imag * imag) / (width / 2);
+      return Math.min(1, Math.pow(power * 7, 0.72));
+    });
+  }
+
+  function pumpWaveCard() {
+    const card = document.querySelector(".home-waves");
+    const bars = card ? [...card.querySelectorAll(".home-waves-bar")] : [];
+    const playing = Boolean(waves.active && audio.src && !audio.paused);
+    if (card) card.classList.toggle("is-playing", playing);
+    if (!playing || !bars.length) {
+      waveMeterLoop = false;
+      if (card) card.classList.remove("is-live");
+      bars.forEach((bar) => { bar.style.transform = ""; });
+      return;
+    }
+    let levels = null;
+    if (wavePicture && wavePicture.token === wavePlayToken) {
+      levels = waveLevels(wavePicture.buffer, audio.currentTime || 0);
+    }
+    const moving = levels && levels.some((level, index) => Math.abs(level - levels[0]) > 0.04 || (index === 0 && level > 0.08));
+    if (!moving) {
+      if (card) card.classList.remove("is-live");
+      bars.forEach((bar) => { bar.style.transform = ""; });
+    } else if (card) {
+      card.classList.add("is-live");
+      bars.forEach((bar, index) => {
+        const scale = 0.22 + levels[index] * 0.9;
+        bar.style.transform = `scaleY(${scale.toFixed(3)})`;
+      });
+    }
+    if (!waveMeterLoop) {
+      waveMeterLoop = true;
+      const frame = () => {
+        if (!waveMeterLoop) return;
+        pumpWaveCard();
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    }
   }
 
   const archiveQueued = new Set();
@@ -2456,6 +2563,8 @@
     }
     const wavesIcon = document.querySelector(".home-waves-play");
     if (wavesIcon) wavesIcon.innerHTML = svg(waves.active && playing ? PAUSE : PLAY, 22);
+    document.querySelector(".home-waves")?.classList.toggle("is-playing", Boolean(waves.active && playing));
+    if (waves.active && playing) pumpWaveCard();
     const brand = document.querySelector(".home-waves-brand");
     if (brand) brand.textContent = waves.active && waves.track ? "Похожее на это" : "IMe Waves";
     syncWaveActions();
