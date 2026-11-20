@@ -1143,6 +1143,13 @@ select:focus-visible {
   animation: waves-pulse 1s ease-in-out infinite;
 }
 
+.home-waves.is-live .home-waves-bar {
+  height: 100%;
+  opacity: 1;
+  animation: none;
+  transition: transform 70ms linear;
+}
+
 .home-waves.is-playing .home-waves-bar:nth-child(2) { animation-delay: 0.1s; }
 .home-waves.is-playing .home-waves-bar:nth-child(3) { animation-delay: 0.2s; }
 .home-waves.is-playing .home-waves-bar:nth-child(4) { animation-delay: 0.15s; }

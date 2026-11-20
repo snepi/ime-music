@@ -1548,7 +1548,6 @@
       return;
     }
     playWavesIndex(0);
-    scheduleArchive();
   }
 
   function toggleWavesSettings() {
@@ -1713,7 +1712,6 @@
       return;
     }
     playWavesIndex(0);
-    scheduleArchive();
   }
 
   function similarToCurrent() {
@@ -1801,21 +1799,15 @@
   }
 
   async function applyWaves() {
-    const button = document.querySelector('[data-act="waves-apply"]');
-    if (button) button.disabled = true;
-    try {
-      const genre = waveChip("genre") || "all";
-      const language = waveChip("language") || "any";
-      const seed = waveChip("seed") || "taste";
-      const skip = document.querySelector('[data-waves-field="skipKnown"]');
-      const skipKnown = skip && skip.checked ? "1" : "0";
-      await post("waves-apply", { value: [genre, language, seed, skipKnown].join("|") });
-      await refreshWave();
-      if (waves.queue.length) notify("Волна обновлена", "success");
-      else if (!document.querySelector(".toast")) notify("По этим фильтрам нет треков", "info");
-    } finally {
-      if (button) button.disabled = false;
-    }
+    const genre = waveChip("genre") || "all";
+    const language = waveChip("language") || "any";
+    const seed = waveChip("seed") || "taste";
+    const skip = document.querySelector('[data-waves-field="skipKnown"]');
+    const skipKnown = skip && skip.checked ? "1" : "0";
+    await post("waves-apply", { value: [genre, language, seed, skipKnown].join("|") });
+    await refreshWave();
+    if (waves.queue.length) notify("Волна обновлена", "success");
+    else if (!document.querySelector(".toast")) notify("По этим фильтрам нет треков", "info");
   }
 
   async function resetWaves() {
@@ -2181,25 +2173,99 @@
     }
   }
 
-  async function playWavesIndex(index) {
-    if (index >= waves.queue.length - 3) await refillWaves();
+  let wavePlayToken = 0;
+
+  function playWavesIndex(index) {
     const item = waves.queue[index];
     if (!item) {
       waves.active = false;
       syncPlayButton();
       return;
     }
+    const token = ++wavePlayToken;
     waves.index = index;
+    waves.active = true;
     post("waves-heard", { url: item.url });
     const title = document.querySelector(".home-waves-title");
     const meta = document.querySelector(".home-waves-meta");
     if (title) title.textContent = item.title;
     if (meta) meta.innerHTML = artistLink(item.artist);
     const local = librarySong(item.title, item.artist);
-    const archived = local ? "" : await archiveFile(item.title, item.artist);
-    const full = local ? "/audio/" + encodeURIComponent(local.id) : archived;
-    playUrl(full || item.url, item.title, item.artist);
+    playUrlNow(local ? "/audio/" + encodeURIComponent(local.id) : item.url, item.title, item.artist);
+    if (!local) {
+      archiveFile(item.title, item.artist).then((archived) => {
+        if (!archived || token !== wavePlayToken || waves.index !== index || audio.currentTime > 0.35) return;
+        playUrlNow(archived, item.title, item.artist);
+      });
+    }
+    if (index >= waves.queue.length - 3) refillWaves();
     scheduleArchive();
+  }
+
+  function playUrlNow(url, title, artist) {
+    tuneEq();
+    clip = { id: "", start: 0, end: 0, preview: false };
+    audio.src = url;
+    const started = audio.play();
+    if (started && typeof started.catch === "function") started.catch(() => {});
+    setNowPlaying(title, artist, { url: url || "", cover: "" });
+    syncPlayButton();
+    pumpWaveCard();
+  }
+
+  let waveMeter = null;
+  let waveMeterLoop = false;
+
+  function armWaveMeter() {
+    if (waveMeter) return waveMeter;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    try {
+      const ctx = new Ctx();
+      const source = ctx.createMediaElementSource(audio);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64;
+      analyser.smoothingTimeConstant = 0.7;
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
+      waveMeter = { ctx, analyser, bins: new Uint8Array(analyser.frequencyBinCount) };
+      return waveMeter;
+    } catch {
+      return null;
+    }
+  }
+
+  function pumpWaveCard() {
+    const card = document.querySelector(".home-waves");
+    const bars = card ? [...card.querySelectorAll(".home-waves-bar")] : [];
+    const playing = Boolean(waves.active && audio.src && !audio.paused);
+    if (card) card.classList.toggle("is-playing", playing);
+    if (!playing || !bars.length) {
+      waveMeterLoop = false;
+      if (card) card.classList.remove("is-live");
+      bars.forEach((bar) => { bar.style.transform = ""; });
+      return;
+    }
+    const meter = armWaveMeter();
+    if (!meter) return;
+    if (meter.ctx.state === "suspended") meter.ctx.resume();
+    card.classList.add("is-live");
+    meter.analyser.getByteFrequencyData(meter.bins);
+    const picks = [2, 4, 7, 11, 16];
+    bars.forEach((bar, index) => {
+      const level = meter.bins[picks[index]] || 0;
+      const scale = 0.18 + (level / 255) * 0.92;
+      bar.style.transform = `scaleY(${scale.toFixed(3)})`;
+    });
+    if (!waveMeterLoop) {
+      waveMeterLoop = true;
+      const frame = () => {
+        if (!waveMeterLoop) return;
+        pumpWaveCard();
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    }
   }
 
   const archiveQueued = new Set();
@@ -2456,6 +2522,8 @@
     }
     const wavesIcon = document.querySelector(".home-waves-play");
     if (wavesIcon) wavesIcon.innerHTML = svg(waves.active && playing ? PAUSE : PLAY, 22);
+    document.querySelector(".home-waves")?.classList.toggle("is-playing", Boolean(waves.active && playing));
+    if (waves.active && playing) pumpWaveCard();
     const brand = document.querySelector(".home-waves-brand");
     if (brand) brand.textContent = waves.active && waves.track ? "Похожее на это" : "IMe Waves";
     syncWaveActions();
