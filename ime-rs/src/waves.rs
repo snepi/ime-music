@@ -177,6 +177,13 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         }
     }
     // Artist radio ignores genre. Use it only when the listener did not pick a style.
+    if waves.genre == "all" && store.taste.ready {
+        for genre in profile_wave_genres(store) {
+            if let Some(id) = catalog_id(&genre) {
+                raw.extend(genre_catalog(id));
+            }
+        }
+    }
     if uses_artist_radio(&waves.genre, &waves.seed) {
         for name in seed_artists(store).iter().take(6) {
             let Some(id) = resolve_artist(name) else { continue };
@@ -213,7 +220,7 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         if !matches_genre(&item, &waves.genre) {
             continue;
         }
-        if blocked_exact(waves, &item) || blocked_like(waves, &item) {
+        if blocked_exact(waves, &item) || blocked_like(waves, &item) || taste_blocks(store, &item.artist) {
             continue;
         }
         mapped.push(item);
@@ -569,20 +576,94 @@ fn resolved_from(raw: &Value) -> Option<Resolved> {
     })
 }
 
-fn seed_artists(store: &Store) -> Vec<String> {
-    let waves = &store.settings.waves;
-    if waves.seed == "wishlist" {
-        let mut names = Vec::new();
-        for wish in store.settings.wishlist.iter().take(8) {
-            if !wish.artist.trim().is_empty() {
-                names.push(wish.artist.clone());
+fn catalog_id(genre: &str) -> Option<u32> {
+    preset(genre).deezer_id
+}
+
+fn profile_wave_genres(store: &Store) -> Vec<String> {
+    let mut keys = Vec::new();
+    for list in [&store.taste.current_genres, &store.taste.long_genres] {
+        if let Some(item) = list.first() {
+            if catalog_id(&item.key).is_some() && !keys.contains(&item.key) {
+                keys.push(item.key.clone());
             }
         }
-        return names;
     }
-    let liked_only = waves.seed == "liked";
-    let limit = if waves.seed == "chart" { 6 } else { 10 };
-    pick_seed_artists(&store.songs, liked_only, limit)
+    keys
+}
+
+fn taste_blocks(store: &Store, artist: &str) -> bool {
+    if !store.taste.ready {
+        return false;
+    }
+    let key = artist_key(artist);
+    store.taste.disliked.iter().any(|name| artist_key(name) == key)
+}
+
+fn seed_artists(store: &Store) -> Vec<String> {
+    let waves = &store.settings.waves;
+    let mut names = if waves.seed == "wishlist" {
+        store
+            .settings
+            .wishlist
+            .iter()
+            .take(8)
+            .map(|wish| wish.artist.clone())
+            .filter(|name| !name.trim().is_empty())
+            .collect::<Vec<_>>()
+    } else if store.taste.ready && waves.seed != "chart" {
+        profile_seeds(store, waves.seed == "liked", 8)
+    } else {
+        let liked_only = waves.seed == "liked";
+        let limit = if waves.seed == "chart" { 6 } else { 10 };
+        pick_seed_artists(&store.songs, liked_only, limit)
+    };
+    names.retain(|name| !name.trim().is_empty() && !taste_blocks(store, name));
+    if names.is_empty() && waves.seed != "wishlist" {
+        names = pick_seed_artists(&store.songs, waves.seed == "liked", 8);
+        names.retain(|name| !taste_blocks(store, name));
+    }
+    names
+}
+
+/// Current artists lead, and one long-term artist stays so an older taste does not vanish.
+/// The tail rotates with the wave spin, so the same names do not occupy every slot.
+fn profile_seeds(store: &Store, liked_only: bool, limit: usize) -> Vec<String> {
+    let mut names = Vec::new();
+    let push = |names: &mut Vec<String>, label: &str| {
+        if label.trim().is_empty() || names.iter().any(|have| artist_key(have) == artist_key(label)) {
+            return;
+        }
+        names.push(label.to_string());
+    };
+    for item in store.taste.current_artists.iter().take(4) {
+        push(&mut names, &item.label);
+    }
+    if let Some(anchor) = store.taste.long_artists.first() {
+        push(&mut names, &anchor.label);
+        if let Some(pos) = names.iter().position(|name| artist_key(name) == artist_key(&anchor.label)) {
+            let kept = names.remove(pos);
+            names.insert(0, kept);
+        }
+    }
+    for item in store.taste.long_artists.iter().skip(1).take(4) {
+        push(&mut names, &item.label);
+    }
+    for artist in &store.settings.favorite_artists {
+        push(&mut names, &artist.name);
+    }
+    if liked_only {
+        names.retain(|name| {
+            store.settings.favorite_artists.iter().any(|artist| artist_key(&artist.name) == artist_key(name))
+                || store.songs.iter().any(|song| song.liked && artist_key(&song.artist) == artist_key(name))
+        });
+    }
+    if names.len() > 2 {
+        let shift = store.settings.waves.spin as usize % (names.len() - 1);
+        names[1..].rotate_left(shift);
+    }
+    names.truncate(limit);
+    names
 }
 
 fn pick_seed_artists(songs: &[Song], liked_only: bool, limit: usize) -> Vec<String> {

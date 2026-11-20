@@ -53,6 +53,47 @@ pub struct Song {
     pub trim_start: f64,
     #[serde(default)]
     pub trim_end: f64,
+    /// Genre keys from the file's tags, comma-separated. Empty when the tag is missing.
+    #[serde(default)]
+    pub genre: String,
+    /// Language code from a language tag. Never taken from the file name.
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub bpm: Option<f32>,
+    #[serde(default)]
+    pub energy: Option<f32>,
+    #[serde(default)]
+    pub tags_read: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TasteItem {
+    pub key: String,
+    pub label: String,
+    pub score: f32,
+}
+
+/// Long-term and current taste. Empty until real listens, favorites, or dislikes exist.
+#[derive(Clone, Debug, Default)]
+pub struct Taste {
+    pub ready: bool,
+    pub event_count: u32,
+    pub listen_seconds: u64,
+    pub track_count: u32,
+    pub diversity: Option<f32>,
+    pub long_genres: Vec<TasteItem>,
+    pub current_genres: Vec<TasteItem>,
+    pub long_artists: Vec<TasteItem>,
+    pub current_artists: Vec<TasteItem>,
+    pub disliked: Vec<String>,
+    pub languages: Vec<TasteItem>,
+    pub bpm: Option<f32>,
+    pub energy: Option<f32>,
+    pub line: String,
+    pub spin: u64,
+    pub tagged: u32,
+    pub untagged: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -385,6 +426,12 @@ pub struct Store {
     pub archive: Vec<ArchiveItem>,
     #[serde(default)]
     pub created_mixes: Vec<CreatedMix>,
+    #[serde(skip, default)]
+    pub taste: Taste,
+    #[serde(skip, default)]
+    pub profile_page: String,
+    #[serde(skip, default)]
+    pub profile_seed: String,
 }
 
 impl Default for Store {
@@ -397,6 +444,9 @@ impl Default for Store {
             player: Player::default(),
             archive: Vec::new(),
             created_mixes: Vec::new(),
+            taste: Taste::default(),
+            profile_page: String::new(),
+            profile_seed: String::new(),
         }
     }
 }
@@ -689,14 +739,20 @@ impl Store {
             cover_path: String::new(),
             trim_start: 0.0,
             trim_end: 0.0,
+            genre: meta.genre,
+            language: meta.language,
+            bpm: meta.bpm,
+            energy: meta.energy,
+            tags_read: true,
         });
         true
     }
 
-    pub fn toggle_like(&mut self, id: &str) {
-        if let Some(song) = self.songs.iter_mut().find(|s| s.id == id) {
-            song.liked = !song.liked;
-        }
+    /// Returns whether the song is liked after the click.
+    pub fn toggle_like(&mut self, id: &str) -> Option<bool> {
+        let song = self.songs.iter_mut().find(|s| s.id == id)?;
+        song.liked = !song.liked;
+        Some(song.liked)
     }
 
     pub fn remove_song(&mut self, id: &str) {
@@ -1429,6 +1485,111 @@ fn song_matches_kind(song: &Song, class: MixClass, songs: &[Song]) -> bool {
     }
 }
 
+fn taste_genre(taste: &Taste, key: &str) -> f32 {
+    let long = taste.long_genres.iter().find(|item| item.key == key).map(|item| item.score).unwrap_or(0.0);
+    let current = taste.current_genres.iter().find(|item| item.key == key).map(|item| item.score).unwrap_or(0.0);
+    long * 0.4 + current * 0.6
+}
+
+fn class_score(taste: &Taste, class: MixClass) -> f32 {
+    let keys: &[&str] = match class {
+        MixClass::Rock => &["rock", "metal"],
+        MixClass::Rap => &["rap"],
+        MixClass::Pop => &["pop"],
+        MixClass::Electro => &["electronic"],
+        MixClass::Jazz => &["jazz", "blues"],
+        MixClass::Indie => &["indie"],
+        MixClass::Calm => &["ambient", "classical"],
+        MixClass::Dance => &["dance", "disco"],
+        MixClass::Soundtrack => &["soundtrack"],
+        MixClass::Soul => &["soul", "rnb"],
+        _ => &[],
+    };
+    keys.iter().map(|key| taste_genre(taste, key)).sum()
+}
+
+fn genre_signal(taste: &Taste) -> bool {
+    taste.ready && taste.long_genres.iter().chain(taste.current_genres.iter()).any(|item| item.score > 0.2)
+}
+
+fn mix_order(len: usize, step: usize, taste: &Taste, library: bool) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    if !genre_signal(taste) {
+        return order.into_iter().map(|offset| (step + offset) % len.max(1)).take(len).collect();
+    }
+    order.sort_by(|&a, &b| {
+        let sa = if library { class_score(taste, LIBRARY_KINDS[a].class) } else { 0.0 };
+        let sb = if library { class_score(taste, LIBRARY_KINDS[b].class) } else { 0.0 };
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let window = order.len().min(8);
+    if window > 1 {
+        order[..window].rotate_left(step % window);
+    }
+    order
+}
+
+fn external_key(title: &str) -> &str {
+    let title = title.to_lowercase();
+    if title.contains("рок") || title.contains("метал") {
+        "rock"
+    } else if title.contains("рэп") {
+        "rap"
+    } else if title.contains("поп") {
+        "pop"
+    } else if title.contains("электро") {
+        "electronic"
+    } else if title.contains("джаз") {
+        "jazz"
+    } else if title.contains("инди") {
+        "indie"
+    } else if title.contains("соул") {
+        "soul"
+    } else if title.contains("фолк") {
+        "folk"
+    } else if title.contains("латин") {
+        "latin"
+    } else if title.contains("k-pop") {
+        "kpop"
+    } else if title.contains("классик") {
+        "classical"
+    } else if title.contains("саундтрек") {
+        "soundtrack"
+    } else if title.contains("лоуфай") {
+        "lofi"
+    } else if title.contains("диско") {
+        "disco"
+    } else {
+        ""
+    }
+}
+
+fn external_order(step: usize, taste: &Taste) -> Vec<usize> {
+    let len = EXTERNAL_MIXES.len();
+    let mut order: Vec<usize> = (0..len).collect();
+    if !genre_signal(taste) {
+        return (0..len).map(|offset| (step.wrapping_mul(2) + offset) % len).collect();
+    }
+    order.sort_by(|&a, &b| {
+        let sa = taste_genre(taste, external_key(EXTERNAL_MIXES[a].title));
+        let sb = taste_genre(taste, external_key(EXTERNAL_MIXES[b].title));
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let window = order.len().min(6);
+    if window > 1 {
+        order[..window].rotate_left((step.wrapping_mul(2)) % window);
+    }
+    order
+}
+
+fn taste_blocks_artist(taste: &Taste, artist: &str) -> bool {
+    if !taste.ready {
+        return false;
+    }
+    let key = artist.trim().to_lowercase();
+    taste.disliked.iter().any(|name| name.trim().to_lowercase() == key)
+}
+
 impl Store {
     pub fn continue_song(&self) -> Option<&Song> {
         if let Some(id) = self.player.current_id.as_deref() {
@@ -1450,12 +1611,17 @@ impl Store {
         let step = (now / FIVE_HOURS_MS).max(0) as usize;
         let want = 2 + (step % 3);
         let mut mixes = Vec::new();
-        for offset in 0..LIBRARY_KINDS.len() {
+        for index in mix_order(LIBRARY_KINDS.len(), step, &self.taste, true) {
             if mixes.len() >= want {
                 break;
             }
-            let kind = &LIBRARY_KINDS[(step + offset) % LIBRARY_KINDS.len()];
-            let mut songs: Vec<&Song> = self.songs.iter().filter(|song| song_matches_kind(song, kind.class, &self.songs)).collect();
+            let kind = &LIBRARY_KINDS[index];
+            let mut songs: Vec<&Song> = self
+                .songs
+                .iter()
+                .filter(|song| song_matches_kind(song, kind.class, &self.songs))
+                .filter(|song| !taste_blocks_artist(&self.taste, &song.artist))
+                .collect();
             if kind.class == MixClass::New {
                 songs.sort_by_key(|song| std::cmp::Reverse(song.added_at));
             } else if kind.class == MixClass::Often {
@@ -1486,11 +1652,12 @@ impl Store {
         let step = (now / THREE_HOURS_MS).max(0) as usize;
         let want = 2 + (step % 3);
         let mut mixes = Vec::new();
-        for offset in 0..EXTERNAL_MIXES.len() {
+        let order = external_order(step, &self.taste);
+        for index in order {
             if mixes.len() >= want {
                 break;
             }
-            let kind = &EXTERNAL_MIXES[(step.wrapping_mul(2) + offset) % EXTERNAL_MIXES.len()];
+            let kind = &EXTERNAL_MIXES[index];
             let tracks = kind
                 .tracks
                 .iter()
@@ -1502,7 +1669,7 @@ impl Store {
                 continue;
             }
             mixes.push(CreatedMix {
-                id: format!("mix-{}-{}", step, offset),
+                id: format!("mix-{}-{}", step, index),
                 title: kind.title.to_string(),
                 created_at: now,
                 tracks,
@@ -1591,6 +1758,10 @@ struct Tags {
     album: String,
     year: Option<i32>,
     duration: f64,
+    genre: String,
+    language: String,
+    bpm: Option<f32>,
+    energy: Option<f32>,
 }
 
 fn read_tags(path: &Path, display_stem: Option<&str>) -> Tags {
@@ -1611,6 +1782,10 @@ fn read_tags(path: &Path, display_stem: Option<&str>) -> Tags {
         album: String::new(),
         year: None,
         duration: 0.0,
+        genre: String::new(),
+        language: String::new(),
+        bpm: None,
+        energy: None,
     };
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         if ext.eq_ignore_ascii_case("mp3") {
@@ -1625,13 +1800,39 @@ fn read_tags(path: &Path, display_stem: Option<&str>) -> Tags {
                     tags.album = id3.album;
                 }
                 tags.year = id3.year;
+                tags.genre = id3.genre;
+                tags.language = id3.language;
+                tags.bpm = id3.bpm;
+            }
+        }
+        if ext.eq_ignore_ascii_case("flac") || ext.eq_ignore_ascii_case("ogg") {
+            if let Some(found) = vorbis_comments(path) {
+                if !found.title.is_empty() {
+                    tags.title = found.title;
+                }
+                if !found.artist.is_empty() {
+                    tags.artist = found.artist;
+                }
+                if !found.album.is_empty() {
+                    tags.album = found.album;
+                }
+                tags.genre = found.genre;
+                tags.language = found.language;
+                tags.bpm = found.bpm;
             }
         }
         if ext.eq_ignore_ascii_case("wav") {
             tags.duration = wav_duration(path);
+            tags.energy = wav_energy(path);
         }
     }
     tags
+}
+
+/// Re-read genre, language, tempo and energy from tags. Language is never taken from the file name.
+pub fn inspect_tags(path: &Path) -> (String, String, Option<f32>, Option<f32>) {
+    let tags = read_tags(path, None);
+    (tags.genre, tags.language, tags.bpm, tags.energy)
 }
 
 fn split_name(stem: &str) -> (String, String) {
@@ -1666,6 +1867,9 @@ fn read_id3(path: &Path) -> Option<Id3> {
     let mut album = String::new();
     let mut year = None;
     let mut cover = None;
+    let mut genre = String::new();
+    let mut language = String::new();
+    let mut bpm = None;
     let mut i = 0;
     while i + 10 <= buf.len() {
         let id = &buf[i..i + 4];
@@ -1685,6 +1889,9 @@ fn read_id3(path: &Path) -> Option<Id3> {
             b"TYER" | b"TDRC" => {
                 year = text.chars().take(4).collect::<String>().parse().ok();
             }
+            b"TCON" => genre = normalize_genres(&text),
+            b"TLAN" => language = normalize_language(&text),
+            b"TBPM" => bpm = text.trim().replace(',', ".").parse::<f32>().ok().filter(|n| *n > 0.0 && *n < 400.0),
             b"APIC" => {
                 if cover.is_none() {
                     cover = apic_bytes(data);
@@ -1694,7 +1901,7 @@ fn read_id3(path: &Path) -> Option<Id3> {
         }
         i += 10 + frame_size;
     }
-    Some(Id3 { title, artist, album, year, cover })
+    Some(Id3 { title, artist, album, year, cover, genre, language, bpm })
 }
 
 struct Id3 {
@@ -1703,6 +1910,9 @@ struct Id3 {
     album: String,
     year: Option<i32>,
     cover: Option<Vec<u8>>,
+    genre: String,
+    language: String,
+    bpm: Option<f32>,
 }
 
 fn apic_bytes(data: &[u8]) -> Option<Vec<u8>> {
@@ -1778,6 +1988,220 @@ fn decode_frame(data: &[u8]) -> String {
         }
         _ => String::from_utf8_lossy(rest).trim_end_matches('\0').trim().to_string(),
     }
+}
+
+/// Genre keys from a TCON / GENRE tag. Unknown text is kept as written in the tag.
+/// A bare number is used only when it is an ID3v1 genre code.
+pub fn normalize_genres(raw: &str) -> String {
+    let mut keys = Vec::new();
+    for part in raw.split([',', ';', '/', '|']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (number, text) = if part.starts_with('(') {
+            let end = part.find(')').unwrap_or(0);
+            let num = part[1..end].parse::<u16>().ok();
+            let text = if end > 0 { part[end + 1..].trim() } else { "" };
+            (num, text)
+        } else if part.chars().all(|ch| ch.is_ascii_digit()) {
+            (part.parse().ok(), "")
+        } else {
+            (None, part)
+        };
+        if let Some(key) = text_genre(text) {
+            push_key(&mut keys, key);
+        } else if !text.is_empty() {
+            push_key(&mut keys, &text.to_lowercase());
+        } else if let Some(key) = number.and_then(id3v1_genre) {
+            push_key(&mut keys, key);
+        }
+    }
+    keys.join(",")
+}
+
+fn push_key(keys: &mut Vec<String>, key: &str) {
+    let key = key.trim().trim_matches('"').trim();
+    if key.len() < 2 || key.len() > 40 || keys.iter().any(|have| have == key) {
+        return;
+    }
+    keys.push(key.to_string());
+}
+
+fn text_genre(text: &str) -> Option<&'static str> {
+    let value = text.to_lowercase().replace('ё', "е");
+    if value.is_empty() {
+        return None;
+    }
+    let pairs = [
+        ("rock", &["rock", "рок", "punk", "панк", "grunge", "гранж"][..]),
+        ("metal", &["metal", "метал"][..]),
+        ("rap", &["rap", "рэп", "hip hop", "hip-hop", "хип-хоп", "trap"][..]),
+        ("pop", &["pop", "поп", "k-pop", "kpop"][..]),
+        ("electronic", &["electronic", "electro", "edm", "techno", "trance", "электро", "электроника"][..]),
+        ("jazz", &["jazz", "джаз"][..]),
+        ("blues", &["blues", "блюз"][..]),
+        ("indie", &["indie", "инди"][..]),
+        ("dance", &["dance", "house", "танцевальн"][..]),
+        ("disco", &["disco", "диско"][..]),
+        ("soul", &["soul", "соул", "funk", "фанк"][..]),
+        ("rnb", &["r&b", "rnb", "rhythm and blues"][..]),
+        ("ambient", &["ambient", "chill", "lofi", "lo-fi", "акустик"][..]),
+        ("soundtrack", &["soundtrack", "саундтрек", "score"][..]),
+        ("classical", &["classical", "classic", "классик"][..]),
+        ("folk", &["folk", "фолк"][..]),
+        ("latin", &["latin", "latino", "латин"][..]),
+    ];
+    for (key, words) in pairs {
+        if words.iter().any(|word| value.contains(word)) {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn id3v1_genre(code: u16) -> Option<&'static str> {
+    Some(match code {
+        0 => "blues",
+        1 | 6 | 17 => "rock",
+        3 => "dance",
+        4 => "disco",
+        5 | 14 => "soul",
+        7 | 15 => "rap",
+        8 => "jazz",
+        9 => "metal",
+        13 => "pop",
+        18 | 52 => "electronic",
+        24 => "soundtrack",
+        32 => "classical",
+        80 => "folk",
+        _ => return None,
+    })
+}
+
+/// Language from a TLAN / LANGUAGE tag only.
+pub fn normalize_language(raw: &str) -> String {
+    let value = raw.trim().to_lowercase();
+    if value.is_empty() || value.contains('.') || value.contains('/') || value.contains('\\') {
+        return String::new();
+    }
+    let token = value.split(['-', '_', ',']).next().unwrap_or("").trim();
+    match token {
+        "ru" | "rus" | "russian" | "русский" => "ru".into(),
+        "en" | "eng" | "english" | "английский" => "en".into(),
+        "uk" | "ukr" => "uk".into(),
+        "es" | "spa" => "es".into(),
+        "fr" | "fra" | "fre" => "fr".into(),
+        "de" | "deu" | "ger" => "de".into(),
+        other if (other.len() == 2 || other.len() == 3) && other.chars().all(|ch| ch.is_ascii_alphabetic()) => other.into(),
+        _ => String::new(),
+    }
+}
+
+fn vorbis_comments(path: &Path) -> Option<Id3> {
+    let bytes = fs::read(path).ok()?;
+    let block = if bytes.starts_with(b"fLaC") {
+        flac_comment_block(&bytes)?
+    } else {
+        let at = bytes.windows(7).position(|window| window == b"\x03vorbis")?;
+        bytes.get(at + 7..)?.to_vec()
+    };
+    let mut genre = String::new();
+    let mut language = String::new();
+    let mut title = String::new();
+    let mut artist = String::new();
+    let mut album = String::new();
+    let mut bpm = None;
+    for comment in vorbis_list(&block) {
+        let Some((key, value)) = comment.split_once('=') else { continue };
+        match key.trim().to_ascii_uppercase().as_str() {
+            "TITLE" => title = value.trim().to_string(),
+            "ARTIST" => artist = value.trim().to_string(),
+            "ALBUM" => album = value.trim().to_string(),
+            "GENRE" => genre = normalize_genres(value),
+            "LANGUAGE" | "LANG" => language = normalize_language(value),
+            "BPM" | "TBPM" => bpm = value.trim().replace(',', ".").parse::<f32>().ok().filter(|n| *n > 0.0 && *n < 400.0),
+            _ => {}
+        }
+    }
+    Some(Id3 { title, artist, album, year: None, cover: None, genre, language, bpm })
+}
+
+fn flac_comment_block(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut i = 4;
+    while i + 4 <= bytes.len() {
+        let header = bytes[i];
+        let size = u32::from_be_bytes([0, bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+        i += 4;
+        if i + size > bytes.len() {
+            return None;
+        }
+        if header & 0x7f == 4 {
+            return Some(bytes[i..i + size].to_vec());
+        }
+        if header & 0x80 != 0 {
+            break;
+        }
+        i += size;
+    }
+    None
+}
+
+fn vorbis_list(block: &[u8]) -> Vec<String> {
+    if block.len() < 8 {
+        return Vec::new();
+    }
+    let vendor = u32::from_le_bytes(block[0..4].try_into().ok().unwrap_or([0; 4])) as usize;
+    let mut i = 4 + vendor;
+    if i + 4 > block.len() {
+        return Vec::new();
+    }
+    let count = u32::from_le_bytes(block[i..i + 4].try_into().ok().unwrap_or([0; 4])) as usize;
+    i += 4;
+    let mut out = Vec::new();
+    for _ in 0..count.min(64) {
+        if i + 4 > block.len() {
+            break;
+        }
+        let len = u32::from_le_bytes(block[i..i + 4].try_into().ok().unwrap_or([0; 4])) as usize;
+        i += 4;
+        if i + len > block.len() {
+            break;
+        }
+        out.push(String::from_utf8_lossy(&block[i..i + len]).to_string());
+        i += len;
+    }
+    out
+}
+
+fn wav_energy(path: &Path) -> Option<f32> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let channels = u16::from_le_bytes([bytes[22], bytes[23]]) as usize;
+    let bits = u16::from_le_bytes([bytes[34], bytes[35]]) as usize;
+    if channels == 0 || bits != 16 {
+        return None;
+    }
+    let data = bytes.get(44..)?;
+    let step = channels * 2;
+    if step == 0 || data.len() < step {
+        return None;
+    }
+    let mut sum = 0.0f64;
+    let mut n = 0.0f64;
+    let mut i = 0;
+    while i + 1 < data.len() && n < 200_000.0 {
+        let sample = i16::from_le_bytes([data[i], data[i + 1]]) as f64 / 32768.0;
+        sum += sample * sample;
+        n += 1.0;
+        i += step;
+    }
+    if n < 1000.0 {
+        return None;
+    }
+    Some((sum / n).sqrt().clamp(0.0, 1.0) as f32)
 }
 
 fn wav_duration(path: &Path) -> f64 {
@@ -1870,6 +2294,11 @@ mod tests {
             cover_path: String::new(),
             trim_start: 0.0,
             trim_end: 0.0,
+            genre: String::new(),
+            language: String::new(),
+            bpm: None,
+            energy: None,
+            tags_read: true,
         }
     }
 
