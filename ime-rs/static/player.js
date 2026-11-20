@@ -2192,6 +2192,7 @@
     if (meta) meta.innerHTML = artistLink(item.artist);
     const local = librarySong(item.title, item.artist);
     playUrlNow(local ? "/audio/" + encodeURIComponent(local.id) : item.url, item.title, item.artist);
+    if (!local) loadWavePicture(item.url, token);
     if (!local) {
       archiveFile(item.title, item.artist).then((archived) => {
         if (!archived || token !== wavePlayToken || waves.index !== index || audio.currentTime > 0.35) return;
@@ -2215,6 +2216,7 @@
 
   let waveMeter = null;
   let waveMeterLoop = false;
+  let wavePicture = null;
 
   function armWaveMeter() {
     if (waveMeter) return waveMeter;
@@ -2235,6 +2237,38 @@
     }
   }
 
+  function loadWavePicture(url, token) {
+    if (!/^https:\/\/([^/]+\.)?dzcdn\.net\//.test(url || "")) return;
+    const meter = armWaveMeter();
+    if (!meter) return;
+    fetch("/api/wave-audio?url=" + encodeURIComponent(url))
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((bytes) => (bytes ? meter.ctx.decodeAudioData(bytes) : null))
+      .then((buffer) => {
+        if (buffer && token === wavePlayToken) wavePicture = { token, buffer };
+      })
+      .catch(() => {});
+  }
+
+  function waveLevels(buffer, time) {
+    const data = buffer.getChannelData(0);
+    const start = Math.max(0, Math.floor((time || 0) * buffer.sampleRate));
+    const width = 160;
+    const targets = [2, 5, 9, 16, 28];
+    return targets.map((bin) => {
+      let real = 0;
+      let imag = 0;
+      const omega = (Math.PI * 2 * bin) / width;
+      for (let i = 0; i < width; i += 2) {
+        const sample = data[start + i] || 0;
+        real += sample * Math.cos(omega * i);
+        imag -= sample * Math.sin(omega * i);
+      }
+      const power = Math.sqrt(real * real + imag * imag) / (width / 2);
+      return Math.min(1, Math.pow(power * 7, 0.72));
+    });
+  }
+
   function pumpWaveCard() {
     const card = document.querySelector(".home-waves");
     const bars = card ? [...card.querySelectorAll(".home-waves-bar")] : [];
@@ -2247,16 +2281,26 @@
       return;
     }
     const meter = armWaveMeter();
-    if (!meter) return;
-    if (meter.ctx.state === "suspended") meter.ctx.resume();
-    card.classList.add("is-live");
-    meter.analyser.getByteFrequencyData(meter.bins);
-    const picks = [2, 4, 7, 11, 16];
-    bars.forEach((bar, index) => {
-      const level = meter.bins[picks[index]] || 0;
-      const scale = 0.18 + (level / 255) * 0.92;
-      bar.style.transform = `scaleY(${scale.toFixed(3)})`;
-    });
+    let levels = null;
+    if (wavePicture && wavePicture.token === wavePlayToken) {
+      levels = waveLevels(wavePicture.buffer, audio.currentTime || 0);
+    } else if (meter && audio.src.startsWith(location.origin)) {
+      if (meter.ctx.state === "suspended") meter.ctx.resume();
+      meter.analyser.getByteFrequencyData(meter.bins);
+      const picks = [2, 4, 7, 11, 16];
+      levels = picks.map((pick) => (meter.bins[pick] || 0) / 255);
+    }
+    const moving = levels && levels.some((level, index) => Math.abs(level - levels[0]) > 0.04 || (index === 0 && level > 0.08));
+    if (!moving) {
+      if (card) card.classList.remove("is-live");
+      bars.forEach((bar) => { bar.style.transform = ""; });
+    } else if (card) {
+      card.classList.add("is-live");
+      bars.forEach((bar, index) => {
+        const scale = 0.22 + levels[index] * 0.9;
+        bar.style.transform = `scaleY(${scale.toFixed(3)})`;
+      });
+    }
     if (!waveMeterLoop) {
       waveMeterLoop = true;
       const frame = () => {
