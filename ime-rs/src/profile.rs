@@ -869,72 +869,84 @@ fn page(store: &Store, events: &[Listen], section: &str, reports: &[(String, Str
         ("", "")
     };
     let period = if section.is_empty() || section.starts_with("cmp-") { "30" } else { section };
-    let mut html = String::from(r#"<div class="profile-view"><div class="view-header"><div class="view-info"><h1>Музыкальный профиль</h1><p>Считается на этом компьютере по вашим прослушиваниям, избранному и «не нравится».</p></div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="profile-refresh"><input type="hidden" name="back" value="/?view=profile"><button type="submit" class="btn btn-secondary">Обновить</button></form></div>"#);
+    let mut html = String::from(r#"<div class="profile-view"><div class="view-header"><div class="view-info"><h1>Музыкальный профиль</h1><p>На этом компьютере: прослушивания, избранное и «не нравится». Вкусы не придумываются.</p></div><div class="profile-header-actions"><a class="btn btn-ghost" href="/?view=profile&section=report">Отчёт за месяц</a><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="profile-refresh"><input type="hidden" name="back" value="/?view=profile"><button type="submit" class="btn btn-secondary">Обновить</button></form></div></div>"#);
     html.push_str(&portrait(store));
     html.push_str(&recommendation_block(store));
-    html.push_str(&history_block(events, period, left, right));
     html.push_str(&discoveries(store, events));
-    html.push_str(r#"<p class="profile-note"><a href="/?view=profile&section=report">Отчёт за месяц</a></p></div>"#);
+    html.push_str(&history_block(events, period, left, right));
+    html.push_str("</div>");
     html
 }
 
 fn portrait(store: &Store) -> String {
     let taste = &store.taste;
-    let mut html = String::from(r#"<section class="profile-section"><h2>Мой музыкальный портрет</h2>"#);
-    html.push_str(&format!(r#"<p class="profile-lead">{}</p>"#, esc(&taste.line)));
-    html.push_str(r#"<p class="profile-note">Собирается локально: старт, длительность, доля прослушивания, ранний пропуск, повтор, избранное и «не нравится». Полное прослушивание и избранное — сильный плюс, «не нравится» — сильный минус, один пропуск слабый. Сеть для этого не используется.</p>"#);
-    if store.songs.is_empty() {
-        html.push_str(r#"<p class="profile-empty">Библиотека пуста. Добавьте свои файлы — рекомендации берут только их и уже открытый каталог.</p>"#);
-    }
-    html.push_str(r#"<div class="history-stats">"#);
+    let mut html = String::from(r#"<section class="home-section"><h2 class="home-section-title">Мой музыкальный портрет</h2><div class="profile-card"><p class="profile-lead">"#);
+    html.push_str(&esc(&taste.line));
+    html.push_str(r#"</p><div class="profile-stats">"#);
     html.push_str(&stat("Время", &format_duration(taste.listen_seconds)));
     html.push_str(&stat("Треки", &taste.track_count.to_string()));
     if let Some(diversity) = taste.diversity {
         html.push_str(&stat("Разнообразие", &format!("{diversity:.0}")));
     }
     html.push_str("</div>");
-    html.push_str(&bars("Любимые жанры", &taste.long_genres, "Доли по тегам жанра. Если тега нет, трек в эту долю не входит."));
-    if taste.long_genres.is_empty() {
-        html.push_str(r#"<p class="profile-empty">Жанр не найден в тегах. По имени файла он не угадывается.</p>"#);
+    if store.songs.is_empty() {
+        html.push_str(r#"<p class="home-section-hint">Библиотека пуста. Рекомендации берут только ваши файлы и уже открытый каталог.</p>"#);
+    } else if taste.tagged == 0 {
+        html.push_str(r#"<p class="home-section-hint">В тегах нет жанра и языка. Эти поля скрыты, по имени файла они не угадываются.</p>"#);
+    } else if taste.untagged > 0 {
+        html.push_str(&format!(
+            r#"<p class="home-section-hint">Без тега жанра: {} из {} треков. Они не входят в доли жанров.</p>"#,
+            taste.untagged,
+            store.songs.len()
+        ));
     }
+    html.push_str("</div></section>");
+    html.push_str(r#"<div class="profile-split">"#);
+    html.push_str(&genre_card(&taste.long_genres));
     html.push_str(&artist_block(store));
+    html.push_str("</div>");
     html.push_str(&trait_block(taste));
-    if taste.tagged == 0 && !store.songs.is_empty() {
-        html.push_str(r#"<p class="profile-note">Ни у одного трека нет тега жанра или языка.</p>"#);
-    } else if taste.untagged > 0 && !store.songs.is_empty() {
-        html.push_str(&format!(r#"<p class="profile-note">Без тега жанра: {} из {} треков.</p>"#, taste.untagged, store.songs.len()));
-    }
-    html.push_str("</section>");
     html
 }
 
 fn stat(label: &str, value: &str) -> String {
-    format!(r#"<div class="history-stat"><div class="history-stat-value">{}</div><div class="history-stat-label">{}</div></div>"#, esc(value), esc(label))
+    format!(r#"<div class="profile-stat"><span>{}</span><strong>{}</strong></div>"#, esc(label), esc(value))
 }
 
-fn bars(title: &str, items: &[TasteItem], hint: &str) -> String {
+fn genre_card(items: &[TasteItem]) -> String {
+    let mut html = String::from(r#"<section class="profile-card"><h2 class="home-section-title">Любимые жанры</h2>"#);
+    if items.is_empty() {
+        html.push_str(r#"<p class="home-section-hint">Жанр не найден в тегах.</p></section>"#);
+        return html;
+    }
+    html.push_str(&bars(items));
+    html.push_str("</section>");
+    html
+}
+
+fn bars(items: &[TasteItem]) -> String {
     if items.is_empty() {
         return String::new();
     }
     let max = items.iter().map(|item| item.score).fold(0.0f32, f32::max).max(0.01);
-    let mut html = format!(r#"<section class="profile-block"><h2>{}</h2><p class="profile-note">{}</p>"#, esc(title), esc(hint));
+    let mut html = String::from(r#"<div class="profile-bars">"#);
     for item in items.iter().take(6) {
-        let width = ((item.score / max) * 100.0).clamp(4.0, 100.0);
+        let width = ((item.score / max) * 100.0).clamp(8.0, 100.0);
         html.push_str(&format!(
             r#"<div class="profile-bar"><span>{}</span><span class="profile-bar-track"><span style="width:{width:.0}%"></span></span></div>"#,
             esc(&item.label)
         ));
     }
-    html.push_str("</section>");
+    html.push_str("</div>");
     html
 }
 
 fn artist_block(store: &Store) -> String {
     let taste = &store.taste;
     if taste.long_artists.is_empty() && taste.current_artists.is_empty() {
-        return r#"<section class="profile-block"><h2>Любимые исполнители</h2><p class="profile-empty">Исполнители появятся после прослушиваний или избранного.</p></section>"#.into();
+        return r#"<section class="profile-card"><h2 class="home-section-title">Любимые исполнители</h2><p class="home-section-hint">Появятся после прослушиваний или избранного.</p></section>"#.into();
     }
-    let mut html = String::from(r#"<section class="profile-block"><h2>Любимые исполнители</h2><ul class="profile-people">"#);
+    let mut html = String::from(r#"<section class="profile-card"><h2 class="home-section-title">Любимые исполнители</h2><ul class="profile-people">"#);
     for item in taste.long_artists.iter().take(6) {
         let current = taste.current_artists.iter().find(|now| now.key == item.key);
         let top_now = taste.current_artists.first().map(|now| now.key.as_str());
@@ -955,47 +967,54 @@ fn artist_block(store: &Store) -> String {
 }
 
 fn trait_block(taste: &Taste) -> String {
-    let mut html = String::from(r#"<section class="profile-block"><h2>Музыкальные предпочтения</h2>"#);
+    let mut html = String::from(r#"<section class="home-section"><h2 class="home-section-title">Музыкальные предпочтения</h2><div class="profile-facts">"#);
     let mut any = false;
     if !taste.languages.is_empty() {
         any = true;
         let labels: Vec<String> = taste.languages.iter().take(4).map(|item| genre_label(&item.key)).collect();
-        html.push_str(&format!(r#"<p>Языки из тегов: {}.</p>"#, esc(&labels.join(", "))));
+        html.push_str(&fact("Язык", &labels.join(", ")));
     }
     if let Some(bpm) = taste.bpm {
         any = true;
-        html.push_str(&format!(r#"<p>Темп по тегу BPM: около {:.0}.</p>"#, bpm));
+        html.push_str(&fact("Темп", &format!("около {:.0}", bpm)));
     }
     if let Some(energy) = taste.energy {
         any = true;
-        html.push_str(&format!(r#"<p>Энергия по громкости файла: {:.0}%.</p>"#, (energy * 100.0).clamp(0.0, 100.0)));
-    }
-    if !any {
-        html.push_str(r#"<p class="profile-empty">Темп, энергия, танцевальность, акустика и характер не показаны: в тегах и локальном разборе их нет. Значения не придумываются.</p>"#);
+        html.push_str(&fact("Энергия", &format!("{:.0}%", (energy * 100.0).clamp(0.0, 100.0))));
     }
     let current = taste.current_genres.first().map(|item| item.label.as_str()).unwrap_or("");
     let long = taste.long_genres.first().map(|item| item.label.as_str()).unwrap_or("");
     if !current.is_empty() && !long.is_empty() {
+        any = true;
         if current == long {
-            html.push_str(&format!(r#"<p>Текущие 14 и 30 дней совпадают с долгим профилем: {}.</p>"#, esc(long)));
+            html.push_str(&fact("Сейчас и давно", long));
         } else {
-            html.push_str(&format!(r#"<p>Долгий профиль: {}. Текущие две недели: {}.</p>"#, esc(long), esc(current)));
+            html.push_str(&fact("Долго", long));
+            html.push_str(&fact("14 и 30 дней", current));
         }
     }
-    html.push_str("</section>");
+    if !any {
+        html.push_str(r#"<p class="home-section-hint">Темп, энергия и язык не показаны: в тегах и локальном разборе их нет.</p>"#);
+    }
+    html.push_str("</div></section>");
     html
 }
 
+fn fact(label: &str, value: &str) -> String {
+    format!(r#"<div class="profile-fact"><span>{}</span><strong>{}</strong></div>"#, esc(label), esc(value))
+}
+
 fn recommendation_block(store: &Store) -> String {
-    let mut html = String::from(r#"<section class="profile-section"><h2>Персональные рекомендации</h2><p class="profile-note">Только треки библиотеки и, если своего файла нет, уже открытый каталог. Причина написана по правилу, а не наугад.</p>"#);
+    let mut html = String::from(r#"<section class="home-section"><div class="home-section-head"><h2 class="home-section-title">Персональные рекомендации</h2></div><p class="home-section-hint">Треки из библиотеки и уже открытого каталога. Причина берётся из профиля.</p>"#);
     if !store.taste.ready {
-        html.push_str(r#"<p class="profile-empty">Рекомендации по профилю включатся, когда наберётся несколько прослушиваний. Пока список не заполняется выдуманными треками.</p></section>"#);
+        html.push_str(r#"<p class="home-section-empty">Список появится после нескольких прослушиваний. Пустые места не заполняются выдуманными треками.</p></section>"#);
         return html;
     }
+    html.push_str(r#"<div class="profile-rec-grid">"#);
     for section in sections(store) {
-        html.push_str(&format!(r#"<section class="profile-block"><h3>{}</h3>"#, esc(section.title)));
+        html.push_str(&format!(r#"<article class="profile-card"><h3>{}</h3>"#, esc(section.title)));
         if section.rows.is_empty() {
-            html.push_str(&format!(r#"<p class="profile-empty">{}</p>"#, esc(section.empty)));
+            html.push_str(&format!(r#"<p class="home-section-hint">{}</p>"#, esc(section.empty)));
             if !section.catalog_artist.is_empty() {
                 html.push_str(&format!(
                     r#"<div class="profile-catalog" data-profile-artist="{}" data-profile-reason="{}"><ul class="demo-tracks-grid" data-profile-results></ul></div>"#,
@@ -1004,10 +1023,10 @@ fn recommendation_block(store: &Store) -> String {
                 ));
             }
         } else {
-            html.push_str(r#"<ul class="profile-rows">"#);
+            html.push_str(r#"<ul class="profile-tracks">"#);
             for row in section.rows {
                 html.push_str(&format!(
-                    r#"<li><button type="button" class="song-name" data-play="{id}" data-title="{title}" data-artist="{artist}">{title}</button><span class="song-artist">{artist}</span><p class="profile-reason">{reason}</p><button type="button" class="btn btn-ghost" data-menu-act="queue" data-id="{id}">В очередь</button></li>"#,
+                    r#"<li><div class="profile-track-copy"><button type="button" class="song-name" data-play="{id}" data-title="{title}" data-artist="{artist}">{title}</button><span class="song-artist">{artist}</span><span class="profile-reason">{reason}</span></div><button type="button" class="btn btn-ghost" data-menu-act="queue" data-id="{id}">В очередь</button></li>"#,
                     id = esc(&row.song_id),
                     title = esc(&row.title),
                     artist = esc(&row.artist),
@@ -1016,32 +1035,36 @@ fn recommendation_block(store: &Store) -> String {
             }
             html.push_str("</ul>");
         }
-        html.push_str("</section>");
+        html.push_str("</article>");
     }
-    html.push_str("</section>");
+    html.push_str("</div></section>");
     html
 }
 
 fn history_block(events: &[Listen], period: &str, left: &str, right: &str) -> String {
     let listens = events.iter().filter(|event| matches!(event.kind.as_str(), "start" | "finish" | "skip" | "replay")).count();
-    let mut html = String::from(r#"<section class="profile-section"><h2>История изменения вкусов</h2><div class="profile-chips">"#);
+    let mut html = String::from(r#"<section class="home-section"><h2 class="home-section-title">История изменения вкусов</h2><div class="profile-chips">"#);
     for (key, label) in [("7", "7 дней"), ("30", "30 дней"), ("90", "3 месяца"), ("180", "6 месяцев"), ("365", "1 год"), ("all", "всё время")] {
-        let class = if key == period { "profile-chip is-active" } else { "profile-chip" };
+        let class = if key == period { "rec-filter-chip active" } else { "rec-filter-chip" };
         html.push_str(&format!(r#"<a class="{class}" href="/?view=profile&section={key}">{label}</a>"#));
     }
     html.push_str("</div>");
     if listens < 4 {
-        html.push_str(r#"<p class="profile-empty">Истории пока мало. Нужно несколько разных прослушиваний, чтобы сравнить периоды. Пустые годы не заполняются.</p></section>"#);
+        html.push_str(r#"<p class="home-section-empty">Истории пока мало. Нужно несколько разных прослушиваний, чтобы сравнить периоды.</p></section>"#);
         return html;
     }
     let current = share_bag(events, period, now_ms());
-    html.push_str(&bars("Жанры за период", &ranked_genres(&current.genres), "Доля по событиям выбранного периода."));
-    html.push_str(&bars("Исполнители за период", &ranked_artists(&current), "По времени и весу прослушиваний."));
+    html.push_str(r#"<div class="profile-split">"#);
+    html.push_str(&format!(r#"<section class="profile-card"><h3>Жанры · {}</h3>{}</section>"#, esc(&period_label(period)), bars(&ranked_genres(&current.genres))));
+    html.push_str(&format!(r#"<section class="profile-card"><h3>Исполнители · {}</h3>{}</section>"#, esc(&period_label(period)), bars(&ranked_artists(&current))));
+    html.push_str("</div>");
     if !left.is_empty() && !right.is_empty() {
         html.push_str(&compare_block(events, left, right));
     } else {
-        html.push_str(r#"<p class="profile-note">Сравнить: "#);
-        html.push_str(&format!(r#"<a href="/?view=profile&section=cmp-{period}-7">с 7 днями</a> · <a href="/?view=profile&section=cmp-{period}-30">с 30 днями</a> · <a href="/?view=profile&section=cmp-30-90">30 дней и 3 месяца</a></p>"#));
+        html.push_str(r#"<p class="home-section-hint">Сравнить периоды: "#);
+        html.push_str(&format!(
+            r#"<a href="/?view=profile&section=cmp-{period}-7">с 7 днями</a> · <a href="/?view=profile&section=cmp-{period}-30">с 30 днями</a> · <a href="/?view=profile&section=cmp-30-90">30 дней и 3 месяца</a></p>"#
+        ));
     }
     html.push_str("</section>");
     html
@@ -1051,12 +1074,16 @@ fn compare_block(events: &[Listen], left: &str, right: &str) -> String {
     let now = now_ms();
     let a = share_bag(events, left, now);
     let b = share_bag(events, right, now);
-    let mut html = format!(r#"<h3>Сравнение: {} и {}</h3><ul class="profile-compare">"#, esc(&period_label(left)), esc(&period_label(right)));
+    let mut html = format!(
+        r#"<section class="profile-card profile-compare-card"><h3>Сравнение: {} и {}</h3><ul class="profile-compare">"#,
+        esc(&period_label(left)),
+        esc(&period_label(right))
+    );
     let mut keys: Vec<String> = a.genres.keys().chain(b.genres.keys()).cloned().collect();
     keys.sort();
     keys.dedup();
     if keys.is_empty() {
-        return r#"<p class="profile-empty">В этих периодах нет жанров из тегов, сравнивать нечего.</p>"#.into();
+        return r#"<p class="home-section-hint">В этих периодах нет жанров из тегов, сравнивать нечего.</p>"#.into();
     }
     for key in keys.into_iter().take(8) {
         let left_share = share_of(&a.genres, &key);
@@ -1068,14 +1095,14 @@ fn compare_block(events: &[Listen], left: &str, right: &str) -> String {
             right_share * 100.0
         ));
     }
-    html.push_str("</ul>");
+    html.push_str("</ul></section>");
     html
 }
 
 fn discoveries(store: &Store, events: &[Listen]) -> String {
-    let mut html = String::from(r#"<section class="profile-section"><h2>Музыкальные открытия</h2>"#);
+    let mut html = String::from(r#"<section class="home-section"><h2 class="home-section-title">Музыкальные открытия</h2>"#);
     if !store.taste.ready {
-        html.push_str(r#"<p class="profile-empty">Открытия появятся, когда текущий месяц можно будет с чем-то сравнить.</p></section>"#);
+        html.push_str(r#"<p class="home-section-empty">Открытия появятся, когда текущие две недели можно будет сравнить с долгим профилем.</p></section>"#);
         return html;
     }
     let mut lines = Vec::new();
@@ -1103,9 +1130,9 @@ fn discoveries(store: &Store, events: &[Listen]) -> String {
         }
     }
     if lines.is_empty() {
-        html.push_str(r#"<p class="profile-empty">Заметного сдвига относительно долгого профиля пока нет.</p>"#);
+        html.push_str(r#"<p class="home-section-hint">Заметного сдвига относительно долгого профиля пока нет.</p>"#);
     } else {
-        html.push_str("<ul class=\"profile-people\">");
+        html.push_str(r#"<ul class="profile-people profile-card">"#);
         for line in lines {
             html.push_str(&format!("<li>{}</li>", esc(&line)));
         }
@@ -1119,13 +1146,13 @@ fn report_page(events: &[Listen], saved: &[(String, String)]) -> String {
     let mut html = String::from(r#"<div class="profile-view"><div class="view-header"><div class="view-info"><h1>Отчёт за месяц</h1><p>Закрытый месяц сохраняется на этом компьютере.</p></div><a class="btn btn-secondary" href="/?view=profile">К профилю</a></div>"#);
     let month = month_key(now_ms());
     let open = report_body(events, &month);
-    html.push_str(&format!(r#"<section class="profile-section"><h2>{} ещё идёт</h2>{}</section>"#, esc(&month_title(&month)), report_html(&open)));
+    html.push_str(&format!(r#"<section class="home-section"><h2 class="home-section-title">{} ещё идёт</h2><div class="profile-card">{}</div></section>"#, esc(&month_title(&month)), report_html(&open)));
     if saved.is_empty() {
-        html.push_str(r#"<p class="profile-note">Закрытых отчётов пока нет. Они записываются, когда месяц закончился и в нём были прослушивания.</p>"#);
+        html.push_str(r#"<section class="home-section"><p class="home-section-hint">Закрытых отчётов пока нет. Они записываются, когда месяц закончился и в нём были прослушивания.</p></section>"#);
     } else {
         for (month, body) in saved {
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            html.push_str(&format!(r#"<section class="profile-section"><h2>{}</h2>{}</section>"#, esc(&month_title(month)), report_html(&parsed)));
+            html.push_str(&format!(r#"<section class="home-section"><h2 class="home-section-title">{}</h2><div class="profile-card">{}</div></section>"#, esc(&month_title(month)), report_html(&parsed)));
         }
     }
     html.push_str("</div>");
