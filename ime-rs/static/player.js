@@ -2191,8 +2191,9 @@
     if (title) title.textContent = item.title;
     if (meta) meta.innerHTML = artistLink(item.artist);
     const local = librarySong(item.title, item.artist);
-    playUrlNow(local ? "/audio/" + encodeURIComponent(local.id) : item.url, item.title, item.artist);
-    if (!local) loadWavePicture(item.url, token);
+    const src = local ? "/audio/" + encodeURIComponent(local.id) : item.url;
+    playUrlNow(src, item.title, item.artist);
+    loadWavePicture(src, token);
     if (!local) {
       archiveFile(item.title, item.artist).then((archived) => {
         if (!archived || token !== wavePlayToken || waves.index !== index || audio.currentTime > 0.35) return;
@@ -2206,7 +2207,13 @@
   function playUrlNow(url, title, artist) {
     tuneEq();
     clip = { id: "", start: 0, end: 0, preview: false };
-    audio.src = url;
+    audio.muted = false;
+    if (!(audio.volume > 0)) audio.volume = 0.8;
+    // A catalog demo has no CORS header. Routing that element through Web Audio
+    // plays silence, so the demo stays on the element's own output.
+    audio.src = eqNodes && /^https:\/\/([^/]+\.)?dzcdn\.net\//.test(url || "")
+      ? "/api/wave-audio?url=" + encodeURIComponent(url)
+      : url;
     const started = audio.play();
     if (started && typeof started.catch === "function") started.catch(() => {});
     setNowPlaying(title, artist, { url: url || "", cover: "" });
@@ -2214,36 +2221,32 @@
     pumpWaveCard();
   }
 
-  let waveMeter = null;
+  let waveDecode = null;
   let waveMeterLoop = false;
   let wavePicture = null;
 
-  function armWaveMeter() {
-    if (waveMeter) return waveMeter;
+  function waveDecodeContext() {
+    if (waveDecode) return waveDecode;
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return null;
     try {
-      const ctx = new Ctx();
-      const source = ctx.createMediaElementSource(audio);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 64;
-      analyser.smoothingTimeConstant = 0.7;
-      source.connect(analyser);
-      analyser.connect(ctx.destination);
-      waveMeter = { ctx, analyser, bins: new Uint8Array(analyser.frequencyBinCount) };
-      return waveMeter;
+      waveDecode = new Ctx();
+      return waveDecode;
     } catch {
       return null;
     }
   }
 
   function loadWavePicture(url, token) {
-    if (!/^https:\/\/([^/]+\.)?dzcdn\.net\//.test(url || "")) return;
-    const meter = armWaveMeter();
-    if (!meter) return;
-    fetch("/api/wave-audio?url=" + encodeURIComponent(url))
+    const demo = /^https:\/\/([^/]+\.)?dzcdn\.net\//.test(url || "");
+    const local = typeof url === "string" && (url.startsWith("/") || url.startsWith(location.origin));
+    if (!demo && !local) return;
+    const ctx = waveDecodeContext();
+    if (!ctx) return;
+    const fetchUrl = demo ? "/api/wave-audio?url=" + encodeURIComponent(url) : url;
+    fetch(fetchUrl)
       .then((response) => (response.ok ? response.arrayBuffer() : null))
-      .then((bytes) => (bytes ? meter.ctx.decodeAudioData(bytes) : null))
+      .then((bytes) => (bytes ? ctx.decodeAudioData(bytes.slice(0)) : null))
       .then((buffer) => {
         if (buffer && token === wavePlayToken) wavePicture = { token, buffer };
       })
@@ -2280,15 +2283,9 @@
       bars.forEach((bar) => { bar.style.transform = ""; });
       return;
     }
-    const meter = armWaveMeter();
     let levels = null;
     if (wavePicture && wavePicture.token === wavePlayToken) {
       levels = waveLevels(wavePicture.buffer, audio.currentTime || 0);
-    } else if (meter && audio.src.startsWith(location.origin)) {
-      if (meter.ctx.state === "suspended") meter.ctx.resume();
-      meter.analyser.getByteFrequencyData(meter.bins);
-      const picks = [2, 4, 7, 11, 16];
-      levels = picks.map((pick) => (meter.bins[pick] || 0) / 255);
     }
     const moving = levels && levels.some((level, index) => Math.abs(level - levels[0]) > 0.04 || (index === 0 && level > 0.08));
     if (!moving) {
