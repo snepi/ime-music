@@ -376,6 +376,20 @@ fn save(state: &AppState, store: &Store) {
     store.save(&state.data_path);
 }
 
+/// Genre is the catalog id. Language is the title's script. A missing catalog genre stays empty.
+fn stamp_tags(store: &mut model::Store, id: &str) {
+    let Some(song) = store.song(id).map(|song| (song.title.clone(), song.artist.clone(), song.genre.clone())) else {
+        return;
+    };
+    let language = model::script_language(&song.0);
+    let genre = if song.2.trim().is_empty() {
+        waves::catalog_genre(&song.0, &song.1).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    store.save_tags(id, &genre, &language);
+}
+
 fn trim_json(ok: bool, message: &str, duration: f64, id: &str) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -619,6 +633,7 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
             if let Some(id) = form.id.as_deref() {
                 let snapshot = store.song(id).map(|song| (song.title.clone(), song.artist.clone()));
                 if let Some(on) = store.toggle_like(id) {
+                    stamp_tags(&mut store, id);
                     if let Some((title, artist)) = snapshot {
                         let profile = state.profile.lock().expect("profile");
                         profile.record(
@@ -643,15 +658,20 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
         "play" => {
             if let Some(id) = form.id.clone().or(form.value.clone()) {
                 store.play(&id);
+                stamp_tags(&mut store, &id);
             }
         }
         "pause" => store.pause(),
         "resume" => store.resume(),
         "next" => {
-            store.next();
+            if let Some(id) = store.next() {
+                stamp_tags(&mut store, &id);
+            }
         }
         "prev" => {
-            store.prev();
+            if let Some(id) = store.prev() {
+                stamp_tags(&mut store, &id);
+            }
         }
         "shuffle" => store.settings.playback.shuffle = !store.settings.playback.shuffle,
         "repeat" => {
@@ -1364,6 +1384,9 @@ async fn import_search(State(state): State<Arc<AppState>>, Form(form): Form<ActF
             let mut store = state.store.lock().expect("store");
             let added = store.add_file(&path);
             store.apply_download_meta(&path, &title, &artist, &album, &cover);
+            if let Some(id) = store.songs.iter().find(|song| song.path == path.to_string_lossy()).map(|song| song.id.clone()) {
+                stamp_tags(&mut store, &id);
+            }
             save(&state, &store);
             let message = format!(
                 "{}: {label}",
@@ -1890,6 +1913,8 @@ struct ProfileEventIn {
     duration: f64,
     #[serde(default)]
     fraction: f64,
+    #[serde(default, rename = "genreId")]
+    genre_id: Option<u32>,
 }
 
 async fn profile_event(State(state): State<Arc<AppState>>, Json(body): Json<ProfileEventIn>) -> Response {
@@ -1898,6 +1923,25 @@ async fn profile_event(State(state): State<Arc<AppState>>, Json(body): Json<Prof
         _ => return json_response(serde_json::json!({ "ok": false })),
     };
     let mut store = state.store.lock().expect("store");
+    let matched = if !body.song_id.is_empty() {
+        Some(body.song_id.clone())
+    } else {
+        store
+            .songs
+            .iter()
+            .find(|song| song.title.eq_ignore_ascii_case(body.title.trim()) && song.artist.eq_ignore_ascii_case(body.artist.trim()))
+            .map(|song| song.id.clone())
+    };
+    if let Some(id) = matched {
+        if store.song(&id).map(|song| song.genre.trim().is_empty()).unwrap_or(false) {
+            if let Some(genre_id) = body.genre_id {
+                if let Some(key) = waves::genre_key_for_id(genre_id, &body.title) {
+                    store.save_tags(&id, &key, &model::script_language(&body.title));
+                }
+            }
+        }
+        stamp_tags(&mut store, &id);
+    }
     {
         let profile = state.profile.lock().expect("profile");
         profile.record(
@@ -1946,17 +1990,13 @@ fn scan_library_tags(state: Arc<AppState>) {
         if batch.is_empty() {
             break;
         }
-        let updates: Vec<_> = batch
-            .into_iter()
-            .map(|(id, path)| (id, model::inspect_tags(std::path::Path::new(&path))))
-            .collect();
+        let ids: Vec<_> = batch.into_iter().map(|(id, _)| id).collect();
         let mut store = state.store.lock().expect("store");
-        for (id, (genre, language, bpm, energy)) in updates {
+        for id in ids {
             if let Some(song) = store.songs.iter_mut().find(|song| song.id == id) {
-                song.genre = genre;
-                song.language = language;
-                song.bpm = bpm;
-                song.energy = energy;
+                song.language = model::script_language(&song.title);
+                song.bpm = None;
+                song.energy = None;
                 song.tags_read = true;
             }
         }

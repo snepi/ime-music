@@ -536,7 +536,19 @@ impl Store {
         if !cover_path.trim().is_empty() {
             song.cover_path = cover_path.trim().to_string();
         }
+        song.language = script_language(&song.title);
         true
+    }
+
+    /// Keep a catalog genre and the title's script. An empty genre stays empty.
+    pub fn save_tags(&mut self, id: &str, genre: &str, language: &str) {
+        let Some(song) = self.songs.iter_mut().find(|song| song.id == id) else {
+            return;
+        };
+        if !genre.trim().is_empty() {
+            song.genre = genre.trim().to_string();
+        }
+        song.language = language.trim().to_string();
     }
 
     pub fn archive_has(&self, title: &str, artist: &str) -> bool {
@@ -1373,6 +1385,29 @@ const LIBRARY_KINDS: &[MixKind] = &[
     MixKind { title: "Смиксовали ваши треки в стиле соул", class: MixClass::Soul },
 ];
 
+/// Language of the title's letters. Cyrillic in the artist nickname does not count,
+/// and the word «русский» is not itself a language tag.
+pub fn script_language(title: &str) -> String {
+    let mut cyrillic = 0;
+    let mut latin = 0;
+    for ch in title.chars() {
+        if ('\u{0400}'..='\u{04FF}').contains(&ch) {
+            cyrillic += 1;
+        } else if ch.is_ascii_alphabetic() {
+            latin += 1;
+        }
+    }
+    if cyrillic == 0 && latin == 0 {
+        String::new()
+    } else if cyrillic > latin {
+        "ru".into()
+    } else if latin > cyrillic {
+        "en".into()
+    } else {
+        String::new()
+    }
+}
+
 fn has_cyrillic(text: &str) -> bool {
     text.chars().any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
 }
@@ -1465,23 +1500,27 @@ fn is_new_track(song: &Song, songs: &[Song]) -> bool {
     songs.iter().any(|other| now.saturating_sub(other.added_at) > TWO_WEEKS_MS)
 }
 
+fn saved_genre(song: &Song, keys: &[&str]) -> bool {
+    song.genre.split(',').any(|key| keys.iter().any(|want| key.trim() == *want))
+}
+
 fn song_matches_kind(song: &Song, class: MixClass, songs: &[Song]) -> bool {
     match class {
-        MixClass::Rock => has_genre(song, &["rock", "рок", "punk", "панк", "metal", "метал", "grunge", "гранж"]),
-        MixClass::Rap => has_genre(song, &["rap", "рэп", "реп", "hip hop", "хип хоп", "trap", "трэп"]),
-        MixClass::Pop => has_genre(song, &["pop", "поп", "synthpop", "k pop", "kpop"]),
-        MixClass::Electro => has_genre(song, &["electro", "electronic", "edm", "techno", "техно", "электро", "электроника", "электронная", "trance", "транс"]),
-        MixClass::Jazz => has_genre(song, &["jazz", "джаз", "blues", "блюз"]),
-        MixClass::Indie => has_genre(song, &["indie", "инди"]),
-        MixClass::Russian => is_russian_track(song),
-        MixClass::Foreign => is_foreign_track(song),
+        MixClass::Rock => saved_genre(song, &["rock", "metal"]),
+        MixClass::Rap => saved_genre(song, &["rap", "ruRap"]),
+        MixClass::Pop => saved_genre(song, &["pop"]),
+        MixClass::Electro => saved_genre(song, &["electronic"]),
+        MixClass::Jazz => saved_genre(song, &["jazz", "blues"]),
+        MixClass::Indie => saved_genre(song, &["indie"]),
+        MixClass::Russian => script_language(&song.title) == "ru",
+        MixClass::Foreign => script_language(&song.title) == "en",
         MixClass::Liked => song.liked,
         MixClass::Often => song.play_count >= 3,
         MixClass::New => is_new_track(song, songs),
-        MixClass::Calm => has_genre(song, &["ballad", "acoustic", "piano", "ambient", "chill", "lofi", "спокойная", "спокойный", "акустика", "баллада"]),
-        MixClass::Dance => has_genre(song, &["dance", "disco", "диско", "танцевальная", "танцевальный", "house"]),
-        MixClass::Soundtrack => has_genre(song, &["soundtrack", "саундтрек", "ost", "score"]),
-        MixClass::Soul => has_genre(song, &["soul", "соул", "funk", "фанк", "rnb"]) || format!("{} {} {}", song.title, song.artist, song.album).to_lowercase().contains("r&b"),
+        MixClass::Calm => saved_genre(song, &["ambient", "classical"]),
+        MixClass::Dance => saved_genre(song, &["dance", "disco"]),
+        MixClass::Soundtrack => saved_genre(song, &["soundtrack"]),
+        MixClass::Soul => saved_genre(song, &["soul", "rnb"]),
     }
 }
 
@@ -1823,9 +1862,13 @@ fn read_tags(path: &Path, display_stem: Option<&str>) -> Tags {
         }
         if ext.eq_ignore_ascii_case("wav") {
             tags.duration = wav_duration(path);
-            tags.energy = wav_energy(path);
         }
     }
+    // Genre comes from the catalog id later. Language is the title's script, not a tag word or the nickname.
+    tags.genre.clear();
+    tags.language = script_language(&tags.title);
+    tags.bpm = None;
+    tags.energy = None;
     tags
 }
 
@@ -2304,7 +2347,7 @@ mod tests {
 
     #[test]
     fn library_mixes_keep_foreign_tracks_out_of_the_wrong_kind() {
-        let songs = vec![
+        let mut songs = vec![
             sample("Alpha", "Library", "Demo", true, 1),
             sample("Beta", "Library", "Demo", false, 1),
             sample("Младшая сестра", "дора", "Demo", false, 0),
@@ -2315,12 +2358,16 @@ mod tests {
             sample("Популярный урок", "Школа", "", false, 0),
         ];
         assert!(song_matches_kind(&songs[2], MixClass::Russian, &songs));
-        assert!(song_matches_kind(&songs[3], MixClass::Russian, &songs));
-        assert!(!song_matches_kind(&songs[3], MixClass::Foreign, &songs));
-        assert!(!song_matches_kind(&songs[0], MixClass::Foreign, &songs));
-        assert!(!song_matches_kind(&songs[1], MixClass::Foreign, &songs));
-        assert!(!song_matches_kind(&songs[6], MixClass::Foreign, &songs));
+        assert!(!song_matches_kind(&songs[3], MixClass::Russian, &songs));
+        assert!(song_matches_kind(&songs[3], MixClass::Foreign, &songs));
+        assert!(song_matches_kind(&songs[0], MixClass::Foreign, &songs));
+        assert!(song_matches_kind(&songs[1], MixClass::Foreign, &songs));
+        assert!(song_matches_kind(&songs[6], MixClass::Foreign, &songs));
         assert!(song_matches_kind(&songs[4], MixClass::Foreign, &songs));
+        assert!(!song_matches_kind(&songs[4], MixClass::Rock, &songs));
+        assert!(!song_matches_kind(&songs[5], MixClass::Rock, &songs));
+        songs[4].genre = "rock".into();
+        songs[5].genre = "rock".into();
         assert!(song_matches_kind(&songs[4], MixClass::Rock, &songs));
         assert!(song_matches_kind(&songs[5], MixClass::Rock, &songs));
         assert!(!song_matches_kind(&songs[0], MixClass::Rock, &songs));

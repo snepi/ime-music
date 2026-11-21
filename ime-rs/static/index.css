@@ -825,6 +825,21 @@ select:focus-visible {
 .song-text {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.song-meta-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.song-meta-line .track-tags {
+  display: inline;
+  margin: 0;
+  white-space: nowrap;
 }
 
 .song-name {
@@ -3681,6 +3696,16 @@ select:focus-visible {
 .profile-tracks .profile-reason {
   white-space: normal;
   line-height: 1.35;
+}
+
+.track-tags {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.track-tags.is-empty {
+  opacity: 0.75;
 }
 
 .profile-compare-card {

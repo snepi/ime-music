@@ -885,7 +885,7 @@
   function trackCard(track) {
     const play = playAttrs(track);
     const cover = track.cover ? `<img src="${escapeAttr(track.cover)}" alt="">` : "";
-    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}${trackWaveButton(track)}</div></li>`;
+    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}" data-genre-id="${escapeAttr(String(track.genreId || ""))}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button>${trackTags(track)}</div>${wishButton(track)}${trackWaveButton(track)}</div></li>`;
   }
 
   function deezerCover(row) {
@@ -899,16 +899,74 @@
     return "";
   }
 
+  function scriptLanguage(title) {
+    let cyrillic = 0;
+    let latin = 0;
+    for (const ch of String(title || "")) {
+      if (/[\u0400-\u04FF]/.test(ch)) cyrillic += 1;
+      else if (/[A-Za-z]/.test(ch)) latin += 1;
+    }
+    if (!cyrillic && !latin) return "";
+    if (cyrillic > latin) return "ru";
+    if (latin > cyrillic) return "en";
+    return "";
+  }
+
+  function genreKeyFromId(id, title) {
+    const key = {
+      152: "rock",
+      132: "pop",
+      106: "electronic",
+      165: "rnb",
+      85: "indie",
+      464: "metal",
+      113: "dance",
+      129: "jazz",
+      116: scriptLanguage(title) === "ru" ? "ruRap" : "rap",
+    }[Number(id)];
+    return key || "";
+  }
+
+  function genreLabel(key) {
+    return {
+      rock: "рок",
+      metal: "метал",
+      rap: "рэп",
+      ruRap: "рэп",
+      pop: "поп",
+      electronic: "электро",
+      jazz: "джаз",
+      indie: "инди",
+      dance: "танцевальная",
+      rnb: "рнб",
+      ru: "русский",
+      en: "английский",
+    }[key] || key;
+  }
+
+  function trackTags(track) {
+    const parts = [];
+    if (track.genre) parts.push(genreLabel(track.genre));
+    if (track.language) parts.push(genreLabel(track.language));
+    const text = parts.length ? parts.join(" · ") : "тегов нет";
+    return `<span class="track-tags${parts.length ? "" : " is-empty"}">${escapeHtml(text)}</span>`;
+  }
+
   function mapDeezerTrack(row, requirePreview = true) {
     if (!row || !row.title || (requirePreview && !row.preview)) return null;
+    const title = row.title_short || row.title;
+    const genreId = row.genre_id || row.album?.genre_id || row.album?.genres?.data?.[0]?.id || 0;
     return {
       id: row.id,
-      title: row.title_short || row.title,
+      title,
       artist: row.artist?.name || "",
       artistId: row.artist?.id || "",
       album: row.album?.title || "",
       cover: deezerCover(row),
       preview: row.preview,
+      genreId: Number(genreId) || 0,
+      genre: genreKeyFromId(genreId, title),
+      language: scriptLanguage(title),
     };
   }
 

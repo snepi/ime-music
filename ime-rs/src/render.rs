@@ -308,6 +308,39 @@ fn hotkeys_seed(store: &Store) -> String {
     format!("{{{}}}", parts.join(","))
 }
 
+fn track_tags(genre: &str, language: &str) -> String {
+    let mut parts = Vec::new();
+    for key in genre.split(',').map(str::trim).filter(|key| !key.is_empty()) {
+        parts.push(match key {
+            "rock" => "рок",
+            "metal" => "метал",
+            "rap" | "ruRap" => "рэп",
+            "pop" => "поп",
+            "electronic" => "электро",
+            "jazz" => "джаз",
+            "blues" => "блюз",
+            "indie" => "инди",
+            "dance" => "танцевальная",
+            "disco" => "диско",
+            "soul" => "соул",
+            "rnb" => "рнб",
+            other => other,
+        });
+    }
+    if !language.is_empty() {
+        parts.push(match language {
+            "ru" => "русский",
+            "en" => "английский",
+            other => other,
+        });
+    }
+    if parts.is_empty() {
+        "тегов нет".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 fn profile_seed(store: &Store) -> String {
     if store.profile_seed.trim().is_empty() {
         "{}".into()
@@ -1055,8 +1088,10 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
             } else {
                 song.artist.clone()
             };
+            let tags = track_tags(&song.genre, &song.language);
+            let tags_class = if tags == "тегов нет" { "track-tags is-empty" } else { "track-tags" };
             html.push_str(&format!(
-                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell">{disc}</div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button></div><button type="button" class="song-menu-btn" data-menu="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
+                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell">{disc}</div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><div class="song-meta-line"><button type="button" class="artist-link song-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button><span class="{tags_class}">{tags}</span></div></div><button type="button" class="song-menu-btn" data-menu="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
                 cur = if current { " current" } else { "" },
                 id = esc(&song.id),
                 n = i + 1,
@@ -1064,6 +1099,8 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
                 disc = cover_cell,
                 title = esc(&song.title),
                 artist = esc(&artist),
+                tags_class = tags_class,
+                tags = esc(&tags),
                 menu = esc(&i18n.t("lib.trackMenu")),
                 more = icon("more", 16),
                 album = esc(&song.album),

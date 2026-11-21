@@ -61,6 +61,7 @@ struct Row {
     title: String,
     artist: String,
     reason: String,
+    tags: String,
 }
 
 impl Db {
@@ -133,10 +134,11 @@ impl Db {
         let song = store.song(&event.song_id).or_else(|| {
             store.songs.iter().find(|song| same_name(&song.title, &event.title) && same_name(&song.artist, &event.artist))
         });
-        let genre = song.map(|song| song.genre.clone()).unwrap_or_default();
-        let language = song.map(|song| song.language.clone()).unwrap_or_default();
-        let bpm = song.and_then(|song| song.bpm);
-        let energy = song.and_then(|song| song.energy);
+        let title_for_script = song.map(|song| song.title.clone()).filter(|title| !title.is_empty()).unwrap_or_else(|| event.title.clone());
+        let language = crate::model::script_language(&title_for_script);
+        let genre = song.map(|song| song.genre.clone()).filter(|genre| !genre.is_empty()).unwrap_or_default();
+        let bpm: Option<f32> = None;
+        let energy: Option<f32> = None;
         let at = if event.at_ms > 0 { event.at_ms } else { now_ms() };
         let _ = self.conn.execute(
             "INSERT INTO events (at_ms, listen_id, kind, source, song_id, title, artist, genre, language, bpm, energy, heard_s, duration_s, fraction)
@@ -734,6 +736,7 @@ fn sections(store: &Store) -> Vec<Section> {
                 title: song.title.clone(),
                 artist: song.artist.clone(),
                 reason: reason.to_string(),
+                tags: tag_line(&song.genre, &song.language),
             });
             used_songs.insert(song.id.clone());
             *per_artist.entry(key.clone()).or_insert(0) += 1;
@@ -819,12 +822,13 @@ fn sections(store: &Store) -> Vec<Section> {
     for song in unexpected_owned {
         let labels: Vec<String> = song.genre.split(',').map(genre_label).collect();
         used_songs.insert(song.id.clone());
-        unexpected_rows.push(Row {
-            song_id: song.id.clone(),
-            title: song.title.clone(),
-            artist: song.artist.clone(),
-            reason: format!("В одном треке сходятся {} и {}, а вместе они у тебя редкость", labels.first().map(String::as_str).unwrap_or(""), labels.get(1).map(String::as_str).unwrap_or("")),
-        });
+        unexpected_rows.push(            Row {
+                song_id: song.id.clone(),
+                title: song.title.clone(),
+                artist: song.artist.clone(),
+                reason: format!("В одном треке сходятся {} и {}, а вместе они у тебя редкость", labels.first().map(String::as_str).unwrap_or(""), labels.get(1).map(String::as_str).unwrap_or("")),
+                tags: tag_line(&song.genre, &song.language),
+            });
     }
     let return_rows = take(returns, "Раньше ты слушал этого артиста чаще, чем за последние 14 дней", &mut used_songs, &mut used_artists);
     let discover_rows = take(discover, "За последние 14 дней это стало заметнее, чем в долгом профиле", &mut used_songs, &mut used_artists);
@@ -974,14 +978,6 @@ fn trait_block(taste: &Taste) -> String {
         let labels: Vec<String> = taste.languages.iter().take(4).map(|item| genre_label(&item.key)).collect();
         html.push_str(&fact("Язык", &labels.join(", ")));
     }
-    if let Some(bpm) = taste.bpm {
-        any = true;
-        html.push_str(&fact("Темп", &format!("около {:.0}", bpm)));
-    }
-    if let Some(energy) = taste.energy {
-        any = true;
-        html.push_str(&fact("Энергия", &format!("{:.0}%", (energy * 100.0).clamp(0.0, 100.0))));
-    }
     let current = taste.current_genres.first().map(|item| item.label.as_str()).unwrap_or("");
     let long = taste.long_genres.first().map(|item| item.label.as_str()).unwrap_or("");
     if !current.is_empty() && !long.is_empty() {
@@ -998,6 +994,21 @@ fn trait_block(taste: &Taste) -> String {
     }
     html.push_str("</div></section>");
     html
+}
+
+fn tag_line(genre: &str, language: &str) -> String {
+    let mut parts = Vec::new();
+    for key in genre.split(',').map(str::trim).filter(|key| !key.is_empty()) {
+        parts.push(genre_label(key));
+    }
+    if !language.is_empty() {
+        parts.push(genre_label(language));
+    }
+    if parts.is_empty() {
+        "тегов нет".into()
+    } else {
+        parts.join(" · ")
+    }
 }
 
 fn fact(label: &str, value: &str) -> String {
@@ -1026,10 +1037,12 @@ fn recommendation_block(store: &Store) -> String {
             html.push_str(r#"<ul class="profile-tracks">"#);
             for row in section.rows {
                 html.push_str(&format!(
-                    r#"<li><div class="profile-track-copy"><button type="button" class="song-name" data-play="{id}" data-title="{title}" data-artist="{artist}">{title}</button><span class="song-artist">{artist}</span><span class="profile-reason">{reason}</span></div><button type="button" class="btn btn-ghost" data-menu-act="queue" data-id="{id}">В очередь</button></li>"#,
+                    r#"<li><div class="profile-track-copy"><button type="button" class="song-name" data-play="{id}" data-title="{title}" data-artist="{artist}">{title}</button><span class="song-artist">{artist}</span><span class="track-tags{empty}">{tags}</span><span class="profile-reason">{reason}</span></div><button type="button" class="btn btn-ghost" data-menu-act="queue" data-id="{id}">В очередь</button></li>"#,
                     id = esc(&row.song_id),
                     title = esc(&row.title),
                     artist = esc(&row.artist),
+                    empty = if row.tags == "тегов нет" { " is-empty" } else { "" },
+                    tags = esc(&row.tags),
                     reason = esc(&row.reason),
                 ));
             }
