@@ -52,6 +52,12 @@ pub struct WaveTrack {
     pub preview_url: String,
     pub title: String,
     pub artist: String,
+    /// Deezer genre id when the catalog sent one. A word in the title is not a genre.
+    #[serde(rename = "genreId", skip_serializing_if = "Option::is_none")]
+    pub genre_id: Option<u32>,
+    /// Script of the title: ru, en, or empty. The nickname is not consulted.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
 }
 
 pub fn apply_setting(waves: &mut Waves, field: &str, value: &str) -> bool {
@@ -153,8 +159,10 @@ pub fn build_artist_wave(waves: &Waves, name: &str, id: Option<u64>) -> Vec<Wave
         .take(POOL_CAP)
         .map(|item| WaveTrack {
             preview_url: item.preview,
-            title: item.title,
+            title: item.title.clone(),
             artist: item.artist,
+            genre_id: item.catalog_genre,
+            language: crate::model::script_language(&item.title),
         })
         .collect()
 }
@@ -177,6 +185,13 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         }
     }
     // Artist radio ignores genre. Use it only when the listener did not pick a style.
+    if waves.genre == "all" && store.taste.ready {
+        for genre in profile_wave_genres(store) {
+            if let Some(id) = catalog_id(&genre) {
+                raw.extend(genre_catalog(id));
+            }
+        }
+    }
     if uses_artist_radio(&waves.genre, &waves.seed) {
         for name in seed_artists(store).iter().take(6) {
             let Some(id) = resolve_artist(name) else { continue };
@@ -213,7 +228,7 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         if !matches_genre(&item, &waves.genre) {
             continue;
         }
-        if blocked_exact(waves, &item) || blocked_like(waves, &item) {
+        if blocked_exact(waves, &item) || blocked_like(waves, &item) || taste_blocks(store, &item.artist) {
             continue;
         }
         mapped.push(item);
@@ -225,8 +240,10 @@ pub fn build_pool(store: &Store) -> Vec<WaveTrack> {
         .take(POOL_CAP)
         .map(|item| WaveTrack {
             preview_url: item.preview,
-            title: item.title,
+            title: item.title.clone(),
             artist: item.artist,
+            genre_id: item.catalog_genre,
+            language: crate::model::script_language(&item.title),
         })
         .collect()
 }
@@ -367,8 +384,10 @@ pub fn build_track_wave(waves: &Waves, known: &HashSet<String>, title: &str, art
         .take(POOL_CAP)
         .map(|item| WaveTrack {
             preview_url: item.preview,
-            title: item.title,
+            title: item.title.clone(),
             artist: item.artist,
+            genre_id: item.catalog_genre,
+            language: crate::model::script_language(&item.title),
         })
         .collect()
 }
@@ -569,20 +588,94 @@ fn resolved_from(raw: &Value) -> Option<Resolved> {
     })
 }
 
-fn seed_artists(store: &Store) -> Vec<String> {
-    let waves = &store.settings.waves;
-    if waves.seed == "wishlist" {
-        let mut names = Vec::new();
-        for wish in store.settings.wishlist.iter().take(8) {
-            if !wish.artist.trim().is_empty() {
-                names.push(wish.artist.clone());
+fn catalog_id(genre: &str) -> Option<u32> {
+    preset(genre).deezer_id
+}
+
+fn profile_wave_genres(store: &Store) -> Vec<String> {
+    let mut keys = Vec::new();
+    for list in [&store.taste.current_genres, &store.taste.long_genres] {
+        if let Some(item) = list.first() {
+            if catalog_id(&item.key).is_some() && !keys.contains(&item.key) {
+                keys.push(item.key.clone());
             }
         }
-        return names;
     }
-    let liked_only = waves.seed == "liked";
-    let limit = if waves.seed == "chart" { 6 } else { 10 };
-    pick_seed_artists(&store.songs, liked_only, limit)
+    keys
+}
+
+fn taste_blocks(store: &Store, artist: &str) -> bool {
+    if !store.taste.ready {
+        return false;
+    }
+    let key = artist_key(artist);
+    store.taste.disliked.iter().any(|name| artist_key(name) == key)
+}
+
+fn seed_artists(store: &Store) -> Vec<String> {
+    let waves = &store.settings.waves;
+    let mut names = if waves.seed == "wishlist" {
+        store
+            .settings
+            .wishlist
+            .iter()
+            .take(8)
+            .map(|wish| wish.artist.clone())
+            .filter(|name| !name.trim().is_empty())
+            .collect::<Vec<_>>()
+    } else if store.taste.ready && waves.seed != "chart" {
+        profile_seeds(store, waves.seed == "liked", 8)
+    } else {
+        let liked_only = waves.seed == "liked";
+        let limit = if waves.seed == "chart" { 6 } else { 10 };
+        pick_seed_artists(&store.songs, liked_only, limit)
+    };
+    names.retain(|name| !name.trim().is_empty() && !taste_blocks(store, name));
+    if names.is_empty() && waves.seed != "wishlist" {
+        names = pick_seed_artists(&store.songs, waves.seed == "liked", 8);
+        names.retain(|name| !taste_blocks(store, name));
+    }
+    names
+}
+
+/// Current artists lead, and one long-term artist stays so an older taste does not vanish.
+/// The tail rotates with the wave spin, so the same names do not occupy every slot.
+fn profile_seeds(store: &Store, liked_only: bool, limit: usize) -> Vec<String> {
+    let mut names = Vec::new();
+    let push = |names: &mut Vec<String>, label: &str| {
+        if label.trim().is_empty() || names.iter().any(|have| artist_key(have) == artist_key(label)) {
+            return;
+        }
+        names.push(label.to_string());
+    };
+    for item in store.taste.current_artists.iter().take(4) {
+        push(&mut names, &item.label);
+    }
+    if let Some(anchor) = store.taste.long_artists.first() {
+        push(&mut names, &anchor.label);
+        if let Some(pos) = names.iter().position(|name| artist_key(name) == artist_key(&anchor.label)) {
+            let kept = names.remove(pos);
+            names.insert(0, kept);
+        }
+    }
+    for item in store.taste.long_artists.iter().skip(1).take(4) {
+        push(&mut names, &item.label);
+    }
+    for artist in &store.settings.favorite_artists {
+        push(&mut names, &artist.name);
+    }
+    if liked_only {
+        names.retain(|name| {
+            store.settings.favorite_artists.iter().any(|artist| artist_key(&artist.name) == artist_key(name))
+                || store.songs.iter().any(|song| song.liked && artist_key(&song.artist) == artist_key(name))
+        });
+    }
+    if names.len() > 2 {
+        let shift = store.settings.waves.spin as usize % (names.len() - 1);
+        names[1..].rotate_left(shift);
+    }
+    names.truncate(limit);
+    names
 }
 
 fn pick_seed_artists(songs: &[Song], liked_only: bool, limit: usize) -> Vec<String> {
@@ -755,24 +848,86 @@ fn split_artists(name: &str) -> Vec<String> {
 }
 
 fn title_language(title: &str) -> &'static str {
-    let mut cyrillic = 0;
-    let mut latin = 0;
-    for ch in title.chars() {
-        if ('\u{0400}'..='\u{04FF}').contains(&ch) {
-            cyrillic += 1;
-        } else if ch.is_ascii_alphabetic() {
-            latin += 1;
+    match crate::model::script_language(title).as_str() {
+        "ru" => "ru",
+        "en" => "en",
+        _ => "other",
+    }
+}
+
+/// Catalog genre id to the same key the wave filters use. Unknown ids stay empty.
+pub fn genre_key_for_id(id: u32, title: &str) -> Option<String> {
+    let key = match id {
+        152 => "rock",
+        132 => "pop",
+        106 => "electronic",
+        165 => "rnb",
+        85 => "indie",
+        464 => "metal",
+        113 => "dance",
+        129 => "jazz",
+        116 => {
+            if title_language(title) == "ru" {
+                "ruRap"
+            } else {
+                "rap"
+            }
         }
+        _ => return None,
+    };
+    Some(key.to_string())
+}
+
+/// Genre id of the catalog row whose title and artist are this track.
+/// A different track whose title merely contains the genre word is ignored.
+pub fn genre_from_search(body: &str, title: &str, artist: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let rows = value.get("data").and_then(|data| data.as_array())?;
+    let want_title = artist_key(title);
+    let want_artist = artist_key(artist);
+    if want_title.is_empty() {
+        return None;
     }
-    if cyrillic == 0 && latin == 0 {
-        "other"
-    } else if cyrillic > latin {
-        "ru"
-    } else if latin > cyrillic {
-        "en"
-    } else {
-        "other"
+    for row in rows {
+        let got_title = row.get("title_short").and_then(|item| item.as_str()).filter(|text| !text.is_empty()).or_else(|| row.get("title").and_then(|item| item.as_str())).unwrap_or("");
+        let got_artist = row.get("artist").and_then(|item| item.get("name")).and_then(|item| item.as_str()).unwrap_or("");
+        if artist_key(got_title) != want_title {
+            continue;
+        }
+        if !want_artist.is_empty() && artist_key(got_artist) != want_artist {
+            continue;
+        }
+        let id = read_catalog_genre(row)?;
+        if id == 0 {
+            continue;
+        }
+        return genre_key_for_id(id, title);
     }
+    None
+}
+
+pub fn catalog_genre(title: &str, artist: &str) -> Option<String> {
+    let query = format!("{} {}", artist.trim(), title.trim());
+    let url = format!("{DEEZER}/search/track?q={}&limit=8", urlencoding::encode(query.trim()));
+    let body = http_get(&url).ok()?;
+    if let Some(key) = genre_from_search(&body, title, artist) {
+        return Some(key);
+    }
+    let value: Value = serde_json::from_str(&body).ok()?;
+    let rows = value.get("data").and_then(|data| data.as_array())?;
+    let want_title = artist_key(title);
+    let want_artist = artist_key(artist);
+    for row in rows {
+        let got_title = row.get("title_short").and_then(|item| item.as_str()).filter(|text| !text.is_empty()).or_else(|| row.get("title").and_then(|item| item.as_str())).unwrap_or("");
+        let got_artist = row.get("artist").and_then(|item| item.get("name")).and_then(|item| item.as_str()).unwrap_or("");
+        if artist_key(got_title) != want_title || (!want_artist.is_empty() && artist_key(got_artist) != want_artist) {
+            continue;
+        }
+        let album_id = row.get("album").and_then(|album| album.get("id")).and_then(|item| item.as_u64())?;
+        let id = fetch_album_genre(album_id)?;
+        return genre_key_for_id(id, title);
+    }
+    None
 }
 
 fn matches_language(track: &Candidate, language: &str) -> bool {
@@ -1032,6 +1187,22 @@ mod tests {
         assert_ne!(track_key("Наутилус", "Русский рок"), track_key("Другой", "Рок"));
         assert_eq!(track_key("дора", "Младшая сестра"), track_key("Дора", "Младшая  сестра"));
         assert_ne!(artist_key("Rock"), artist_key("Rockwell"));
+    }
+
+    #[test]
+    fn catalog_genre_is_the_id_not_a_word_in_the_title() {
+        let body = r#"{"data":[
+            {"title":"Русский рок","artist":{"name":"Кто-то"},"album":{"title":"Rock"}},
+            {"title":"Bohemian Rhapsody","artist":{"name":"Queen"},"album":{"genre_id":152}},
+            {"title":"Creep","artist":{"name":"Radiohead"},"genre_id":85}
+        ]}"#;
+        assert_eq!(genre_from_search(body, "Русский рок", "Кто-то"), None);
+        assert_eq!(genre_from_search(body, "Bohemian Rhapsody", "Queen").as_deref(), Some("rock"));
+        assert_eq!(genre_from_search(body, "Creep", "Radiohead").as_deref(), Some("indie"));
+        assert_eq!(genre_from_search(body, "Rock", "Queen"), None);
+        assert_eq!(crate::model::script_language("Младшая сестра"), "ru");
+        assert_eq!(crate::model::script_language("Speed Up"), "en");
+        assert_eq!(crate::model::script_language(""), "");
     }
 
     #[test]

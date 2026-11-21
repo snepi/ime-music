@@ -737,6 +737,7 @@
     rememberSecond(true);
   });
   audio.addEventListener("ended", () => {
+    if (listen) listen.ended = true;
     if (sleep.mode === "track" || sleep.mode === "album") {
       finishSleep("Стоп в конце трека");
       return;
@@ -884,7 +885,7 @@
   function trackCard(track) {
     const play = playAttrs(track);
     const cover = track.cover ? `<img src="${escapeAttr(track.cover)}" alt="">` : "";
-    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button></div>${wishButton(track)}${trackWaveButton(track)}</div></li>`;
+    return `<li class="demo-track-card"><button type="button" class="demo-track-play" ${play} data-title="${escapeAttr(track.title)}" data-artist="${escapeAttr(track.artist)}" data-genre-id="${escapeAttr(String(track.genreId || ""))}">${cover}<span class="demo-track-play-icon">${svg(PLAY, 18)}</span></button><div class="demo-track-names"><div class="demo-track-meta"><div class="demo-track-title">${escapeHtml(track.title)}</div><button type="button" class="artist-link demo-track-artist" data-open-artist="1" data-artist-id="${escapeAttr(track.artistId || "")}" data-artist-name="${escapeAttr(track.artist)}">${escapeHtml(track.artist)}</button>${trackTags(track)}</div>${wishButton(track)}${trackWaveButton(track)}</div></li>`;
   }
 
   function deezerCover(row) {
@@ -898,16 +899,74 @@
     return "";
   }
 
+  function scriptLanguage(title) {
+    let cyrillic = 0;
+    let latin = 0;
+    for (const ch of String(title || "")) {
+      if (/[\u0400-\u04FF]/.test(ch)) cyrillic += 1;
+      else if (/[A-Za-z]/.test(ch)) latin += 1;
+    }
+    if (!cyrillic && !latin) return "";
+    if (cyrillic > latin) return "ru";
+    if (latin > cyrillic) return "en";
+    return "";
+  }
+
+  function genreKeyFromId(id, title) {
+    const key = {
+      152: "rock",
+      132: "pop",
+      106: "electronic",
+      165: "rnb",
+      85: "indie",
+      464: "metal",
+      113: "dance",
+      129: "jazz",
+      116: scriptLanguage(title) === "ru" ? "ruRap" : "rap",
+    }[Number(id)];
+    return key || "";
+  }
+
+  function genreLabel(key) {
+    return {
+      rock: "рок",
+      metal: "метал",
+      rap: "рэп",
+      ruRap: "рэп",
+      pop: "поп",
+      electronic: "электро",
+      jazz: "джаз",
+      indie: "инди",
+      dance: "танцевальная",
+      rnb: "рнб",
+      ru: "русский",
+      en: "английский",
+    }[key] || key;
+  }
+
+  function trackTags(track) {
+    const parts = [];
+    if (track.genre) parts.push(genreLabel(track.genre));
+    if (track.language) parts.push(genreLabel(track.language));
+    const text = parts.length ? parts.join(" · ") : "тегов нет";
+    return `<span class="track-tags${parts.length ? "" : " is-empty"}">${escapeHtml(text)}</span>`;
+  }
+
   function mapDeezerTrack(row, requirePreview = true) {
     if (!row || !row.title || (requirePreview && !row.preview)) return null;
+    const title = row.title_short || row.title;
+    const genreId = row.genre_id || row.album?.genre_id || row.album?.genres?.data?.[0]?.id || 0;
     return {
       id: row.id,
-      title: row.title_short || row.title,
+      title,
       artist: row.artist?.name || "",
       artistId: row.artist?.id || "",
       album: row.album?.title || "",
       cover: deezerCover(row),
       preview: row.preview,
+      genreId: Number(genreId) || 0,
+      genre: genreKeyFromId(genreId, title),
+      language: scriptLanguage(title),
     };
   }
 
@@ -1869,19 +1928,50 @@
     return [...counts.values()].sort((a, b) => b.score - a.score).map((item) => item.name);
   }
 
+  function profileSeed() {
+    try {
+      const value = JSON.parse(document.getElementById("profile-seed")?.textContent || "{}");
+      return value && typeof value === "object" ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function profileArtists(fallback) {
+    const profile = profileSeed();
+    const names = Array.isArray(profile.artists) ? profile.artists.map((item) => item && item.name).filter(Boolean) : [];
+    if (!profile.ready || !names.length) return fallback;
+    const rank = new Map(names.map((name, index) => [normTrack(name), index]));
+    const merged = [...names];
+    for (const name of fallback) {
+      if (!merged.some((item) => normTrack(item) === normTrack(name))) merged.push(name);
+    }
+    merged.sort((a, b) => (rank.get(normTrack(a)) ?? 500) - (rank.get(normTrack(b)) ?? 500));
+    const avoid = new Set((profile.avoid || []).map((name) => normTrack(name)));
+    return merged.filter((name) => name && !avoid.has(normTrack(name)));
+  }
+
+  function profileAllows(track) {
+    const avoid = new Set((profileSeed().avoid || []).map((name) => normTrack(name)));
+    return !avoid.has(normTrack(track?.artist || ""));
+  }
+
   function recSource(mode) {
     if (mode === "liked") {
       const favorites = readJsonSeed("favorite-artists-seed").map((item) => item.name).filter(Boolean);
-      return { artists: [...rankedArtists(library.filter((song) => song.liked)), ...favorites].filter((name, index, all) => all.findIndex((item) => normTrack(item) === normTrack(name)) === index), tracks: library.filter((song) => song.liked) };
+      const artists = profileArtists([...rankedArtists(library.filter((song) => song.liked)), ...favorites].filter((name, index, all) => all.findIndex((item) => normTrack(item) === normTrack(name)) === index));
+      return { artists, tracks: library.filter((song) => song.liked), hint: profileSeed().line || "" };
     }
     if (mode === "wishlist") {
       const wishes = readJsonSeed("wishlist-seed");
-      return { artists: rankedArtists(wishes), tracks: wishes };
+      return { artists: profileArtists(rankedArtists(wishes)), tracks: wishes, hint: "" };
     }
     if (mode === "current") {
-      return { artists: now.artist ? [now.artist] : [], tracks: now.title ? [{ title: now.title, artist: now.artist }] : [] };
+      return { artists: profileArtists(now.artist ? [now.artist] : []), tracks: now.title ? [{ title: now.title, artist: now.artist }] : [], hint: "" };
     }
-    return { artists: rankedArtists(library), tracks: library };
+    const profile = profileSeed();
+    const ranked = rankedArtists(library);
+    return { artists: profileArtists(ranked), tracks: library, hint: profile.ready ? (profile.line || "") : "" };
   }
 
   async function resolveArtist(name) {
@@ -2140,7 +2230,7 @@
         : "В библиотеке пока нет артистов";
     try {
       const chart = await deezer("/chart/0/tracks?limit=100");
-      const chartPool = (chart.data || []).map((row) => mapDeezerTrack(row)).filter(Boolean);
+      const chartPool = (chart.data || []).map((row) => mapDeezerTrack(row)).filter((track) => track && profileAllows(track));
       const chartKey = "ime-rec-tracks:chart";
       const chartTracks = pickFreshTracks(chartPool, storedKeys(chartKey), REC_TRACKS);
       rememberTracks(chartKey, chartTracks);
@@ -2156,7 +2246,8 @@
       const albums = rotateAlbumRow(catalog.albums, mode, Date.now());
       const sections = [];
       if (mode !== "chart") {
-        sections.push({ title: tasteTitle, hint: source.artists.length ? source.artists.slice(0, 4).join(", ") : emptyHint, tracks: taste });
+        const tasteHint = source.hint || (source.artists.length ? source.artists.slice(0, 4).join(", ") : emptyHint);
+        sections.push({ title: tasteTitle, hint: tasteHint, tracks: taste.filter(profileAllows) });
       }
       sections.push({ title: "Альбомы", albums });
       sections.push({ title: "Чарт", hint: "Топ Deezer", tracks: chartTracks });
@@ -2655,7 +2746,55 @@
     return `<button type="button" class="artist-link ${className || ""}" data-open-artist="1" data-artist-name="${escapeAttr(artist)}">${escapeHtml(artist)}</button>`;
   }
 
+  let listen = null;
+  let lastDone = null;
+  function listenSource() {
+    if (waves.active) return "waves";
+    const view = new URLSearchParams(location.search).get("view") || "";
+    if (view === "recommendations" || view === "profile") return "recommendation";
+    if (view === "home") return "mix";
+    return "library";
+  }
+  function sendListen(payload) {
+    fetch("/api/profile/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }
+  function closeListen(natural) {
+    if (!listen) return;
+    const heard = Math.max(0, Number(audio.currentTime) || 0);
+    const duration = Number.isFinite(audio.duration) && audio.duration > 1 ? audio.duration : 0;
+    const fraction = duration > 0 ? Math.min(1, heard / duration) : (natural ? 1 : 0);
+    const kind = listen.replay ? "replay" : (!natural && fraction < 0.75 ? "skip" : "finish");
+    const closed = listen;
+    listen = null;
+    lastDone = { title: closed.title, artist: closed.artist, at: Date.now(), fraction };
+    sendListen({ ...closed, kind, heard, duration, fraction });
+  }
+  function openListen(title, artist) {
+    const ended = Boolean(listen && listen.ended);
+    closeListen(ended);
+    if (!title) return;
+    const replay = Boolean(lastDone && Date.now() - lastDone.at < 30 * 60 * 1000 && normTrack(lastDone.title) === normTrack(title) && normTrack(lastDone.artist) === normTrack(artist) && lastDone.fraction >= 0.5);
+    listen = {
+      listenId: Date.now().toString(16) + Math.random().toString(16).slice(2),
+      title,
+      artist,
+      songId: document.body.dataset.current || "",
+      source: listenSource(),
+      ended: false,
+      replay,
+    };
+    sendListen({ ...listen, kind: "start", heard: 0, duration: 0, fraction: 0 });
+  }
   function setNowPlaying(title, artist, extra) {
+    const nextTitle = title || "";
+    const nextArtist = artist || "";
+    if (!listen || normTrack(listen.title) !== normTrack(nextTitle) || normTrack(listen.artist) !== normTrack(nextArtist)) {
+      openListen(nextTitle, nextArtist);
+    }
     now = {
       title: title || "",
       artist: artist || "",
@@ -2681,6 +2820,7 @@
     const row = document.querySelector(`[data-play="${cssEscape(id)}"]`);
     if (row) row.classList.add("current");
     document.body.dataset.current = id;
+    if (listen) listen.songId = id;
   }
 
   async function navigate(url, html) {
@@ -3847,6 +3987,7 @@
     if (!audio.paused) rememberSecond(false);
   }, 2000);
   window.addEventListener("pagehide", () => {
+    closeListen(false);
     if (!positionReady || !libraryAudioOpen()) return;
     const body = new URLSearchParams({
       action: "position",
@@ -3867,5 +4008,23 @@
     if (!row || document.body.dataset.doubleClick !== "editMetadata") return;
     editCurrent(row.dataset.play);
   });
+  async function fillProfileCatalog() {
+    const blocks = [...document.querySelectorAll(".profile-catalog[data-profile-artist]")];
+    for (const block of blocks) {
+      const artist = block.dataset.profileArtist || "";
+      const reason = block.dataset.profileReason || "";
+      const host = block.querySelector("[data-profile-results]");
+      if (!artist || !host) continue;
+      try {
+        const data = await deezer("/search/track?q=" + encodeURIComponent('artist:"' + artist + '"') + "&limit=12");
+        const tracks = (data.data || [])
+          .map((row) => mapDeezerTrack(row))
+          .filter((track) => track && normTrack(track.artist) === normTrack(artist) && profileAllows(track))
+          .slice(0, 4);
+        host.innerHTML = tracks.map((track) => `${trackCard(track)}<li class="profile-reason-row">${escapeHtml(reason)}</li>`).join("");
+      } catch { /* the empty line stays */ }
+    }
+  }
+  if (document.querySelector(".profile-catalog")) fillProfileCatalog();
   if (document.getElementById("recommendations-root")) loadRecommendations("all");
 })();

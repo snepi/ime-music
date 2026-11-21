@@ -128,11 +128,13 @@ pub fn render(store: &Store, i18n: &I18n, screen: &Screen) -> String {
 <script type="application/json" id="wishlist-seed">{}</script>
 <script type="application/json" id="favorite-artists-seed">{}</script>
 <script type="application/json" id="library-seed">{}</script>
+<script type="application/json" id="profile-seed">{}</script>
 <script src="/player.js"></script></body></html>"#,
         hotkeys_seed(store),
         wishlist_seed(store),
         favorite_seed(store),
         library_seed(store),
+        profile_seed(store),
     ));
     html
 }
@@ -304,6 +306,55 @@ fn hotkeys_seed(store: &Store) -> String {
         })
         .collect();
     format!("{{{}}}", parts.join(","))
+}
+
+fn track_tags(genre: &str, language: &str) -> String {
+    let mut parts = Vec::new();
+    for key in genre.split(',').map(str::trim).filter(|key| !key.is_empty()) {
+        parts.push(match key {
+            "rock" => "рок",
+            "metal" => "метал",
+            "rap" | "ruRap" => "рэп",
+            "pop" => "поп",
+            "electronic" => "электро",
+            "jazz" => "джаз",
+            "blues" => "блюз",
+            "indie" => "инди",
+            "dance" => "танцевальная",
+            "disco" => "диско",
+            "soul" => "соул",
+            "rnb" => "рнб",
+            other => other,
+        });
+    }
+    if !language.is_empty() {
+        parts.push(match language {
+            "ru" => "русский",
+            "en" => "английский",
+            other => other,
+        });
+    }
+    if parts.is_empty() {
+        "тегов нет".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn profile_seed(store: &Store) -> String {
+    if store.profile_seed.trim().is_empty() {
+        "{}".into()
+    } else {
+        store.profile_seed.clone()
+    }
+}
+
+fn profile_view(store: &Store) -> String {
+    if store.profile_page.trim().is_empty() {
+        r#"<div class="profile-view"><div class="view-header"><div class="view-info"><h1>Музыкальный профиль</h1><p>Считается на этом компьютере.</p></div></div><p class="profile-empty">Профиль собирается из прослушиваний, избранного и «не нравится». Вкусы не придумываются.</p></div>"#.into()
+    } else {
+        store.profile_page.clone()
+    }
 }
 
 fn library_seed(store: &Store) -> String {
@@ -501,6 +552,7 @@ fn sidebar(store: &Store, i18n: &I18n, screen: &Screen) -> String {
     let wish_count = if wish > 0 { Some(wish) } else { None };
     html.push_str(&nav_button(screen, "wishlist", view == "wishlist", "heartOutline", &i18n.t("nav.wishlist"), wish_count));
     html.push_str(&nav_button(screen, "history", view == "history", "history", &i18n.t("nav.history"), None));
+    html.push_str(&nav_button(screen, "profile", view == "profile", "heartOutline", "Профиль", None));
     let archive_count = if store.archive.is_empty() { None } else { Some(store.archive.len()) };
     html.push_str(&nav_button(screen, "archive", view == "archive", "folder", "Архив", archive_count));
     html.push_str("</nav>");
@@ -560,6 +612,7 @@ fn main_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         "all" | "liked" | "playlist" => library_view(store, i18n, screen),
         "wishlist" => wishlist_view(store, i18n, screen),
         "history" => history_view(store, i18n),
+        "profile" => profile_view(store),
         "archive" => archive_view(store, screen),
         "recommendations" => recommendations_view(i18n, screen),
         _ => home_view(store, i18n),
@@ -1035,8 +1088,10 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
             } else {
                 song.artist.clone()
             };
+            let tags = track_tags(&song.genre, &song.language);
+            let tags_class = if tags == "тегов нет" { "track-tags is-empty" } else { "track-tags" };
             html.push_str(&format!(
-                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell">{disc}</div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><button type="button" class="artist-link song-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button></div><button type="button" class="song-menu-btn" data-menu="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
+                r#"<div class="song-row{cur}" data-play="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}"><div class="song-index"><span class="index-num">{n}</span><span class="index-play">{play}</span></div><div class="song-cover-cell">{disc}</div><div class="song-title-cell"><div class="song-text"><button type="button" class="song-name copyable-label">{title}</button><div class="song-meta-line"><button type="button" class="artist-link song-artist" data-open-artist="1" data-artist-name="{artist}">{artist}</button><span class="{tags_class}">{tags}</span></div></div><button type="button" class="song-menu-btn" data-menu="{id}" data-title="{title}" data-artist="{artist}" data-album="{album}" aria-label="{menu}">{more}</button></div><div class="song-album">{album}</div><div class="song-duration">{dur}</div><form method="post" action="/act" style="display:contents"><input type="hidden" name="action" value="like"><input type="hidden" name="id" value="{id}"><input type="hidden" name="back" value="{back}"><button type="submit" class="like-btn {liked}" aria-label="{like_label}">{heart}</button></form></div>"#,
                 cur = if current { " current" } else { "" },
                 id = esc(&song.id),
                 n = i + 1,
@@ -1044,6 +1099,8 @@ fn library_view(store: &Store, i18n: &I18n, screen: &Screen) -> String {
                 disc = cover_cell,
                 title = esc(&song.title),
                 artist = esc(&artist),
+                tags_class = tags_class,
+                tags = esc(&tags),
                 menu = esc(&i18n.t("lib.trackMenu")),
                 more = icon("more", 16),
                 album = esc(&song.album),
@@ -2159,7 +2216,7 @@ fn tools_panel(store: &Store, i18n: &I18n, screen: &Screen) -> String {
         r#"<div class="settings-panel">{ytdlp}<div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:8px">{}</p><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="updates">{}</button><button type="button" class="btn btn-ghost" data-tool="releases">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="export-backup">{}</button><button type="button" class="btn btn-primary" data-tool="import-backup">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><label class="field-label" for="playlist-url">{}</label><input id="playlist-url" class="field-input" type="url" placeholder="{}"><div class="settings-inline-actions" style="margin-top:10px"><button type="button" class="btn btn-primary" data-tool="playlist-url">{}</button><button type="button" class="btn btn-ghost" data-tool="playlist-file">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-primary" data-tool="phone">{}</button></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><button type="button" class="btn btn-secondary" data-tool="meta">{}</button><div style="margin-top:12px"><button type="button" class="btn btn-ghost" data-tool="rebuild-autos">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><div class="settings-inline-actions"><button type="button" class="btn btn-secondary" data-tool="find-dupes">{}</button><button type="button" class="btn btn-primary" data-tool="merge-dupes">{}</button></div></div><div class="settings-section"><h3 style="margin-bottom:8px">{}</h3><p class="field-hint" style="margin-bottom:12px">{}</p><form method="post" action="/act"><input type="hidden" name="action" value="set"><input type="hidden" name="field" value="listenbrainz"><input type="hidden" name="value" value="{lb}"><input type="hidden" name="back" value="{back}"><label class="ui-toggle"><input type="checkbox" class="ui-toggle-input" {checked} onchange="this.form.value.value=this.checked?'1':'0';this.form.requestSubmit()"><span class="ui-toggle-track" aria-hidden="true"><span class="ui-toggle-thumb"></span></span><span class="ui-toggle-label">ListenBrainz</span></label></form></div></div>"#,
         esc(&i18n.t("tools.updates")),
         esc(&i18n.t("tools.updatesHint")),
-        esc(&i18n.tf("tools.currentVersion", &[("version", "1.3.7.1")])),
+        esc(&i18n.tf("tools.currentVersion", &[("version", "1.4.7.1")])),
         esc(&i18n.t("tools.updateCheck")),
         esc(&i18n.t("tools.updateOpenPage")),
         esc(&i18n.t("tools.backup")),

@@ -7,6 +7,7 @@ mod i18n;
 mod icons;
 mod lyrics;
 mod model;
+mod profile;
 mod render;
 mod tray;
 mod ytdlp;
@@ -34,6 +35,7 @@ struct SyncSession {
 struct AppState {
     store: Mutex<Store>,
     data_path: PathBuf,
+    profile: Mutex<profile::Db>,
     static_dir: PathBuf,
     sync: Mutex<Option<SyncSession>>,
     import_status: Arc<Mutex<ImportLive>>,
@@ -90,11 +92,13 @@ fn main() {
     bundle::ensure_static(&static_dir);
     let data_path = data_file(&data_dir);
     let store = Store::load(&data_path);
+    let profile_db = profile::Db::open(&data_dir.join("profile.db"));
     #[cfg(target_os = "windows")]
     let close_to_tray = store.settings.playback.close_to_tray;
     let state = Arc::new(AppState {
         store: Mutex::new(store),
         data_path,
+        profile: Mutex::new(profile_db),
         static_dir: static_dir.clone(),
         sync: Mutex::new(None),
         import_status: Arc::new(Mutex::new(ImportLive {
@@ -107,6 +111,8 @@ fn main() {
         })),
         archive_inflight: Mutex::new(std::collections::HashSet::new()),
     });
+    let scan_state = state.clone();
+    std::thread::spawn(move || scan_library_tags(scan_state));
     let port: u16 = std::env::var("IME_RS_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -133,6 +139,8 @@ fn main() {
         .route("/api/queue", get(api_queue))
         .route("/api/deezer", get(deezer_proxy))
         .route("/api/waves", get(waves_pool))
+        .route("/api/profile", get(profile_state))
+        .route("/api/profile/event", post(profile_event))
         .route("/api/wave-audio", get(wave_audio))
         .route("/api/updates", get(api_updates))
         .route("/backup", get(backup_download))
@@ -353,14 +361,33 @@ async fn deezer_proxy(Query(query): Query<DeezerQuery>) -> Response {
 }
 
 async fn index(State(state): State<Arc<AppState>>, Query(q): Query<PageQuery>) -> Html<String> {
-    let store = state.store.lock().expect("store");
+    let mut store = state.store.lock().expect("store");
     let screen = screen_from(&q, &store);
+    {
+        let profile = state.profile.lock().expect("profile");
+        let section = if screen.view == "profile" { Some(screen.section.as_str()) } else { None };
+        profile::fill(&profile, &mut store, section);
+    }
     let i18n = i18n::I18n::load(&state.static_dir.join("i18n"), &store.settings.locale);
     Html(render(&store, &i18n, &screen))
 }
 
 fn save(state: &AppState, store: &Store) {
     store.save(&state.data_path);
+}
+
+/// Genre is the catalog id. Language is the title's script. A missing catalog genre stays empty.
+fn stamp_tags(store: &mut model::Store, id: &str) {
+    let Some(song) = store.song(id).map(|song| (song.title.clone(), song.artist.clone(), song.genre.clone())) else {
+        return;
+    };
+    let language = model::script_language(&song.0);
+    let genre = if song.2.trim().is_empty() {
+        waves::catalog_genre(&song.0, &song.1).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    store.save_tags(id, &genre, &language);
 }
 
 fn trim_json(ok: bool, message: &str, duration: f64, id: &str) -> Response {
@@ -544,6 +571,24 @@ async fn dislike_wave(state: Arc<AppState>, form: ActForm) -> Response {
     let (like, like_tracks) = found.unwrap_or_default();
     let mut store = state.store.lock().expect("store");
     let (key, artists) = waves::remember_dislike(&mut store.settings.waves, &title, &artist, &preview, &like, &like_tracks);
+    if !key.is_empty() {
+        let profile = state.profile.lock().expect("profile");
+        profile.record(
+            &profile::NewEvent {
+                at_ms: 0,
+                listen_id: String::new(),
+                kind: "dislike".into(),
+                source: "waves".into(),
+                song_id: String::new(),
+                title: title.clone(),
+                artist: artist.clone(),
+                heard_s: 0.0,
+                duration_s: 0.0,
+                fraction: 0.0,
+            },
+            &store,
+        );
+    }
     save(&state, &store);
     let previews: Vec<String> = if preview.trim().is_empty() {
         Vec::new()
@@ -586,21 +631,47 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
         "collapse" => store.settings.sidebar_collapsed = !store.settings.sidebar_collapsed,
         "like" => {
             if let Some(id) = form.id.as_deref() {
-                store.toggle_like(id);
+                let snapshot = store.song(id).map(|song| (song.title.clone(), song.artist.clone()));
+                if let Some(on) = store.toggle_like(id) {
+                    stamp_tags(&mut store, id);
+                    if let Some((title, artist)) = snapshot {
+                        let profile = state.profile.lock().expect("profile");
+                        profile.record(
+                            &profile::NewEvent {
+                                at_ms: 0,
+                                listen_id: String::new(),
+                                kind: if on { "favorite_add" } else { "favorite_remove" }.into(),
+                                source: "library".into(),
+                                song_id: id.to_string(),
+                                title,
+                                artist,
+                                heard_s: 0.0,
+                                duration_s: 0.0,
+                                fraction: 0.0,
+                            },
+                            &store,
+                        );
+                    }
+                }
             }
         }
         "play" => {
             if let Some(id) = form.id.clone().or(form.value.clone()) {
                 store.play(&id);
+                stamp_tags(&mut store, &id);
             }
         }
         "pause" => store.pause(),
         "resume" => store.resume(),
         "next" => {
-            store.next();
+            if let Some(id) = store.next() {
+                stamp_tags(&mut store, &id);
+            }
         }
         "prev" => {
-            store.prev();
+            if let Some(id) = store.prev() {
+                stamp_tags(&mut store, &id);
+            }
         }
         "shuffle" => store.settings.playback.shuffle = !store.settings.playback.shuffle,
         "repeat" => {
@@ -674,6 +745,26 @@ async fn act(State(state): State<Arc<AppState>>, Form(form): Form<ActForm>) -> R
                 "Артист убран из избранного".into()
             };
             detail = serde_json::json!({ "favorite": on });
+            let profile = state.profile.lock().expect("profile");
+            profile.record(
+                &profile::NewEvent {
+                    at_ms: 0,
+                    listen_id: String::new(),
+                    kind: if on { "favorite_add" } else { "favorite_remove" }.into(),
+                    source: "library".into(),
+                    song_id: String::new(),
+                    title: String::new(),
+                    artist: form.artist.clone().or(form.title.clone()).unwrap_or_default(),
+                    heard_s: 0.0,
+                    duration_s: 0.0,
+                    fraction: 0.0,
+                },
+                &store,
+            );
+        }
+        "profile-refresh" => {
+            state.profile.lock().expect("profile").bump_spin();
+            message = "Профиль обновлён".into();
         }
         "open-url" => {
             if let Some(url) = form.url.as_deref().or(form.value.as_deref()) {
@@ -1293,6 +1384,9 @@ async fn import_search(State(state): State<Arc<AppState>>, Form(form): Form<ActF
             let mut store = state.store.lock().expect("store");
             let added = store.add_file(&path);
             store.apply_download_meta(&path, &title, &artist, &album, &cover);
+            if let Some(id) = store.songs.iter().find(|song| song.path == path.to_string_lossy()).map(|song| song.id.clone()) {
+                stamp_tags(&mut store, &id);
+            }
             save(&state, &store);
             let message = format!(
                 "{}: {label}",
@@ -1781,6 +1875,10 @@ async fn waves_pool(State(state): State<Arc<AppState>>, Query(query): Query<Wave
     }
     let snapshot = {
         let mut store = state.store.lock().expect("store");
+        {
+            let profile = state.profile.lock().expect("profile");
+            profile::fill(&profile, &mut store, None);
+        }
         store.settings.waves.spin = store.settings.waves.spin.wrapping_add(1).max(1);
         let snapshot = store.clone();
         save(&state, &store);
@@ -1793,6 +1891,118 @@ async fn waves_pool(State(state): State<Arc<AppState>>, Query(query): Query<Wave
         serde_json::json!({ "ok": true, "items": items }).to_string(),
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct ProfileEventIn {
+    #[serde(default, rename = "listenId")]
+    listen_id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default, rename = "songId")]
+    song_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    artist: String,
+    #[serde(default)]
+    heard: f64,
+    #[serde(default)]
+    duration: f64,
+    #[serde(default)]
+    fraction: f64,
+    #[serde(default, rename = "genreId")]
+    genre_id: Option<u32>,
+}
+
+async fn profile_event(State(state): State<Arc<AppState>>, Json(body): Json<ProfileEventIn>) -> Response {
+    let kind = match body.kind.as_str() {
+        "start" | "finish" | "skip" | "replay" => body.kind,
+        _ => return json_response(serde_json::json!({ "ok": false })),
+    };
+    let mut store = state.store.lock().expect("store");
+    let matched = if !body.song_id.is_empty() {
+        Some(body.song_id.clone())
+    } else {
+        store
+            .songs
+            .iter()
+            .find(|song| song.title.eq_ignore_ascii_case(body.title.trim()) && song.artist.eq_ignore_ascii_case(body.artist.trim()))
+            .map(|song| song.id.clone())
+    };
+    if let Some(id) = matched {
+        if store.song(&id).map(|song| song.genre.trim().is_empty()).unwrap_or(false) {
+            if let Some(genre_id) = body.genre_id {
+                if let Some(key) = waves::genre_key_for_id(genre_id, &body.title) {
+                    store.save_tags(&id, &key, &model::script_language(&body.title));
+                }
+            }
+        }
+        stamp_tags(&mut store, &id);
+    }
+    {
+        let profile = state.profile.lock().expect("profile");
+        profile.record(
+            &profile::NewEvent {
+                at_ms: 0,
+                listen_id: body.listen_id,
+                kind: kind.into(),
+                source: if body.source.is_empty() { "library".into() } else { body.source },
+                song_id: body.song_id,
+                title: body.title,
+                artist: body.artist,
+                heard_s: body.heard,
+                duration_s: body.duration,
+                fraction: body.fraction,
+            },
+            &store,
+        );
+        profile::fill(&profile, &mut store, None);
+    }
+    save(&state, &store);
+    json_response(serde_json::json!({ "ok": true }))
+}
+
+async fn profile_state(State(state): State<Arc<AppState>>) -> Response {
+    let mut store = state.store.lock().expect("store");
+    {
+        let profile = state.profile.lock().expect("profile");
+        profile::fill(&profile, &mut store, None);
+    }
+    let value: serde_json::Value = serde_json::from_str(&store.profile_seed).unwrap_or_else(|_| serde_json::json!({}));
+    json_response(value)
+}
+
+fn scan_library_tags(state: Arc<AppState>) {
+    for _ in 0..12 {
+        let batch: Vec<(String, String)> = {
+            let store = state.store.lock().expect("store");
+            store
+                .songs
+                .iter()
+                .filter(|song| !song.tags_read)
+                .take(40)
+                .map(|song| (song.id.clone(), song.path.clone()))
+                .collect()
+        };
+        if batch.is_empty() {
+            break;
+        }
+        let ids: Vec<_> = batch.into_iter().map(|(id, _)| id).collect();
+        let mut store = state.store.lock().expect("store");
+        for id in ids {
+            if let Some(song) = store.songs.iter_mut().find(|song| song.id == id) {
+                song.language = model::script_language(&song.title);
+                song.bpm = None;
+                song.energy = None;
+                song.tags_read = true;
+            }
+        }
+        save(&state, &store);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
 }
 
 async fn api_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -1840,11 +2050,26 @@ fn app_dirs() -> (PathBuf, PathBuf) {
     let root = exe_dir.unwrap_or_else(|| PathBuf::from("."));
     let data_dir = std::env::var("IME_RS_DATA")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| root.join("data"));
+        .unwrap_or_else(|_| user_library_dir(&root));
     let static_dir = std::env::var("IME_RS_STATIC")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.join("static"));
     (static_dir, data_dir)
+}
+
+/// Installed and portable builds keep the library in %LOCALAPPDATA%\IMe Music\data.
+/// A dev checkout keeps using ime-rs/data so a local run does not touch that folder.
+fn user_library_dir(exe_dir: &std::path::Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let local = local.trim();
+            if !local.is_empty() {
+                return PathBuf::from(local).join("IMe Music").join("data");
+            }
+        }
+    }
+    exe_dir.join("data")
 }
 
 fn safe_upload_name(name: &str) -> String {
@@ -1909,7 +2134,7 @@ async fn api_updates() -> Response {
             .and_then(|response| response.into_string().map_err(|err| err.to_string()))
     })
     .await;
-    let current = "1.3.7.1";
+    let current = "1.4.7.1";
     let body = match fetched {
         Ok(Ok(text)) => text,
         _ => {
